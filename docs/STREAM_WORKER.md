@@ -633,7 +633,35 @@ If you want the server to wait for a free GPU rather than send `queue: true`,
 poll `GET /healthz` until `busy: false` — but prefer `queue: true`, which does
 the same thing without a polling loop.
 
-### 6.4 Verified against a real worker
+### 6.4 What the server relies on from `/healthz`
+
+*Added by the server side (review 6 finding 1). The fields already exist; this
+records which ones are now load-bearing, so they are not dropped or renamed.*
+
+`AI_BACKEND=auto` no longer picks the worker at all unless `AI_STREAM_AUTO=1`
+(reachability is the wrong signal: a worker answering `/healthz` is holding
+~5 GB of VRAM, which starves ComfyUI on an 8 GB card). When it *is* opted in,
+`createBackend` requires all three of:
+
+| field | requirement | why |
+| --- | --- | --- |
+| `ok` | `true` | basic liveness |
+| `warm` | `true` | a worker with no model loaded answers `ok` and then echoes the input back; the scheduler cannot tell that from a real result |
+| `max_size` | `>= AI_WINDOW` (or absent/0, which is treated as unknown and accepted) | an undersized worker answers `ok` and then 400s every request, which full mode retries forever |
+
+Each rejection is logged with its reason and falls through to ComfyUI. An
+explicit `AI_BACKEND=stream` is always honoured, but the same probe runs and
+prints a warning.
+
+One extra requirement on `current_request_id`: after `POST /cancel`, it should
+keep naming the cancelled job until that job has really stopped, then clear (or
+change) along with `busy`. `StreamBackend` waits on exactly that signal before
+issuing its next request — a retry sent while the abandoned job is still running
+would queue behind it and pay for it twice — with a 15 s deadline after which it
+gives up and sends anyway. If `current_request_id` clears before the GPU is
+actually free, that wait becomes useless.
+
+### 6.5 Verified against a real worker
 
 The TS backend and the Python worker have now been driven against each other
 end-to-end, with no GPU, using the worker's dry-run mode:
