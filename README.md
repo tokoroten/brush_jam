@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 227 tests across shared / server / web
+pnpm test         # 278 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -127,6 +127,14 @@ are multiples of 64, denoise is 0..1, and so on).
 | `RUNPOD_ENDPOINT_ID`, `RUNPOD_API_KEY` | — | Only for `AI_BACKEND=runpod` |
 | `WEB_DIST` | `apps/web/dist` | Static client directory |
 
+Fixed limits, not configurable: 64 live rooms per server (further creates and
+upgrades get `429`/close 1013), 64 session tokens per room (the oldest
+*disconnected* session is evicted first), 4 pending strokes per user, 20 000
+committed strokes per room, 32 uploaded images per room, a 512 MiB budget for
+decoded reference pixels shared process-wide (LRU eviction), a 60 s idle window
+on a pending stroke, and a 2 min grace period before an unreferenced upload is
+swept.
+
 ## ComfyUI requirements
 
 ComfyUI 0.28.0 with `waiNSFWIllustrious_v150.safetensors` and core nodes only.
@@ -156,7 +164,7 @@ endpoint — treat it as untested code.
 
 Smoke test on the local box (RTX 3070 8 GB, `AI_WINDOW=1024`, 14 steps,
 denoise 0.55): first generation ~73 s including checkpoint load, warm generations
-~26–31 s. That is slower than the plan's 8–15 s estimate; the machine had ~3 GB
+~14–31 s (13.7 s on the most recent run with more free RAM). That is slower than the plan's 8–15 s estimate; the machine had ~3 GB
 free RAM during the run, so weight paging is the likely cause. The pipeline is
 correct end to end: stroke → dirty region → crop → mask → ComfyUI → composited
 patch broadcast to clients.
@@ -215,7 +223,30 @@ Judgement calls made while implementing, since the plan left them open:
     the same server identity and undo stack. It is not authentication: anyone
     holding the token is that participant, which is the right trade for a
     local playtest.
-15. **The server binds to `127.0.0.1` by default.** Exposing the room server
+15. **Uploads are structurally validated in pure JS before any decode.**
+    `@napi-rs/canvas`'s `loadImage` *segfaults* (verified: exit 139, not a
+    catchable exception) on a file with a valid PNG signature and IHDR but no
+    image data, so a `try/catch` around the decoder cannot protect the process.
+    `validateStructure()` walks PNG chunks / checks the JPEG SOS+EOI markers /
+    checks the RIFF size before the single verifying decode, which also confirms
+    the header's declared dimensions.
+16. **A cancelled generation cleans up after itself.** Once `/prompt` has
+    returned a `prompt_id`, any later failure interrupts the job if it is
+    running or `POST /queue {delete:[id]}`s it if it is only queued, so an
+    abandoned request does not keep occupying the GPU. A transient `/history`
+    failure is retried while the generation deadline still holds.
+17. **A prompt change during an in-flight run is not lost.** The scheduler keeps
+    a prompt epoch; if it moved while a generation was running, the rect that
+    result just repainted is re-dirtied so the new prompt gets applied there.
+18. **The no-progress guard is scoped to one region.** Only the region that was
+    actually selected can be judged stuck, and only after the same
+    crop+region signature has already failed once — other overlapping regions
+    are never discarded.
+19. **Client asset loads are bounded and cancellable.** Reference images and
+    `ai.png` load with a 10 s timeout outside the ordered message queue and are
+    aborted on dispose/reconnect, so a stalled image can never wedge frame
+    application; a failed AI patch schedules a revision-guarded refresh instead.
+20. **The server binds to `127.0.0.1` by default.** Exposing the room server
     needs an explicit `HOST=0.0.0.0`, since there is no authentication.
 
 ## Not verified
