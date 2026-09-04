@@ -161,3 +161,30 @@ describe('generation resolution', () => {
     expect(() => loadConfig({ AI_WINDOW: '4096' } as NodeJS.ProcessEnv)).toThrow(/AI_WINDOW/);
   });
 });
+
+describe('AI_FAST', () => {
+  it('is off by default', () => {
+    const c = loadConfig({} as NodeJS.ProcessEnv);
+    expect(c.aiFast).toBe(false);
+    expect(c.aiSteps).toBe(14);
+  });
+
+  it('switches the step default to 4 when enabled', () => {
+    const c = loadConfig({ AI_FAST: '1' } as NodeJS.ProcessEnv);
+    expect(c.aiFast).toBe(true);
+    expect(c.aiSteps).toBe(4);
+    expect(c.comfyFastLora).toBe('lcm-lora-sdxl.safetensors');
+  });
+
+  it('still honours an explicit AI_STEPS', () => {
+    expect(loadConfig({ AI_FAST: 'true', AI_STEPS: '6' } as NodeJS.ProcessEnv).aiSteps).toBe(6);
+  });
+
+  it('accepts a custom LoRA name and the usual flag spellings', () => {
+    expect(loadConfig({ AI_FAST: 'yes', COMFYUI_FAST_LORA: 'dmd2.safetensors' } as NodeJS.ProcessEnv).comfyFastLora).toBe(
+      'dmd2.safetensors',
+    );
+    expect(loadConfig({ AI_FAST: '0' } as NodeJS.ProcessEnv).aiFast).toBe(false);
+    expect(loadConfig({ AI_FAST: 'off' } as NodeJS.ProcessEnv).aiFast).toBe(false);
+  });
+});

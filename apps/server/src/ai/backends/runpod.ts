@@ -7,6 +7,7 @@ export interface RunpodOptions {
   checkpoint: string;
   cfg?: number;
   vaeTile?: number;
+  fastLora?: string;
   baseUrl?: string;
 }
 
@@ -35,6 +36,7 @@ export class RunpodBackend implements AIBackend {
       steps: req.steps,
       cfg: this.opts.cfg ?? 5.5,
       vaeTile: this.opts.vaeTile ?? 512,
+      fastLora: this.opts.fastLora,
       denoise: req.denoise,
       filenamePrefix: `brushjam/${req.tag}`,
     });

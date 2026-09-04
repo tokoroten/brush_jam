@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ComfyUIBackend, buildWorkflow, comfyReachable } from '../src/ai/backends/comfyui.js';
+import { ComfyUIBackend, DEFAULT_FAST_LORA, FAST_CFG, buildWorkflow, comfyReachable } from '../src/ai/backends/comfyui.js';
 import type { GenerateRequest } from '../src/ai/backends/types.js';
 
 const req: GenerateRequest = {
@@ -284,5 +284,72 @@ describe('VAE decode node', () => {
     });
     expect((wf['3'] as { inputs: { text: string } }).inputs.text).toBe('no text, no watermark');
     expect((wf['9'] as { inputs: { denoise: number } }).inputs.denoise).toBe(0.85);
+  });
+});
+
+/** AI_FAST=1: 4-step LCM variant of the same graph. */
+describe('fast (LCM) workflow', () => {
+  const base = {
+    checkpoint: 'c.safetensors',
+    prompt: 'a town',
+    negativePrompt: 'lowres',
+    imageName: 'img.png',
+    maskName: 'mask.png',
+    seed: 7,
+    steps: 4,
+    cfg: 5.5,
+    denoise: 0.55,
+    filenamePrefix: 'brushjam/room1',
+  };
+  const fast = buildWorkflow({ ...base, fastLora: DEFAULT_FAST_LORA });
+  const normal = buildWorkflow({ ...base, steps: 14 });
+
+  it('adds a LoraLoader fed by the checkpoint', () => {
+    expect(fast['12']).toEqual({
+      class_type: 'LoraLoader',
+      inputs: { model: ['1', 0], clip: ['1', 1], lora_name: 'lcm-lora-sdxl.safetensors', strength_model: 1, strength_clip: 1 },
+    });
+  });
+
+  it('repoints both text encoders and the sampler at the LoRA', () => {
+    expect((fast['2'] as { inputs: { clip: unknown } }).inputs.clip).toEqual(['12', 1]);
+    expect((fast['3'] as { inputs: { clip: unknown } }).inputs.clip).toEqual(['12', 1]);
+    expect((fast['9'] as { inputs: { model: unknown } }).inputs.model).toEqual(['12', 0]);
+    // the VAE still comes from the checkpoint: LoraLoader has no VAE output
+    expect((fast['7'] as { inputs: { vae: unknown } }).inputs.vae).toEqual(['1', 2]);
+    expect((fast['10'] as { inputs: { vae: unknown } }).inputs.vae).toEqual(['1', 2]);
+  });
+
+  it('uses the low-step sampler settings', () => {
+    expect((fast['9'] as { inputs: Record<string, unknown> }).inputs).toMatchObject({
+      // ceil(4 / 0.55) = 8, because KSampler runs steps * denoise
+      steps: 8,
+      cfg: FAST_CFG,
+      sampler_name: 'lcm',
+      scheduler: 'sgm_uniform',
+      denoise: 0.55,
+    });
+  });
+
+  it('asks for exactly the requested steps at denoise 1', () => {
+    const full = buildWorkflow({ ...base, denoise: 1, fastLora: DEFAULT_FAST_LORA });
+    expect((full['9'] as { inputs: { steps: number } }).inputs.steps).toBe(4);
+  });
+
+  it('leaves the normal workflow completely alone', () => {
+    expect(normal['12']).toBeUndefined();
+    expect((normal['2'] as { inputs: { clip: unknown } }).inputs.clip).toEqual(['1', 1]);
+    expect((normal['9'] as { inputs: Record<string, unknown> }).inputs).toMatchObject({
+      model: ['1', 0],
+      steps: 14,
+      cfg: 5.5,
+      sampler_name: 'euler_ancestral',
+      scheduler: 'normal',
+    });
+  });
+
+  it('accepts a different LoRA name', () => {
+    const dmd = buildWorkflow({ ...base, fastLora: 'dmd2_sdxl_4step_lora_fp16.safetensors' });
+    expect((dmd['12'] as { inputs: { lora_name: string } }).inputs.lora_name).toBe('dmd2_sdxl_4step_lora_fp16.safetensors');
   });
 });

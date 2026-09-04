@@ -18,6 +18,10 @@ export interface Config {
   aiCfg: number;
   /** VAE decode tile size; 0 uses a plain (non-tiled) VAEDecode. */
   aiVaeTile: number;
+  /** 4-step LCM mode for the ComfyUI backend. */
+  aiFast: boolean;
+  /** LoRA used by fast mode; empty disables it even when AI_FAST=1. */
+  comfyFastLora: string;
   aiDebounceMs: number;
   aiWatchdogMs: number;
   roomIdleMs: number;
@@ -25,6 +29,9 @@ export interface Config {
   runpodApiKey: string;
   webDist: string | null;
 }
+
+/** `1`, `true`, `yes`, `on` (case-insensitive) are true; anything else false. */
+const flag = (raw: string | undefined): boolean => ['1', 'true', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -82,10 +89,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     aiMode: modeRaw === 'patch' ? 'patch' : 'full',
     aiWindow: num(env, 'AI_WINDOW', 1024, { min: 256, max: 2048, integer: true, multipleOf: 64 }, errors),
     aiApply: num(env, 'AI_APPLY', 768, { min: 128, max: 2048, integer: true, multipleOf: 64 }, errors),
-    aiSteps: num(env, 'AI_STEPS', 14, { min: 1, max: 150, integer: true }, errors),
+    aiSteps: num(env, 'AI_STEPS', flag(env.AI_FAST) ? 4 : 14, { min: 1, max: 150, integer: true }, errors),
     aiDenoise: num(env, 'AI_DENOISE', 0.55, { min: 0, max: 1 }, errors),
     aiCfg: num(env, 'AI_CFG', 5.5, { min: 0, max: 30 }, errors),
     aiVaeTile: num(env, 'AI_VAE_TILE', 512, { min: 0, max: 4096, integer: true }, errors),
+    aiFast: flag(env.AI_FAST),
+    comfyFastLora: env.COMFYUI_FAST_LORA ?? 'lcm-lora-sdxl.safetensors',
     aiDebounceMs: num(env, 'AI_DEBOUNCE_MS', 400, { min: 0, max: 600_000, integer: true }, errors),
     aiWatchdogMs: num(env, 'AI_WATCHDOG_MS', 180_000, { min: 1000, max: 3_600_000, integer: true }, errors),
     roomIdleMs: num(env, 'ROOM_IDLE_MS', 30 * 60_000, { min: 10_000, max: 24 * 3_600_000, integer: true }, errors),

@@ -6,6 +6,8 @@ export interface ComfyOptions {
   url: string;
   checkpoint: string;
   cfg?: number;
+  /** Name of the 4-step LoRA; empty/undefined keeps the many-step workflow. */
+  fastLora?: string;
   /** VAE decode tile size; 0 falls back to a plain VAEDecode. */
   vaeTile?: number;
   pollIntervalMs?: number;
@@ -27,6 +29,12 @@ export interface WorkflowInput {
   denoise: number;
   filenamePrefix: string;
   /**
+   * 4-step LCM mode: loads a LoRA between the checkpoint and its consumers and
+   * switches the sampler to the low-step settings that actually work with it.
+   * Empty/undefined keeps the ordinary many-step workflow.
+   */
+  fastLora?: string;
+  /**
    * Tile size for VAEDecodeTiled. Plain VAEDecode of a 1024x1024 latent takes
    * 1-4 minutes on an 8 GB card once VRAM is contended (sampling itself is
    * ~22 s), so tiling is the default. 0 restores the plain node.
@@ -40,10 +48,16 @@ export interface WorkflowInput {
  * img2img base, so the model reinterprets the strokes instead of filling holes.
  */
 export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
-  return {
+  const fast = Boolean(i.fastLora);
+  // With the LoRA loaded, MODEL and CLIP come from node 12 instead of the
+  // checkpoint. VAE still comes from the checkpoint: LoraLoader has no VAE out.
+  const model: [string, number] = fast ? ['12', 0] : ['1', 0];
+  const clip: [string, number] = fast ? ['12', 1] : ['1', 1];
+
+  const workflow: Record<string, unknown> = {
     '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: i.checkpoint } },
-    '2': { class_type: 'CLIPTextEncode', inputs: { text: i.prompt + QUALITY_SUFFIX, clip: ['1', 1] } },
-    '3': { class_type: 'CLIPTextEncode', inputs: { text: i.negativePrompt, clip: ['1', 1] } },
+    '2': { class_type: 'CLIPTextEncode', inputs: { text: i.prompt + QUALITY_SUFFIX, clip } },
+    '3': { class_type: 'CLIPTextEncode', inputs: { text: i.negativePrompt, clip } },
     '4': { class_type: 'LoadImage', inputs: { image: i.imageName, upload: 'image' } },
     '5': { class_type: 'LoadImage', inputs: { image: i.maskName, upload: 'image' } },
     '6': { class_type: 'ImageToMask', inputs: { image: ['5', 0], channel: 'red' } },
@@ -52,22 +66,36 @@ export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
     '9': {
       class_type: 'KSampler',
       inputs: {
-        model: ['1', 0],
+        model,
         positive: ['2', 0],
         negative: ['3', 0],
         latent_image: ['8', 0],
         seed: i.seed,
-        steps: i.steps,
-        cfg: i.cfg,
-        sampler_name: 'euler_ancestral',
-        scheduler: 'normal',
+        // KSampler runs `steps * denoise` real steps, so ask for more to get the
+        // 4 the LoRA needs. cfg above ~2 burns the image out at 4 steps.
+        steps: fast ? Math.ceil(i.steps / Math.max(0.05, i.denoise)) : i.steps,
+        cfg: fast ? FAST_CFG : i.cfg,
+        sampler_name: fast ? 'lcm' : 'euler_ancestral',
+        scheduler: fast ? 'sgm_uniform' : 'normal',
         denoise: i.denoise,
       },
     },
     '10': decodeNode(i.vaeTile),
     '11': { class_type: 'SaveImage', inputs: { images: ['10', 0], filename_prefix: i.filenamePrefix } },
   };
+
+  if (fast) {
+    workflow['12'] = {
+      class_type: 'LoraLoader',
+      inputs: { model: ['1', 0], clip: ['1', 1], lora_name: i.fastLora, strength_model: 1, strength_clip: 1 },
+    };
+  }
+  return workflow;
 }
+
+/** LCM wants cfg 1.0-2.0; the normal 5.5 destroys a 4-step result. */
+export const FAST_CFG = 1.5;
+export const DEFAULT_FAST_LORA = 'lcm-lora-sdxl.safetensors';
 
 /** VAEDecodeTiled on ComfyUI 0.28 requires all four size inputs. */
 function decodeNode(tile: number | undefined): Record<string, unknown> {
@@ -136,6 +164,7 @@ export class ComfyUIBackend implements AIBackend {
       steps: req.steps,
       cfg: this.opts.cfg ?? 5.5,
       vaeTile: this.opts.vaeTile ?? 512,
+      fastLora: this.opts.fastLora,
       denoise: req.denoise,
       filenamePrefix: `brushjam/${req.tag}`,
     });

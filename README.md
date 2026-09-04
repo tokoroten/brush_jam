@@ -122,7 +122,9 @@ are multiples of 64, denoise is 0..1, and so on).
 | `AI_MODE` | `full` | `full` regenerates the whole canvas; `patch` uses crops + dirty regions |
 | `AI_WINDOW` | `CANVAS_SIZE` in full mode, else `1024` | Generation size in px (512-2048, multiple of 64) |
 | `AI_APPLY` | `768` | Central area the result is allowed to change |
-| `AI_STEPS` | `14` | Sampler steps |
+| `AI_STEPS` | `14` (`4` when `AI_FAST=1`) | Sampler steps |
+| `AI_FAST` | `0` | `1` switches ComfyUI to the 4-step LCM workflow |
+| `COMFYUI_FAST_LORA` | `lcm-lora-sdxl.safetensors` | LoRA used by `AI_FAST` |
 | `AI_DENOISE` | `0.55` | img2img strength; the starting value of each room's slider |
 | `AI_CFG` | `5.5` | CFG scale |
 | `AI_VAE_TILE` | `512` | VAEDecodeTiled tile size; `0` uses a plain `VAEDecode` |
@@ -160,6 +162,14 @@ CheckpointLoaderSimple → 2× CLIPTextEncode
 LoadImage(image) → VAEEncode ┐
 LoadImage(mask) → ImageToMask ┴→ SetLatentNoiseMask → KSampler → VAEDecodeTiled → SaveImage
 ```
+
+With `AI_FAST=1` a `LoraLoader` (node 12) is inserted between the checkpoint and
+its consumers - both `CLIPTextEncode` nodes and the `KSampler` read MODEL/CLIP
+from it, while the VAE still comes from the checkpoint - and the sampler switches
+to `lcm` / `sgm_uniform` at cfg 1.5. Steps are `ceil(AI_STEPS / denoise)`, because
+`KSampler` runs `steps * denoise` real steps: 4 steps at denoise 0.55 means
+asking for 8. These values come from `docs/STREAM_WORKER.md` §5; cfg 5.5 burns
+the image out at 4 steps.
 
 `SetLatentNoiseMask` (rather than `VAEEncodeForInpaint`) keeps the human drawing
 as the img2img base, so the model reinterprets the strokes instead of filling

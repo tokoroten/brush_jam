@@ -20,7 +20,13 @@ export const PROBE_TIMEOUT_MS = 2000;
 
 export async function createBackend(config: Config, log: (m: string) => void = console.log): Promise<AIBackend> {
   const comfy = (): AIBackend =>
-    new ComfyUIBackend({ url: config.comfyUrl, checkpoint: config.comfyCheckpoint, cfg: config.aiCfg, vaeTile: config.aiVaeTile });
+    new ComfyUIBackend({
+      url: config.comfyUrl,
+      checkpoint: config.comfyCheckpoint,
+      cfg: config.aiCfg,
+      vaeTile: config.aiVaeTile,
+      fastLora: config.aiFast ? config.comfyFastLora : undefined,
+    });
   // The worker may take ~90 s to answer its first request while it loads the
   // model, so it gets a generation-sized deadline, not a probe-sized one.
   const stream = (): AIBackend => new StreamBackend({ url: config.streamUrl, timeoutMs: config.streamTimeoutMs });
@@ -37,6 +43,7 @@ export async function createBackend(config: Config, log: (m: string) => void = c
       checkpoint: config.comfyCheckpoint,
       cfg: config.aiCfg,
       vaeTile: config.aiVaeTile,
+      fastLora: config.aiFast ? config.comfyFastLora : undefined,
     });
   }
   if (config.aiBackend === 'stream') {
