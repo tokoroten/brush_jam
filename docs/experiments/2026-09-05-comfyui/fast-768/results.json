@@ -1,0 +1,148 @@
+{
+  "date": "2026-09-05",
+  "backend": "comfyui",
+  "prompt": "anime style, fantasy town, vibrant colors",
+  "negativePrompt": "lowres, bad anatomy, bad hands, text, error, worst quality, low quality, jpeg artifacts, signature, watermark, blurry",
+  "resolution": 768,
+  "steps": 4,
+  "cfg": 5.5,
+  "seed": 424242,
+  "drawings": [
+    {
+      "key": "a",
+      "title": "line-art house + tree"
+    },
+    {
+      "key": "b",
+      "title": "stick figure + blob"
+    },
+    {
+      "key": "c",
+      "title": "house + noise sky"
+    },
+    {
+      "key": "d",
+      "title": "mostly noise"
+    }
+  ],
+  "denoises": [
+    0.5,
+    0.65,
+    0.8,
+    0.9
+  ],
+  "cells": [
+    {
+      "drawing": "a",
+      "denoise": 0.5,
+      "file": "a_d0.50.png",
+      "latencyMs": 4844,
+      "bytes": 321815
+    },
+    {
+      "drawing": "a",
+      "denoise": 0.65,
+      "file": "a_d0.65.png",
+      "latencyMs": 2774,
+      "bytes": 339610
+    },
+    {
+      "drawing": "a",
+      "denoise": 0.8,
+      "file": "a_d0.80.png",
+      "latencyMs": 3059,
+      "bytes": 328045
+    },
+    {
+      "drawing": "a",
+      "denoise": 0.9,
+      "file": "a_d0.90.png",
+      "latencyMs": 2765,
+      "bytes": 574681
+    },
+    {
+      "drawing": "b",
+      "denoise": 0.5,
+      "file": "b_d0.50.png",
+      "latencyMs": 3080,
+      "bytes": 343908
+    },
+    {
+      "drawing": "b",
+      "denoise": 0.65,
+      "file": "b_d0.65.png",
+      "latencyMs": 2780,
+      "bytes": 433557
+    },
+    {
+      "drawing": "b",
+      "denoise": 0.8,
+      "file": "b_d0.80.png",
+      "latencyMs": 3033,
+      "bytes": 442137
+    },
+    {
+      "drawing": "b",
+      "denoise": 0.9,
+      "file": "b_d0.90.png",
+      "latencyMs": 2787,
+      "bytes": 630396
+    },
+    {
+      "drawing": "c",
+      "denoise": 0.5,
+      "file": "c_d0.50.png",
+      "latencyMs": 3149,
+      "bytes": 632291
+    },
+    {
+      "drawing": "c",
+      "denoise": 0.65,
+      "file": "c_d0.65.png",
+      "latencyMs": 3035,
+      "bytes": 659655
+    },
+    {
+      "drawing": "c",
+      "denoise": 0.8,
+      "file": "c_d0.80.png",
+      "latencyMs": 3051,
+      "bytes": 653375
+    },
+    {
+      "drawing": "c",
+      "denoise": 0.9,
+      "file": "c_d0.90.png",
+      "latencyMs": 3056,
+      "bytes": 586935
+    },
+    {
+      "drawing": "d",
+      "denoise": 0.5,
+      "file": "d_d0.50.png",
+      "latencyMs": 3133,
+      "bytes": 897586
+    },
+    {
+      "drawing": "d",
+      "denoise": 0.65,
+      "file": "d_d0.65.png",
+      "latencyMs": 3027,
+      "bytes": 946938
+    },
+    {
+      "drawing": "d",
+      "denoise": 0.8,
+      "file": "d_d0.80.png",
+      "latencyMs": 3089,
+      "bytes": 980514
+    },
+    {
+      "drawing": "d",
+      "denoise": 0.9,
+      "file": "d_d0.90.png",
+      "latencyMs": 3044,
+      "bytes": 904180
+    }
+  ]
+}

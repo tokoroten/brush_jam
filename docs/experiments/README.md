@@ -30,6 +30,11 @@ The drawings: (a) line-art house + tree, (b) stick figure + coloured blob,
 (c) (a) with a wide noise stroke across the sky, (d) mostly noise with a few
 pen lines.
 
+`2026-09-05-comfyui/` is Experiment C: the real ComfyUI sweep on the local
+RTX 3070 (normal 14-step and 4-step LCM, three resolutions) with latency logs
+and `REPORT.md`. Contact sheets there are JPEG rather than PNG so three real
+grids fit in under 2 MB.
+
 `2026-09-05-mock/` is the mock-backend shakedown of the script (only the sheet
 and `results.json` were kept). The mock ignores denoise, so its four columns are
 identical by design - it proves the harness, not the model.

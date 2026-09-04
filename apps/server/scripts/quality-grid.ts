@@ -17,7 +17,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createCanvas, loadImage, type Canvas } from '@napi-rs/canvas';
 import { DEFAULT_NEGATIVE_PROMPT, renderStrokes, type RenderableStroke } from '@brushjam/shared';
-import { createBackend } from '../src/ai/backends/index.js';
+import { createBackend, FAST_CFG } from '../src/ai/backends/index.js';
 import { loadConfig } from '../src/config.js';
 import { buildFullMask } from '../src/raster.js';
 
@@ -308,14 +308,23 @@ for (let r = 0; r < rows; r++) {
 }
 writeFileSync(path.join(outDir, 'grid.png'), sheet.toBuffer('image/png'));
 
+// Record what the workflow really used, not what the server config says: in
+// fast mode the graph overrides cfg, and for a non-ComfyUI backend the server's
+// cfg is not used at all. Writing config values there made a run unreproducible.
+const workflow =
+  backend.name === 'comfyui' || backend.name === 'runpod'
+    ? config.aiFast
+      ? { mode: 'fast (LCM)', steps: config.aiSteps, cfg: FAST_CFG, lora: config.comfyFastLora, sampler: 'lcm/sgm_uniform', vaeTile: config.aiVaeTile }
+      : { mode: 'normal', steps: config.aiSteps, cfg: config.aiCfg, sampler: 'euler_ancestral/normal', vaeTile: config.aiVaeTile }
+    : { mode: backend.name, note: 'sampling parameters belong to the backend, not to this server config' };
+
 const results = {
   date,
   backend: backend.name,
+  workflow,
   prompt: PROMPT,
   negativePrompt: DEFAULT_NEGATIVE_PROMPT,
   resolution: opts.res,
-  steps: config.aiSteps,
-  cfg: config.aiCfg,
   seed: SEED,
   drawings: opts.drawings.map((k) => ({ key: k, title: DRAWINGS[k]!.title })),
   denoises: opts.denoises,
