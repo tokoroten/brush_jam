@@ -681,7 +681,7 @@ cd apps/stream-worker && STREAM_DRY_RUN=1 STREAM_PORT=8795 uv run python -m stre
 and for any server-side work on this backend; it is the cheapest way to catch a
 contract mismatch, and it costs no GPU minutes.
 
-### 6.5 Nothing else changes
+### 6.6 Nothing else changes
 
 `StreamBackend` implements the existing `AIBackend` interface exactly
 (`generate(req, signal) → Buffer` of a `size×size` PNG), honours the abort
