@@ -323,7 +323,7 @@ describe('crop rendering with a layer offset', () => {
     for (let i = 0; i < serverData.length; i += 4) {
       if (clientData[i] === 255 && clientData[i + 1] === 255 && clientData[i + 2] === 255) continue;
       painted += 1;
-      if (Math.abs(serverData[i] - clientData[i]!) > 2 || Math.abs(serverData[i + 2]! - clientData[i + 2]!) > 2) mismatched += 1;
+      if (Math.abs(serverData[i]! - clientData[i]!) > 2 || Math.abs(serverData[i + 2]! - clientData[i + 2]!) > 2) mismatched += 1;
     }
     expect(painted).toBeGreaterThan(1000);
     expect(mismatched / painted).toBeLessThan(0.02);

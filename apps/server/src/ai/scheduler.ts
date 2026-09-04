@@ -86,6 +86,11 @@ export class AIScheduler {
   private lastNoProgress: string | null = null;
   /** Full-canvas mode: anything at all changed since the last generation. */
   private changed = false;
+  /** Absolute debounce deadline; scheduling can move it later, never earlier. */
+  private notBefore = 0;
+  /** Absolute end of an error backoff. */
+  private backoffUntil = 0;
+  private timerAt = 0;
 
   constructor(
     private readonly host: SchedulerHost,
@@ -145,7 +150,7 @@ export class AIScheduler {
 
   stop(): void {
     this.stopped = true;
-    if (this.timer) clearTimeout(this.timer);
+    if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     this.controller?.abort();
   }
@@ -158,13 +163,27 @@ export class AIScheduler {
     this.host.emit(msg);
   }
 
+  /**
+   * Scheduling never *shortens* a wait: the debounce deadline and the error
+   * backoff are both absolute, so an edit that lands just as a run finishes
+   * still waits out the quiet period, and a new edit cannot cut a backoff short.
+   */
   private schedule(ms: number): void {
     if (this.stopped) return;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      void this.tick();
-    }, ms);
+    const now = Date.now();
+    const target = Math.max(now + ms, this.notBefore, this.backoffUntil);
+    if (ms > 0) this.notBefore = Math.max(this.notBefore, now + ms);
+    // Always re-aimed at the deadline: a later edit pushes the debounce out,
+    // and neither can pull it in before notBefore/backoffUntil.
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timerAt = target;
+    this.timer = setTimeout(
+      () => {
+        this.timer = null;
+        void this.tick();
+      },
+      Math.max(0, target - now),
+    );
   }
 
   private async tick(): Promise<void> {
@@ -260,6 +279,7 @@ export class AIScheduler {
       }
       const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
       this.setState('error', message);
+      this.backoffUntil = Date.now() + (this.opts.errorBackoffMs ?? 2000);
       this.afterRun(this.opts.errorBackoffMs ?? 2000);
     } finally {
       clearTimeout(watchdog);
@@ -337,6 +357,7 @@ export class AIScheduler {
       this.changed = true;
       const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
       this.setState('error', message);
+      this.backoffUntil = Date.now() + (this.opts.errorBackoffMs ?? 2000);
       this.afterRun(this.opts.errorBackoffMs ?? 2000);
     } finally {
       clearTimeout(watchdog);

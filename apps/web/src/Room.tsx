@@ -19,7 +19,7 @@ import { LayerPanel } from './LayerPanel.js';
 import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, scaledBy } from './move.js';
 import { newId } from './id.js';
 import { StageView } from './StageView.js';
-import { ACCEPTED_PASTE_TYPES, downscaleBlob, pastePlacement } from './paste.js';
+import { ACCEPTED_PASTE_TYPES, downscaleBlob, pasteLimit, pastePlacement } from './paste.js';
 import { RoomClient } from './roomClient.js';
 
 export type Tool = 'pen' | 'noise' | 'eraser' | 'move';
@@ -66,6 +66,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const dragRef = useRef<Drag | null>(null);
   /** Image id of a paste we are still waiting for the server to turn into a layer. */
   const pastedImageId = useRef<string | null>(null);
+  /** Full-precision wheel scaling, throttled to the same rate as a move. */
+  const scaleRef = useRef<{ id: string; scale: number; sentAt: number } | null>(null);
+  const scaleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const spaceRef = useRef(false);
   const lastCursorAt = useRef(0);
 
@@ -136,7 +139,21 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     if (tool === 'move' && (moving || e.shiftKey)) {
       const target = client.findLayer(moving ?? activeLayer?.id ?? '');
       if (target?.kind === 'reference' && !target.locked) {
-        client.send({ t: 'layer_update', id: target.id, patch: { scale: scaledBy(target.scale, Math.exp(-e.deltaY * 0.0015)) } });
+        // Accumulated locally at full precision, sent at the same ~20 Hz as a
+        // move, so a fast wheel does not become a burst of layer_updates.
+        const base = scaleRef.current?.id === target.id ? scaleRef.current.scale : (target.scale ?? 1);
+        const scale = scaledBy(base, Math.exp(-e.deltaY * 0.0015));
+        const now = Date.now();
+        const last = scaleRef.current?.id === target.id ? scaleRef.current.sentAt : 0;
+        scaleRef.current = { id: target.id, scale, sentAt: now - last > MOVE_INTERVAL_MS ? now : last };
+        if (now - last > MOVE_INTERVAL_MS) client.send({ t: 'layer_update', id: target.id, patch: { scale } });
+        else {
+          if (scaleTimer.current) clearTimeout(scaleTimer.current);
+          scaleTimer.current = setTimeout(() => {
+            const pending = scaleRef.current;
+            if (pending) client.send({ t: 'layer_update', id: pending.id, patch: { scale: pending.scale } });
+          }, MOVE_INTERVAL_MS);
+        }
         return;
       }
     }
@@ -301,11 +318,11 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       const file = item?.getAsFile();
       if (!file) return;
       e.preventDefault();
-      const { blob, width: w, height: h } = await downscaleBlob(file);
+      const { blob, width: w, height: h } = await downscaleBlob(file, pasteLimit(client.canvasSize));
       const res = await fetch(`/rooms/${roomId}/images`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: blob });
       if (!res.ok) return;
       const stored = (await res.json()) as { imageId: string };
-      const at = pastePlacement({ x: camera.centerX, y: camera.centerY }, { width: w, height: h });
+      const at = pastePlacement({ x: camera.centerX, y: camera.centerY }, { width: w, height: h }, client.canvasSize);
       // Select it and switch to move, so the very next drag moves the paste.
       pastedImageId.current = stored.imageId;
       setTool('move');

@@ -66,11 +66,20 @@ export function StageView(props: StageViewProps): JSX.Element {
           ctx.drawImage(raster, 0, 0);
         }
         ctx.globalAlpha = 1;
-        for (const live of client.live.values()) {
+        for (const [id, live] of client.live) {
           const owner = client.findLayer(live.init.layerId);
+          const dx = owner?.offsetX ?? 0;
+          const dy = owner?.offsetY ?? 0;
+          if (live.init.tool === 'noise') {
+            // Incremental raster: noise is visible while the pointer is down
+            // without re-hashing the whole stroke every frame.
+            const raster = client.previewRaster(id);
+            if (raster) ctx.drawImage(raster, dx, dy);
+            continue;
+          }
           renderStrokes(ctx as unknown as never, [{ ...live.init, points: live.points }], {
-            offsetX: -(owner?.offsetX ?? 0),
-            offsetY: -(owner?.offsetY ?? 0),
+            offsetX: -dx,
+            offsetY: -dy,
             createCanvas: (w, h) => scratchCanvas(w, h) as never,
           });
         }

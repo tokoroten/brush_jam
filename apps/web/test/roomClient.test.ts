@@ -1,6 +1,7 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { describe, expect, it, vi } from 'vitest';
 import { CANVAS_SIZE, type Layer, type RoomSnapshot, type ServerMessage } from '@brushjam/shared';
+import { setScratchCanvasFactory } from '../src/raster.js';
 import { RoomClient, RECONNECT_MS, type ClientDeps, type SocketLike } from '../src/roomClient.js';
 
 class FakeSocket implements SocketLike {
@@ -39,6 +40,8 @@ function sockets(): { deps: Pick<ClientDeps, 'openSocket'>; all: FakeSocket[] } 
     },
   };
 }
+
+setScratchCanvasFactory((w, h) => createCanvas(w, h) as unknown as HTMLCanvasElement);
 
 const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -460,6 +463,64 @@ describe('canvas size', () => {
     expect(client.aiCanvas.height).toBe(1024);
     // layer rasters follow the new size
     expect(client.layerCanvas('l1').width).toBe(1024);
+    client.dispose();
+  });
+});
+
+/** Noise previews are incremental and disappear with their stroke. */
+describe('live stroke previews', () => {
+  const noiseStart = (id: string): ServerMessage => ({
+    t: 'stroke_start',
+    userId: 'bob',
+    stroke: { id, layerId: 'l1', tool: 'noise', color: '#000000', width: 16, points: [{ x: 10, y: 10 }] },
+  });
+
+  it('extends the raster as points arrive instead of redrawing it', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ canvasSize: 256, members: [{ userId: 'bob', name: 'Bob', color: '#0f0' }] }));
+    await tick();
+    client.receive(noiseStart('bob:n1'));
+    await tick();
+
+    const first = client.previewRaster('bob:n1');
+    expect(first).not.toBeNull();
+    expect(first!.width).toBe(256);
+    const ctx = (first as unknown as ReturnType<typeof createCanvas>).getContext('2d');
+    const painted = (): number => {
+      const d = ctx.getImageData(0, 0, 256, 256).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3]! > 0) n += 1;
+      return n;
+    };
+    const afterStart = painted();
+    expect(afterStart).toBeGreaterThan(0);
+
+    client.receive({ t: 'stroke_chunk', userId: 'bob', strokeId: 'bob:n1', points: [{ x: 120, y: 120 }] });
+    await tick();
+    // the same raster object grows; it is not reallocated
+    expect(client.previewRaster('bob:n1')).toBe(first);
+    expect(painted()).toBeGreaterThan(afterStart);
+    client.dispose();
+  });
+
+  it('forgets the raster when the stroke commits or is cancelled', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ canvasSize: 256, members: [{ userId: 'bob', name: 'Bob', color: '#0f0' }] }));
+    await tick();
+
+    client.receive(noiseStart('bob:n1'));
+    await tick();
+    const first = client.previewRaster('bob:n1');
+    client.receive({ t: 'stroke_cancel', userId: 'bob', strokeId: 'bob:n1', reason: 'gone' });
+    await tick();
+    expect(client.previewRaster('bob:n1')).toBeNull();
+
+    // a new stroke with the same id gets a fresh raster
+    client.receive(noiseStart('bob:n1'));
+    await tick();
+    expect(client.previewRaster('bob:n1')).not.toBe(first);
     client.dispose();
   });
 });

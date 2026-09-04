@@ -107,6 +107,7 @@ export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size
         undone: snapshot.undone,
         offsetX: crop.x - dx,
         offsetY: crop.y - dy,
+        bounds: { width: size, height: size },
         createCanvas: (w, h) => createCanvas(w, h) as never,
       });
     }

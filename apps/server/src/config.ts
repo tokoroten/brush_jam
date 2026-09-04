@@ -89,6 +89,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webDist: env.WEB_DIST ?? null,
   };
 
+  // ComfyUI's VAEDecodeTiled has a minimum tile of 64; 0 means "do not tile".
+  if (config.aiVaeTile !== 0 && config.aiVaeTile < 64) {
+    errors.push(`AI_VAE_TILE must be 0 (no tiling) or at least 64 (got ${config.aiVaeTile})`);
+  }
+  // The room slider only offers 0.2..0.95 in 0.05 steps; a start value outside
+  // that would be silently snapped, so say so instead.
+  if (config.aiDenoise < 0.2 || config.aiDenoise > 0.95) {
+    errors.push(`AI_DENOISE must be between 0.2 and 0.95 (got ${config.aiDenoise})`);
+  } else if (Math.abs(config.aiDenoise * 100 - Math.round((config.aiDenoise * 100) / 5) * 5) > 1e-6) {
+    errors.push(`AI_DENOISE must be a multiple of 0.05 (got ${config.aiDenoise})`);
+  }
+
   if (config.aiMode === 'full') {
     // The whole canvas is the generation window, so it has to fit in one pass.
     if (config.canvasSize > 2048) {

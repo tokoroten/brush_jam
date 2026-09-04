@@ -358,3 +358,43 @@ describe('draw layer offsets', () => {
     expect((out.relay[0] as { stroke: { points: Array<{ x: number }> } }).stroke.points[0]!.x).toBe(-800);
   });
 });
+
+/** Locked layers cannot be moved or scaled. */
+describe('locked layer transforms', () => {
+  it('refuses an offset while locked', () => {
+    const { state, alice, layerId } = room();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { locked: true } });
+    const out = applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetX: 300 } });
+    expect(out.toSender?.[0]).toMatchObject({ t: 'error', message: 'layer is locked' });
+    expect(state.layers[0]!.offsetX ?? 0).toBe(0);
+  });
+
+  it('allows unlocking and moving in the same update', () => {
+    const { state, alice, layerId } = room();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { locked: true } });
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { locked: false, offsetX: 300 } });
+    expect(state.layers[0]).toMatchObject({ locked: false, offsetX: 300 });
+  });
+
+  it('still allows non-transform edits while locked', () => {
+    const { state, alice, layerId } = room();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { locked: true } });
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { name: 'Locked', visible: false } });
+    expect(state.layers[0]).toMatchObject({ name: 'Locked', visible: false });
+  });
+});
+
+/** Point bounds follow the room's canvas, not a compile-time constant. */
+describe('room canvas bounds', () => {
+  it('clamps points to -canvasSize .. 2 * canvasSize', () => {
+    const state = createRoom('small', 0.55, 512);
+    const alice = addMember(state, 'Alice').userId;
+    const layerId = state.layers[0]!.id;
+    const out = applyClientMessage(state, alice, {
+      t: 'stroke_start',
+      stroke: { id: 'p', layerId, tool: 'pen', color: '#000000', width: 4, points: [{ x: 9999, y: -9999 }] },
+    });
+    const point = (out.relay[0] as { stroke: { points: Array<{ x: number; y: number }> } }).stroke.points[0]!;
+    expect(point).toEqual({ x: 1024, y: -512 });
+  });
+});

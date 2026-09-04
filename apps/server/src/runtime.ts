@@ -1,4 +1,4 @@
-import type { Rect, ServerMessage } from '@brushjam/shared';
+import { intersectRect, type Rect, type ServerMessage } from '@brushjam/shared';
 import type { WebSocket } from 'ws';
 import type { Config } from './config.js';
 import { AIScheduler, type MaskHandle, type RenderJob } from './ai/scheduler.js';
@@ -19,6 +19,12 @@ import { AICanvas, buildFullMask, buildMask, decodeUpload, forgetImages, renderC
 import { validateClientMessage } from './validate.js';
 
 const MAX_PATCHES = 24;
+/**
+ * Full-canvas results are whole-canvas PNGs, so keeping 24 of them per room is
+ * megabytes of dead weight. Only the current one and one predecessor (for a
+ * client still fetching the previous URL) are worth holding.
+ */
+const MAX_PATCHES_FULL = 2;
 /** Every live room holds rasters and uploads; this is a hard ceiling. */
 export const MAX_ROOMS = 64;
 /** A slow client is dropped rather than allowed to buffer without limit. */
@@ -35,13 +41,18 @@ export class RoomRuntime {
   private ai: AICanvas | null = null;
   private readonly sockets = new Map<string, WebSocket>();
   private readonly patches = new Map<string, Buffer>();
+
+  /** Exposed for tests: how many result PNGs this room is holding. */
+  get patchCount(): number {
+    return this.patches.size;
+  }
   private imageBytes = 0;
   /** Uploads past their limit check but still decoding, so they count too. */
   private pendingImages = 0;
   private pendingImageBytes = 0;
 
   constructor(roomId: string, backend: AIBackend, private readonly config: Config) {
-    this.state = createRoom(roomId, config.aiDenoise);
+    this.state = createRoom(roomId, config.aiDenoise, config.canvasSize);
     this.scheduler = new AIScheduler(
       {
         getRevision: () => this.state.humanRevision,
@@ -68,7 +79,8 @@ export class RoomRuntime {
           const png = await this.aiCanvas().composite(patch, crop, mask as never);
           const id = shortId(10);
           this.patches.set(id, png);
-          while (this.patches.size > MAX_PATCHES) {
+          const keep = config.aiMode === 'full' ? MAX_PATCHES_FULL : MAX_PATCHES;
+          while (this.patches.size > keep) {
             const oldest = this.patches.keys().next().value as string | undefined;
             if (oldest === undefined) break;
             this.patches.delete(oldest);
@@ -175,12 +187,18 @@ export class RoomRuntime {
       for (const msg of result.relay) this.relay(userId, msg);
       for (const msg of result.toSender ?? []) this.send(userId, msg);
       if (validated.msg.t === 'layer_delete' || validated.msg.t === 'layer_create') this.pruneImages();
-      if (result.dirty.length > 0) this.scheduler.markDirty(result.dirty);
+      if (result.dirty.length > 0) this.scheduler.markDirty(this.withinCanvas(result.dirty));
       if (result.promptChanged) this.scheduler.nudge();
     } catch (err) {
       console.error(`[room ${this.state.id}] reducer error on ${validated.msg.t}:`, err);
       this.send(userId, { t: 'error', message: 'the server could not apply that action' });
     }
+  }
+
+  /** Dirty regions outside the canvas can never be generated; clip them. */
+  private withinCanvas(rects: Rect[]): Rect[] {
+    const canvas = { x: 0, y: 0, width: this.config.canvasSize, height: this.config.canvasSize };
+    return rects.map((r) => intersectRect(r, canvas)).filter((r): r is Rect => r !== null);
   }
 
   async addImage(bytes: Buffer, mime: string): Promise<{ imageId: string; width: number; height: number } | { error: string }> {

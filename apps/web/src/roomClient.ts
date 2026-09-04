@@ -1,5 +1,4 @@
 import {
-  CANVAS_SIZE,
   type AIState,
   type ClientMessage,
   type Layer,
@@ -12,7 +11,7 @@ import {
 } from '@brushjam/shared';
 import { createSerialQueue, type SerialQueue } from './serialQueue.js';
 import { sessionToken } from './session.js';
-import { createRaster, ctxOf, drawStroke, loadImageElement, redrawLayer } from './raster.js';
+import { createRaster, ctxOf, drawStroke, drawStrokeSegment, loadImageElement, redrawLayer } from './raster.js';
 
 /**
  * Injectable seam for the two browser-only things this class touches, so the
@@ -68,6 +67,8 @@ export class RoomClient {
   readonly aiCanvas: HTMLCanvasElement;
   readonly layerCanvases = new Map<string, HTMLCanvasElement>();
   readonly live = new Map<string, LiveStroke>();
+  /** Incremental rasters for in-progress strokes, keyed like `live`. */
+  private readonly previews = new Map<string, { canvas: HTMLCanvasElement; drawn: number }>();
   readonly cursors = new Map<string, RemoteCursor>();
   readonly images = new Map<string, HTMLImageElement>();
 
@@ -91,7 +92,7 @@ export class RoomClient {
   aiWindow = 0;
   aiApply = 0;
   /** World canvas size, learned from the snapshot (never hard-coded). */
-  canvasSize = CANVAS_SIZE;
+  canvasSize = 1;
   connected = false;
 
   private socket: SocketLike | null = null;
@@ -120,7 +121,9 @@ export class RoomClient {
     private readonly name: string,
     private readonly deps: ClientDeps = browserDeps,
   ) {
-    this.aiCanvas = this.deps.createRaster();
+    // The world size is only known once the snapshot arrives; allocating a
+    // 4096-square raster up front wasted 64 MB for a 1024 canvas.
+    this.aiCanvas = this.deps.createRaster(1);
   }
 
   /**
@@ -273,6 +276,33 @@ export class RoomClient {
     this.layerCanvases.clear();
   }
 
+  /**
+   * The raster for an in-progress stroke, extended with whatever points have
+   * arrived since the last call. Only the new segment is rendered, which keeps
+   * a noise stroke's per-frame cost proportional to the movement, not to the
+   * whole stroke.
+   */
+  previewRaster(id: string): HTMLCanvasElement | null {
+    const live = this.live.get(id);
+    if (!live || live.points.length === 0) return null;
+    let entry = this.previews.get(id);
+    if (!entry) {
+      entry = { canvas: this.deps.createRaster(this.canvasSize), drawn: 0 };
+      this.previews.set(id, entry);
+    }
+    if (live.points.length > entry.drawn) {
+      // overlap by one point so consecutive segments join without a gap
+      const from = Math.max(0, entry.drawn - 1);
+      drawStrokeSegment(entry.canvas, { ...live.init, points: live.points.slice(from) });
+      entry.drawn = live.points.length;
+    }
+    return entry.canvas;
+  }
+
+  private forgetPreview(id: string): void {
+    this.previews.delete(id);
+  }
+
   private repaint(layer: Layer): void {
     redrawLayer(this.layerCanvas(layer.id), layer, this.strokes, this.undone, this.images);
   }
@@ -301,6 +331,7 @@ export class RoomClient {
         this.aiWindow = s.aiWindow;
         this.aiApply = s.aiApply;
         this.live.clear();
+        this.previews.clear();
         this.cursors.clear();
         this.layerCanvases.clear();
         for (const layer of s.layers) {
@@ -322,12 +353,17 @@ export class RoomClient {
         // Drop ghosts: cursors and half-drawn strokes from people who left.
         const present = new Set(msg.members.map((m) => m.userId));
         for (const [userId] of this.cursors) if (!present.has(userId)) this.cursors.delete(userId);
-        for (const [id, live] of this.live) if (!present.has(live.userId)) this.live.delete(id);
+        for (const [id, live] of this.live) {
+          if (present.has(live.userId)) continue;
+          this.live.delete(id);
+          this.forgetPreview(id);
+        }
         break;
       }
 
       case 'stroke_cancel':
         this.live.delete(msg.strokeId);
+        this.forgetPreview(msg.strokeId);
         break;
       case 'cursor':
         this.cursors.set(msg.userId, { x: msg.x, y: msg.y, at: Date.now() });
@@ -347,6 +383,7 @@ export class RoomClient {
       }
       case 'stroke_committed': {
         this.live.delete(msg.stroke.id);
+        this.forgetPreview(msg.stroke.id);
         this.strokes.push(msg.stroke);
         this.humanRevision = msg.humanRevision;
         const layer = this.findLayer(msg.stroke.layerId);

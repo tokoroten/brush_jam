@@ -197,3 +197,20 @@ describe('draw layer moves', () => {
     expect(layerPoint({ x: 200, y: 100 }, undefined)).toEqual({ x: 200, y: 100 });
   });
 });
+
+/** Wheel scaling shares the slider's range and keeps full precision. */
+describe('wheel scaling precision', () => {
+  it('accumulates small steps instead of rounding them away', () => {
+    let scale = 1;
+    for (let i = 0; i < 10; i++) scale = scaledBy(scale, Math.exp(-1 * 0.0015));
+    // 10 tiny steps must move the value, not vanish to 1.00 each time
+    expect(scale).toBeLessThan(1);
+    expect(scale).toBeGreaterThan(0.98);
+    expect(scale).not.toBe(Math.round(scale * 100) / 100);
+  });
+
+  it('clamps to the same range the panel slider offers', () => {
+    expect(scaledBy(MAX_LAYER_SCALE, 2)).toBe(MAX_LAYER_SCALE);
+    expect(scaledBy(MIN_LAYER_SCALE, 0.5)).toBe(MIN_LAYER_SCALE);
+  });
+});

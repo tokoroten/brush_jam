@@ -85,11 +85,17 @@ export function layerPoint(world: Point, layer: Layer | undefined): Point {
   return { x: world.x - (layer?.offsetX ?? 0), y: world.y - (layer?.offsetY ?? 0) };
 }
 
+/** One range for the wheel and the panel slider, so they cannot disagree. */
 export const MIN_LAYER_SCALE = 0.05;
 export const MAX_LAYER_SCALE = 8;
+export const LAYER_SCALE_STEP = 0.05;
 
-/** Wheel-driven scaling, clamped to the same range as the panel slider. */
+/**
+ * Wheel-driven scaling. The value is kept at full precision so repeated small
+ * wheel steps accumulate instead of being rounded away each time; only the
+ * clamp is applied here.
+ */
 export function scaledBy(scale: number | undefined, factor: number): number {
   const next = (scale ?? 1) * factor;
-  return Math.min(MAX_LAYER_SCALE, Math.max(MIN_LAYER_SCALE, Math.round(next * 100) / 100));
+  return Math.min(MAX_LAYER_SCALE, Math.max(MIN_LAYER_SCALE, next));
 }

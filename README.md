@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 354 tests across shared / server / web
+pnpm test         # 398 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -192,6 +192,10 @@ pixels as the client's full-size layer. The shape's antialiased alpha is kept,
 so it composites like any other stroke, and it is a normal stroke everywhere
 else: same undo, same eraser interaction, same dirty-region behaviour. It exists
 to give the model something richer than white paper to reinterpret.
+
+While a noise stroke is being drawn (yours or someone else's) it is previewed
+into a per-stroke raster that is extended with each new segment, so the cost per
+frame follows the movement rather than the whole stroke.
 
 Implementation note: `renderStrokes` takes a `createCanvas(w, h)` dependency
 (browser: `document.createElement('canvas')`, server: `@napi-rs/canvas`) and

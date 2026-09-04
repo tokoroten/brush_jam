@@ -161,6 +161,8 @@ describe('AIScheduler', () => {
     expect(applied).toHaveLength(1);
     expect(applied[0]!.forRevision).toBe(50);
 
+    // the edit made during the run still waits out its own debounce
+    await vi.advanceTimersByTimeAsync(400);
     expect(backend.calls).toHaveLength(2);
     revision.value = 40;
     s.markDirty([R(2000, 2000)]);
@@ -596,6 +598,49 @@ describe('AIScheduler full mode', () => {
     await vi.advanceTimersByTimeAsync(400);
     await vi.advanceTimersByTimeAsync(2100);
     expect(backend.calls.length).toBeGreaterThan(1);
+    s.stop();
+  });
+});
+
+/** Scheduling deadlines: nothing may shorten a debounce or a backoff. */
+describe('scheduling deadlines', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('does not let an edit near the end of a run bypass the debounce', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls).toHaveLength(1);
+
+    // an edit arrives, then the run finishes immediately afterwards
+    s.markDirty([R(2100, 2100)]);
+    await backend.finish();
+    await vi.advanceTimersByTimeAsync(100);
+    // still inside the debounce window: no second request yet
+    expect(backend.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls).toHaveLength(2);
+    s.stop();
+  });
+
+  it('does not let a new edit shorten the error backoff', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    backend.failNext = true;
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(200);
+    s.markDirty([R(2000, 2000)]); // would previously re-run after 400 ms
+    await vi.advanceTimersByTimeAsync(900);
+    expect(backend.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(backend.calls).toHaveLength(2);
     s.stop();
   });
 });

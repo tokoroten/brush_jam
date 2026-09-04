@@ -18,7 +18,7 @@ export interface Ctx2DLike {
   lineWidth: number;
   lineCap: unknown;
   lineJoin: unknown;
-  /** Present on both browser and @napi-rs contexts; used to clamp temp canvases. */
+  /** Present on both browser and @napi-rs contexts. */
   canvas?: { width: number; height: number };
   drawImage(image: never, dx: number, dy: number): void;
   getImageData(x: number, y: number, w: number, h: number): { data: { length: number; [i: number]: number } };
@@ -53,6 +53,14 @@ export interface RenderStrokesOptions {
    * Without it a noise stroke falls back to a plain stroke.
    */
   createCanvas?: (width: number, height: number) => CanvasLike;
+  /**
+   * Target size in *drawing* units, used to clip the noise pen's temporary
+   * canvas. Only pass it when the context is untransformed and its pixels are
+   * the drawing units (a layer raster): the screen stage is scaled and
+   * translated, so its pixel size says nothing about which world coordinates
+   * are visible - clamping against it silently dropped strokes on the right.
+   */
+  bounds?: { width: number; height: number };
 }
 
 /** World-space bounding box of a stroke's painted area. */
@@ -83,7 +91,7 @@ export function renderStrokes(
   strokes: readonly RenderableStroke[],
   options: RenderStrokesOptions = {},
 ): void {
-  const { undone, offsetX = 0, offsetY = 0, createCanvas } = options;
+  const { undone, offsetX = 0, offsetY = 0, createCanvas, bounds } = options;
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -91,7 +99,7 @@ export function renderStrokes(
     if (undone?.has(s.id)) continue;
     if (s.points.length === 0) continue;
     if (s.tool === 'noise' && createCanvas) {
-      drawNoiseStroke(ctx, s, offsetX, offsetY, createCanvas);
+      drawNoiseStroke(ctx, s, offsetX, offsetY, createCanvas, bounds);
       continue;
     }
     ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
@@ -135,19 +143,19 @@ function drawNoiseStroke(
   offsetX: number,
   offsetY: number,
   createCanvas: (width: number, height: number) => CanvasLike,
+  bounds?: { width: number; height: number },
 ): void {
-  const bounds = strokeBounds(stroke);
-  // target-space placement, clamped to the target when its size is known
-  let left = bounds.x - offsetX;
-  let top = bounds.y - offsetY;
-  let right = left + bounds.width;
-  let bottom = top + bounds.height;
-  const target = ctx.canvas;
-  if (target) {
+  const box = strokeBounds(stroke);
+  // target-space placement, clipped only when the caller declared the bounds
+  let left = box.x - offsetX;
+  let top = box.y - offsetY;
+  let right = left + box.width;
+  let bottom = top + box.height;
+  if (bounds) {
     left = Math.max(0, left);
     top = Math.max(0, top);
-    right = Math.min(target.width, right);
-    bottom = Math.min(target.height, bottom);
+    right = Math.min(bounds.width, right);
+    bottom = Math.min(bounds.height, bottom);
   }
   const width = Math.ceil(right - left);
   const height = Math.ceil(bottom - top);

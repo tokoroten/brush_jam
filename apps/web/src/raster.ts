@@ -1,12 +1,19 @@
-import { CANVAS_SIZE, renderStrokes, type Layer, type Stroke } from '@brushjam/shared';
+import { CANVAS_SIZE, renderStrokes, type Layer, type RenderableStroke, type Stroke } from '@brushjam/shared';
 
 /** Temp canvases for the noise pen; kept here so both renderers share it. */
-export const scratchCanvas = (width: number, height: number): HTMLCanvasElement => {
+let scratchFactory = (width: number, height: number): HTMLCanvasElement => {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   return canvas;
 };
+
+export const scratchCanvas = (width: number, height: number): HTMLCanvasElement => scratchFactory(width, height);
+
+/** Test seam: the browser has `document`, a Node test does not. */
+export function setScratchCanvasFactory(factory: (width: number, height: number) => HTMLCanvasElement): void {
+  scratchFactory = factory;
+}
 
 export function createRaster(size = CANVAS_SIZE): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
@@ -47,6 +54,7 @@ export function redrawLayer(
       undone,
       offsetX: -(layer.offsetX ?? 0),
       offsetY: -(layer.offsetY ?? 0),
+      bounds: { width: canvas.width, height: canvas.height },
       createCanvas: (w, h) => scratchCanvas(w, h) as never,
     },
   );
@@ -57,6 +65,19 @@ export function drawStroke(canvas: HTMLCanvasElement, stroke: Stroke, layer?: La
   renderStrokes(ctxOf(canvas) as unknown as never, [stroke], {
     offsetX: -(layer?.offsetX ?? 0),
     offsetY: -(layer?.offsetY ?? 0),
+    bounds: { width: canvas.width, height: canvas.height },
+    createCanvas: (w, h) => scratchCanvas(w, h) as never,
+  });
+}
+
+/**
+ * Live preview of an in-progress stroke, drawn incrementally: only the newly
+ * arrived segment is rendered each frame. Re-rendering a whole noise stroke
+ * every frame meant hashing its entire bounding box 60 times a second.
+ */
+export function drawStrokeSegment(canvas: HTMLCanvasElement, stroke: RenderableStroke): void {
+  renderStrokes(ctxOf(canvas) as unknown as never, [stroke as never], {
+    bounds: { width: canvas.width, height: canvas.height },
     createCanvas: (w, h) => scratchCanvas(w, h) as never,
   });
 }

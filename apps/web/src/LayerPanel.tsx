@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 import type { Layer } from '@brushjam/shared';
+import { LAYER_SCALE_STEP, MAX_LAYER_SCALE, MIN_LAYER_SCALE } from './move.js';
 import type { RoomClient } from './roomClient.js';
 
 export interface LayerPanelProps {
@@ -135,9 +136,9 @@ export function LayerPanel({
                 <span className="slider-label">scale</span>
                 <input
                   type="range"
-                  min={0.1}
-                  max={4}
-                  step={0.05}
+                  min={MIN_LAYER_SCALE}
+                  max={MAX_LAYER_SCALE}
+                  step={LAYER_SCALE_STEP}
                   value={layer.scale ?? 1}
                   onChange={(e) => client.send({ t: 'layer_update', id: layer.id, patch: { scale: Number(e.target.value) } })}
                 />

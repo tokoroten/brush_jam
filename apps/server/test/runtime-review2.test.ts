@@ -181,3 +181,59 @@ describe('upload quota under concurrency', () => {
     room.dispose();
   });
 });
+
+/** Full-canvas results are whole-canvas PNGs; only a couple are kept. */
+describe('patch retention', () => {
+  it('keeps at most two results in full mode', async () => {
+    const full = loadConfig({ AI_BACKEND: 'mock', AI_MODE: 'full', AI_DEBOUNCE_MS: '0', CANVAS_SIZE: '512' } as NodeJS.ProcessEnv);
+    const room = new RoomRuntime('fullpatches', new MockBackend(0), full);
+    const userId = addMember(room.state, 'Alice').userId;
+    const layerId = room.state.layers[0]!.id;
+
+    const urls: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      applyClientMessage(room.state, userId, {
+        t: 'stroke_start',
+        stroke: { id: `s${i}`, layerId, tool: 'pen', color: '#000000', width: 8, points: [{ x: 10 + i, y: 10 }] },
+      });
+      applyClientMessage(room.state, userId, { t: 'stroke_end', strokeId: `s${i}`, points: [{ x: 60 + i, y: 60 }] });
+      room.scheduler.markDirty([{ x: 0, y: 0, width: 64, height: 64 }]);
+      await new Promise((r) => setTimeout(r, 120));
+      const last = room.state.aiRevision;
+      if (last > 0) urls.push(String(last));
+    }
+    expect(room.state.aiRevision).toBeGreaterThan(0);
+    expect(urls.length).toBeGreaterThan(2);
+    expect(room.patchCount).toBeGreaterThan(0);
+    expect(room.patchCount).toBeLessThanOrEqual(2);
+    room.dispose();
+  });
+});
+
+/** Dirty regions outside the canvas can never be generated. */
+describe('dirty region clipping', () => {
+  it('clips a stroke on a far-moved layer to the canvas', async () => {
+    const patch = loadConfig({ AI_BACKEND: 'mock', AI_MODE: 'patch', CANVAS_SIZE: '1024', AI_DEBOUNCE_MS: '100000' } as NodeJS.ProcessEnv);
+    const room = new RoomRuntime('clip', new MockBackend(0), patch);
+    const userId = addMember(room.state, 'Alice').userId;
+    const layerId = room.state.layers[0]!.id;
+    room.handle(userId, JSON.stringify({ t: 'layer_update', id: layerId, patch: { offsetX: 2000, offsetY: 2000 } }));
+    room.handle(
+      userId,
+      JSON.stringify({
+        t: 'stroke_start',
+        stroke: { id: 'far', layerId, tool: 'pen', color: '#000000', width: 8, points: [{ x: 10, y: 10 }] },
+      }),
+    );
+    room.handle(userId, JSON.stringify({ t: 'stroke_end', strokeId: 'far', points: [{ x: 40, y: 40 }] }));
+
+    // the stroke lands at ~2010,2010 in world space: entirely off a 1024 canvas
+    for (const r of room.scheduler.dirtyRegions) {
+      expect(r.x).toBeLessThan(1024);
+      expect(r.y).toBeLessThan(1024);
+      expect(r.x + r.width).toBeGreaterThan(0);
+    }
+    expect(room.scheduler.dirtyRegions).toHaveLength(0);
+    room.dispose();
+  });
+});

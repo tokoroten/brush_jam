@@ -42,6 +42,8 @@ export interface RoomImage {
 
 export interface RoomState {
   id: string;
+  /** World size this room was created with; bounds are relative to it. */
+  canvasSize: number;
   prompt: string;
   /** img2img strength, adjustable from the Advanced panel. */
   denoise: number;
@@ -104,9 +106,10 @@ const refuseStroke = (userId: string, strokeId: string, message: string): ApplyR
   ],
 });
 
-export function createRoom(id: string, denoise = DEFAULT_DENOISE): RoomState {
+export function createRoom(id: string, denoise = DEFAULT_DENOISE, canvasSize = CANVAS_SIZE): RoomState {
   return {
     id,
+    canvasSize,
     prompt: 'anime style, fantasy town, vibrant colors',
     denoise: clampDenoise(denoise),
     negativePrompt: '',
@@ -256,7 +259,7 @@ export const findLayer = (room: RoomState, id: string): Layer | undefined => roo
 
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 
-function sanitizePoints(raw: unknown): Point[] {
+function sanitizePoints(raw: unknown, canvasSize = CANVAS_SIZE): Point[] {
   if (!Array.isArray(raw)) return [];
   const out: Point[] = [];
   for (const p of raw.slice(0, 20000)) {
@@ -265,7 +268,7 @@ function sanitizePoints(raw: unknown): Point[] {
     if (!finite(x) || !finite(y)) continue;
     // A moved draw layer records points in *layer* space, so a legitimate point
     // can sit well outside the canvas: allow -canvasSize .. 2 * canvasSize.
-    const point: Point = { x: clamp(x, -CANVAS_SIZE, 2 * CANVAS_SIZE), y: clamp(y, -CANVAS_SIZE, 2 * CANVAS_SIZE) };
+    const point: Point = { x: clamp(x, -canvasSize, 2 * canvasSize), y: clamp(y, -canvasSize, 2 * canvasSize) };
     if (finite(pressure)) point.p = clamp(pressure, 0, 1);
     out.push(point);
   }
@@ -324,7 +327,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         tool: init.tool,
         color: isHexColor(init.color) ? init.color : '#000000',
         width: clamp(init.width, 1, 128),
-        points: sanitizePoints(init.points),
+        points: sanitizePoints(init.points, room.canvasSize),
       };
       const now = Date.now();
       room.pending.set(id, { userId, init: clean, points: [...clean.points], startedAt: now, lastActivityAt: now });
@@ -335,7 +338,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       const id = qualifyStrokeId(userId, msg.strokeId);
       const p = room.pending.get(id);
       if (!p) return empty();
-      const points = sanitizePoints(msg.points);
+      const points = sanitizePoints(msg.points, room.canvasSize);
       if (p.points.length + points.length > MAX_STROKE_POINTS || Date.now() - p.startedAt > MAX_STROKE_MS) {
         room.pending.delete(id);
         return {
@@ -363,7 +366,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (layer.locked) {
         return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'layer locked' }], relay: [], dirty: [] };
       }
-      const tail = sanitizePoints(msg.points);
+      const tail = sanitizePoints(msg.points, room.canvasSize);
       p.points.push(...tail);
       if (p.points.length === 0 || p.points.length > MAX_STROKE_POINTS) {
         return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'empty or oversized stroke' }], relay: [], dirty: [] };
@@ -475,6 +478,12 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
 
       if (typeof patch.name === 'string') layer.name = patch.name.slice(0, 32);
       if (typeof patch.locked === 'boolean') layer.locked = patch.locked;
+      // A locked layer must not be moved or scaled. Unlocking in the same
+      // update is allowed - `locked` above has already been applied.
+      const transforms = ['x', 'y', 'scale', 'offsetX', 'offsetY'] as const;
+      if (layer.locked && transforms.some((k) => finite(patch[k]))) {
+        return refuse('layer is locked');
+      }
       if (typeof patch.visible === 'boolean') setRender('visible', patch.visible);
       if (finite(patch.opacity)) setRender('opacity', clamp(patch.opacity, 0, 1));
       if (typeof patch.includeInAI === 'boolean' && layer.kind === 'reference') setRender('includeInAI', patch.includeInAI);

@@ -117,3 +117,18 @@ describe('canvas size and AI mode', () => {
     expect(() => loadConfig({ AI_MODE: 'sideways' } as NodeJS.ProcessEnv)).toThrow(/AI_MODE/);
   });
 });
+
+describe('fail-fast validation', () => {
+  it('rejects a VAE tile below the node minimum', () => {
+    expect(() => loadConfig({ AI_VAE_TILE: '32' } as NodeJS.ProcessEnv)).toThrow(/AI_VAE_TILE/);
+    expect(loadConfig({ AI_VAE_TILE: '64' } as NodeJS.ProcessEnv).aiVaeTile).toBe(64);
+    expect(loadConfig({ AI_VAE_TILE: '0' } as NodeJS.ProcessEnv).aiVaeTile).toBe(0);
+  });
+
+  it('rejects a denoise the room slider could not represent', () => {
+    expect(() => loadConfig({ AI_DENOISE: '0.1' } as NodeJS.ProcessEnv)).toThrow(/AI_DENOISE/);
+    expect(() => loadConfig({ AI_DENOISE: '0.99' } as NodeJS.ProcessEnv)).toThrow(/AI_DENOISE/);
+    expect(() => loadConfig({ AI_DENOISE: '0.57' } as NodeJS.ProcessEnv)).toThrow(/multiple of 0.05/);
+    expect(loadConfig({ AI_DENOISE: '0.85' } as NodeJS.ProcessEnv).aiDenoise).toBe(0.85);
+  });
+});

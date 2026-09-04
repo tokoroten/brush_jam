@@ -12,13 +12,26 @@ export function downscaleSize(width: number, height: number, max = MAX_PASTE_SIZ
   return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
 }
 
-/** Where a pasted image should land: centered on the current viewport center. */
+/**
+ * Where a pasted image should land: centred on the viewport, and kept inside a
+ * canvas that may be much smaller than MAX_PASTE_SIZE (1024 by default).
+ */
 export function pastePlacement(
   center: { x: number; y: number },
   size: { width: number; height: number },
+  canvasSize?: number,
 ): { x: number; y: number } {
-  return { x: Math.round(center.x - size.width / 2), y: Math.round(center.y - size.height / 2) };
+  let x = Math.round(center.x - size.width / 2);
+  let y = Math.round(center.y - size.height / 2);
+  if (canvasSize !== undefined) {
+    x = Math.round(Math.min(Math.max(x, 0), Math.max(0, canvasSize - size.width)));
+    y = Math.round(Math.min(Math.max(y, 0), Math.max(0, canvasSize - size.height)));
+  }
+  return { x, y };
 }
+
+/** Longest side a pasted image may have on this canvas. */
+export const pasteLimit = (canvasSize: number): number => Math.max(64, Math.min(MAX_PASTE_SIZE, canvasSize));
 
 export const ACCEPTED_PASTE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 

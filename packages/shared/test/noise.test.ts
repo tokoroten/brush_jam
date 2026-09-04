@@ -163,3 +163,56 @@ describe('translated layer rendering', () => {
     expect(a.toBuffer('image/png')).toEqual(b.toBuffer('image/png'));
   });
 });
+
+/**
+ * Regression: a noise stroke on the right (or bottom) of the canvas vanished,
+ * because the temp canvas was clipped against `ctx.canvas` - which for the
+ * screen stage is a small, transformed surface unrelated to world coordinates.
+ */
+describe('noise strokes near the canvas edges', () => {
+  const at = (x0: number, y0: number, x1: number, y1: number): RenderableStroke => ({
+    id: 'edge',
+    tool: 'noise',
+    color: '#000000',
+    width: 20,
+    points: [
+      { x: x0, y: y0 },
+      { x: x1, y: y1 },
+    ],
+  });
+
+  const paintedIn = (s: RenderableStroke, size: number, bounds?: { width: number; height: number }): number => {
+    const canvas = createCanvas(size, size);
+    renderStrokes(canvas.getContext('2d') as never, [s], { createCanvas: factory, ...(bounds ? { bounds } : {}) });
+    const data = canvas.getContext('2d').getImageData(0, 0, size, size).data;
+    let painted = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3]! > 0) painted += 1;
+    return painted;
+  };
+
+  it('draws a stroke on the right-hand side of a 1024 canvas', () => {
+    expect(paintedIn(at(700, 500, 1000, 560), 1024, { width: 1024, height: 1024 })).toBeGreaterThan(2000);
+  });
+
+  it('draws a stroke that touches the right and bottom edges', () => {
+    expect(paintedIn(at(1000, 1000, 1023, 1023), 1024, { width: 1024, height: 1024 })).toBeGreaterThan(100);
+  });
+
+  it('draws a stroke that runs off the canvas', () => {
+    expect(paintedIn(at(980, 500, 1200, 500), 1024, { width: 1024, height: 1024 })).toBeGreaterThan(500);
+    expect(paintedIn(at(-100, 500, 60, 500), 1024, { width: 1024, height: 1024 })).toBeGreaterThan(500);
+  });
+
+  it('draws into a small, unbounded target (the screen stage case)', () => {
+    // No `bounds`: the context is transformed, so world coordinates far beyond
+    // the target's pixel size must still be rendered.
+    const canvas = createCanvas(200, 200);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(0.2, 0.2);
+    renderStrokes(ctx as never, [at(700, 500, 900, 560)], { createCanvas: factory });
+    const data = ctx.getImageData(0, 0, 200, 200).data;
+    let painted = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3]! > 0) painted += 1;
+    expect(painted).toBeGreaterThan(50);
+  });
+});
