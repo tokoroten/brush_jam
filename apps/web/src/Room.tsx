@@ -11,6 +11,7 @@ import {
   type Point,
 } from '@brushjam/shared';
 import { LayerPanel } from './LayerPanel.js';
+import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pastePlacement } from './paste.js';
 import { RoomClient } from './roomClient.js';
@@ -117,7 +118,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     }
     if (!activeLayer || activeLayer.kind !== 'draw' || activeLayer.locked) return;
 
-    const strokeId = crypto.randomUUID().slice(0, 20);
+    const strokeId = newId();
     const point: Point = { x: world.x, y: world.y, p: e.pressure > 0 ? e.pressure : 1 };
     const init = { id: strokeId, layerId: activeLayer.id, tool: tool === 'eraser' ? ('eraser' as const) : ('pen' as const), color, width, points: [point] };
     client.live.set(strokeId, { userId: client.youUserId, init, points: [point] });
