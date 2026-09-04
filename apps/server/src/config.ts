@@ -1,3 +1,5 @@
+import { AI_PROFILES, PROFILE_DEFAULTS, type AIProfileName } from '@brushjam/shared';
+
 export interface Config {
   host: string;
   port: number;
@@ -15,17 +17,19 @@ export interface Config {
   aiMode: 'full' | 'patch';
   aiWindow: number;
   aiApply: number;
-  aiSteps: number;
   aiDenoise: number;
   aiCfg: number;
   /** VAE decode tile size; 0 uses a plain (non-tiled) VAEDecode. */
   aiVaeTile: number;
-  /** 4-step LCM mode for the ComfyUI backend. */
-  /** Effective fast mode: AI_FAST=1 AND a non-empty LoRA name. */
-  aiFast: boolean;
-  /** AI_FAST was asked for but disabled because COMFYUI_FAST_LORA is empty. */
+  /** Default workflow for new rooms; each room can switch at runtime. */
+  aiProfile: AIProfileName;
+  /** Sampler steps for the quality profile. */
+  aiSteps: number;
+  /** Sampler steps for the fast (LCM) profile. */
+  aiFastSteps: number;
+  /** The fast profile was asked for but COMFYUI_FAST_LORA is empty. */
   fastDisabled: boolean;
-  /** LoRA used by fast mode; empty disables it even when AI_FAST=1. */
+  /** LoRA used by the fast profile; empty forces every room to quality. */
   comfyFastLora: string;
   aiDebounceMs: number;
   aiWatchdogMs: number;
@@ -82,13 +86,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     errors.push(`AI_BACKEND must be one of auto, comfyui, mock, runpod, stream (got ${JSON.stringify(env.AI_BACKEND)})`);
   }
 
-  // Fast mode is only fast if there is a LoRA to load. COMFYUI_FAST_LORA=''
-  // documents "no LoRA", so AI_FAST=1 with an empty name must fall all the way
-  // back to the normal workflow - otherwise it kept the 4-step default and ran
-  // euler_ancestral at 4 steps and cfg 5.5, which is neither mode.
+  // The fast profile is only fast if there is a LoRA to load. Asking for it
+  // with COMFYUI_FAST_LORA='' must fall all the way back to quality, not leave
+  // a 4-step euler_ancestral at cfg 5.5, which is neither profile.
   const fastLora = (env.COMFYUI_FAST_LORA ?? 'lcm-lora-sdxl.safetensors').trim();
-  const fastRequested = flag(env.AI_FAST);
+  // AI_PROFILE is the setting. AI_FAST survives as an alias so existing
+  // scripts keep working: AI_FAST=1 means fast, AI_FAST=0 means quality.
+  const aliased = env.AI_FAST === undefined ? undefined : flag(env.AI_FAST) ? 'fast' : 'quality';
+  const profileRaw = (env.AI_PROFILE ?? aliased ?? 'fast').toLowerCase();
+  if (!AI_PROFILES.includes(profileRaw as AIProfileName)) {
+    errors.push(`AI_PROFILE must be fast or quality (got ${JSON.stringify(env.AI_PROFILE)})`);
+  }
+  const requested: AIProfileName = profileRaw === 'quality' ? 'quality' : 'fast';
+  const fastRequested = requested === 'fast';
   const fast = fastRequested && fastLora !== '';
+  const profile: AIProfileName = fast ? 'fast' : 'quality';
 
   const config: Config = {
     host: env.HOST ?? '127.0.0.1',
@@ -101,13 +113,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     comfyCheckpoint: env.COMFYUI_CHECKPOINT ?? 'waiNSFWIllustrious_v150.safetensors',
     canvasSize: num(env, 'CANVAS_SIZE', 1024, { min: 512, max: 4096, integer: true, multipleOf: 64 }, errors),
     aiMode: modeRaw === 'patch' ? 'patch' : 'full',
-    aiWindow: num(env, 'AI_WINDOW', 1024, { min: 256, max: 2048, integer: true, multipleOf: 64 }, errors),
+    // The profile picks the window when the operator has not: fast is only
+    // worth having if it is also smaller (768 measured 3.7 s against 5.7 s).
+    aiWindow: num(env, 'AI_WINDOW', PROFILE_DEFAULTS[profile].resolution, { min: 256, max: 2048, integer: true, multipleOf: 64 }, errors),
     aiApply: num(env, 'AI_APPLY', 768, { min: 128, max: 2048, integer: true, multipleOf: 64 }, errors),
-    aiSteps: num(env, 'AI_STEPS', fast ? 4 : 14, { min: 1, max: 150, integer: true }, errors),
-    aiDenoise: num(env, 'AI_DENOISE', 0.55, { min: 0, max: 1 }, errors),
+    aiSteps: num(env, 'AI_STEPS', PROFILE_DEFAULTS.quality.steps, { min: 1, max: 150, integer: true }, errors),
+    aiFastSteps: num(env, 'AI_FAST_STEPS', PROFILE_DEFAULTS.fast.steps, { min: 1, max: 150, integer: true }, errors),
+    aiDenoise: num(env, 'AI_DENOISE', PROFILE_DEFAULTS[profile].denoise, { min: 0, max: 1 }, errors),
     aiCfg: num(env, 'AI_CFG', 5.5, { min: 0, max: 30 }, errors),
     aiVaeTile: num(env, 'AI_VAE_TILE', 512, { min: 0, max: 4096, integer: true }, errors),
-    aiFast: fast,
+    aiProfile: profile,
     fastDisabled: fastRequested && !fast,
     comfyFastLora: fastLora,
     aiDebounceMs: num(env, 'AI_DEBOUNCE_MS', 400, { min: 0, max: 600_000, integer: true }, errors),
@@ -137,7 +152,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (config.canvasSize > 2048) {
       errors.push(`AI_MODE=full needs CANVAS_SIZE <= 2048 (got ${config.canvasSize}); use AI_MODE=patch for a large canvas`);
     }
-    if (env.AI_WINDOW === undefined) config.aiWindow = config.canvasSize;
+    // The profile already chose the generation size (fast 768, quality 1024);
+    // only clamp it to a canvas that is smaller than that.
+    if (env.AI_WINDOW === undefined) config.aiWindow = Math.min(config.aiWindow, config.canvasSize);
     if (config.aiWindow < 512) {
       errors.push(`AI_MODE=full needs AI_WINDOW >= 512 (got ${config.aiWindow})`);
     }

@@ -1,6 +1,8 @@
 import {
+  AI_PROFILES,
   CANVAS_SIZE,
   DENOISE_STEP,
+  PROFILE_DEFAULTS,
   MAX_AI_RESOLUTION,
   MIN_AI_RESOLUTION,
   translateRect,
@@ -10,6 +12,7 @@ import {
   MIN_DENOISE,
   strokeBBox,
   unionRects,
+  type AIProfileName,
   type ClientMessage,
   type Layer,
   type Member,
@@ -64,6 +67,8 @@ export interface RoomState {
   aiResolutionMax: number;
   /** Patch mode generates at the crop window; the room control is inert there. */
   aiResolutionAdjustable: boolean;
+  /** Speed/quality workflow, shared by everyone in the room. */
+  aiProfile: AIProfileName;
   humanRevision: number;
   aiRevision: number;
   layers: Layer[];
@@ -127,6 +132,7 @@ export function createRoom(
   canvasSize = CANVAS_SIZE,
   resolution = canvasSize,
   adjustableResolution = true,
+  profile: AIProfileName = 'fast',
 ): RoomState {
   return {
     id,
@@ -137,6 +143,7 @@ export function createRoom(
     aiResolution: clampResolution(resolution, resolution),
     aiResolutionMax: clampResolution(resolution, resolution),
     aiResolutionAdjustable: adjustableResolution,
+    aiProfile: profile,
     humanRevision: 0,
     aiRevision: 0,
     layers: [
@@ -272,6 +279,7 @@ export function snapshot(
     aiResolution: room.aiResolution,
     aiResolutionMax: room.aiResolutionMax,
     aiResolutionAdjustable: room.aiResolutionAdjustable,
+    aiProfile: room.aiProfile,
     members: [...room.members.values()],
     layers: sortedLayers(room),
     strokes: room.strokes,
@@ -580,14 +588,33 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (msg.aiResolution !== undefined && !room.aiResolutionAdjustable) {
         return refuse('the AI resolution is fixed in patch mode');
       }
-      const aiResolution =
-        msg.aiResolution === undefined ? room.aiResolution : clampResolution(msg.aiResolution, room.aiResolutionMax);
-      if (denoise === room.denoise && negativePrompt === room.negativePrompt && aiResolution === room.aiResolution) return empty();
+      if (msg.aiProfile !== undefined && !AI_PROFILES.includes(msg.aiProfile)) {
+        return refuse('aiProfile must be fast or quality');
+      }
+      const aiProfile = msg.aiProfile ?? room.aiProfile;
+      // Switching profile also moves the generation size to that profile's
+      // default, because the two go together (fast is only fast at 768). An
+      // explicit aiResolution in the same message still wins.
+      const profileSwitched = aiProfile !== room.aiProfile;
+      const requestedResolution =
+        msg.aiResolution ?? (profileSwitched ? PROFILE_DEFAULTS[aiProfile].resolution : room.aiResolution);
+      const aiResolution = room.aiResolutionAdjustable
+        ? clampResolution(requestedResolution, room.aiResolutionMax)
+        : room.aiResolution;
+      if (
+        denoise === room.denoise &&
+        negativePrompt === room.negativePrompt &&
+        aiResolution === room.aiResolution &&
+        aiProfile === room.aiProfile
+      ) {
+        return empty();
+      }
       room.denoise = denoise;
       room.negativePrompt = negativePrompt;
       room.aiResolution = aiResolution;
+      room.aiProfile = aiProfile;
       return {
-        broadcast: [{ t: 'ai_settings_changed', denoise, negativePrompt, aiResolution }],
+        broadcast: [{ t: 'ai_settings_changed', denoise, negativePrompt, aiResolution, aiProfile }],
         relay: [],
         dirty: [],
         promptChanged: true,
@@ -616,6 +643,7 @@ export interface RenderSnapshot {
   denoise: number;
   negativePrompt: string;
   aiResolution: number;
+  aiProfile: AIProfileName;
   layers: Layer[];
   strokes: Stroke[];
   undone: ReadonlySet<string>;
@@ -629,6 +657,7 @@ export function captureRenderSnapshot(room: RoomState): RenderSnapshot {
     denoise: room.denoise,
     negativePrompt: room.negativePrompt,
     aiResolution: room.aiResolution,
+    aiProfile: room.aiProfile,
     layers: sortedLayers(room).map((l) => ({ ...l })),
     strokes: [...room.strokes],
     undone: new Set(room.undone),

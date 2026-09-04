@@ -1,3 +1,4 @@
+import type { AIProfileName } from './constants.js';
 import type { Point, Rect } from './geometry.js';
 
 export type Tool = 'pen' | 'eraser' | 'noise';
@@ -63,6 +64,8 @@ export interface RoomSnapshot {
   aiApply: number;
   /** Room-level AI settings, shared by everyone like the prompt. */
   denoise: number;
+  /** Speed/quality workflow choice, shared like the prompt. */
+  aiProfile: AIProfileName;
   /** Empty means "use the built-in default list". */
   negativePrompt: string;
   /** Generation size in px; the result is scaled back to the canvas. */
@@ -103,7 +106,7 @@ export type ClientMessage =
   | { t: 'layer_delete'; id: string }
   | { t: 'layer_reorder'; ids: string[] }
   | { t: 'set_prompt'; prompt: string }
-  | { t: 'set_ai_settings'; denoise?: number; negativePrompt?: string; aiResolution?: number };
+  | { t: 'set_ai_settings'; denoise?: number; negativePrompt?: string; aiResolution?: number; aiProfile?: AIProfileName };
 
 export type ServerMessage =
   | { t: 'snapshot'; snapshot: RoomSnapshot }
@@ -121,7 +124,7 @@ export type ServerMessage =
   | { t: 'layer_deleted'; id: string; humanRevision: number }
   | { t: 'layers_reordered'; layers: Layer[]; humanRevision: number }
   | { t: 'prompt_changed'; prompt: string }
-  | { t: 'ai_settings_changed'; denoise: number; negativePrompt: string; aiResolution: number }
+  | { t: 'ai_settings_changed'; denoise: number; negativePrompt: string; aiResolution: number; aiProfile: AIProfileName }
   | { t: 'ai_status'; state: AIState; forRevision: number; message?: string; latencyMs?: number }
   | { t: 'ai_result'; rect: Rect; url: string; aiRevision: number; crop: Rect; apply: Rect; latencyMs: number }
   | { t: 'error'; message: string };

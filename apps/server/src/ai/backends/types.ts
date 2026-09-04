@@ -1,4 +1,12 @@
+import type { AIProfileName } from '@brushjam/shared';
+
 export interface GenerateRequest {
+  /**
+   * Which workflow to run. Chosen per room and therefore per request, so one
+   * backend instance serves both: the ComfyUI backend swaps the LoRA in and
+   * out of the graph, mock and stream ignore it.
+   */
+  profile: AIProfileName;
   prompt: string;
   negativePrompt: string;
   /** size x size PNG, opaque. */

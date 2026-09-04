@@ -25,7 +25,7 @@ export async function createBackend(config: Config, log: (m: string) => void = c
       checkpoint: config.comfyCheckpoint,
       cfg: config.aiCfg,
       vaeTile: config.aiVaeTile,
-      fastLora: config.aiFast ? config.comfyFastLora : undefined,
+      fastLora: config.comfyFastLora || undefined,
     });
   // The worker may take ~90 s to answer its first request while it loads the
   // model, so it gets a generation-sized deadline, not a probe-sized one.
@@ -43,7 +43,7 @@ export async function createBackend(config: Config, log: (m: string) => void = c
       checkpoint: config.comfyCheckpoint,
       cfg: config.aiCfg,
       vaeTile: config.aiVaeTile,
-      fastLora: config.aiFast ? config.comfyFastLora : undefined,
+      fastLora: config.comfyFastLora || undefined,
     });
   }
   if (config.aiBackend === 'stream') {

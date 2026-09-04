@@ -124,6 +124,7 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     aiResolution: 1024,
     aiResolutionMax: 1024,
     aiResolutionAdjustable: true,
+    aiProfile: 'fast' as const,
     members: [{ userId: 'me', name: 'Me', color: '#fff' }],
     layers: [layer('l1')],
     strokes: [],
@@ -134,14 +135,14 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
 });
 
 const rect = { x: 0, y: 0, width: 64, height: 64 };
-const aiResult = (n: number): ServerMessage => ({
+const aiResult = (n: number, latencyMs = 10): ServerMessage => ({
   t: 'ai_result',
   rect,
   url: `/patch-${n}.png`,
   aiRevision: n,
   crop: rect,
   apply: rect,
-  latencyMs: 10,
+  latencyMs,
 });
 
 /** Finding B7: a snapshot must wipe the previous room's AI pixels. */
@@ -448,7 +449,7 @@ describe('ai settings', () => {
     expect(client.aiResolutionMax).toBe(768);
     expect(client.negativePrompt).toBe('no text');
 
-    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '', aiResolution: 768 });
+    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '', aiResolution: 768, aiProfile: 'fast' });
     await tick();
     expect(client.denoise).toBe(0.35);
     expect(client.negativePrompt).toBe('');
@@ -528,5 +529,59 @@ describe('live stroke previews', () => {
     await tick();
     expect(client.previewRaster('bob:n1')).not.toBe(first);
     client.dispose();
+  });
+});
+
+/** The fast/quality switch is shared room state like the prompt. */
+describe('AI profile', () => {
+  const changed = (aiProfile: 'fast' | 'quality'): ServerMessage => ({
+    t: 'ai_settings_changed',
+    denoise: 0.7,
+    negativePrompt: '',
+    aiResolution: aiProfile === 'fast' ? 768 : 1024,
+    aiProfile,
+  });
+
+  it('takes the profile from the snapshot', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ aiProfile: 'quality' }));
+    await tick();
+    expect(client.aiProfile).toBe('quality');
+  });
+
+  it('follows another user switching it', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ aiProfile: 'fast' }));
+    await tick();
+    client.receive(changed('quality'));
+    await tick();
+    expect(client.aiProfile).toBe('quality');
+    expect(client.aiResolution).toBe(1024);
+  });
+
+  it('remembers what each profile actually cost on this machine', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ aiProfile: 'fast' }));
+    await tick();
+
+    client.receive(aiResult(1, 3700));
+    await tick();
+    loader.resolve('/patch-1.png');
+    await tick();
+    expect(client.profileLatency.fast).toBe(3700);
+    expect(client.profileLatency.quality).toBeUndefined();
+
+    client.receive(changed('quality'));
+    await tick();
+    client.receive(aiResult(2, 10_200));
+    await tick();
+    loader.resolve('/patch-2.png');
+    await tick();
+    expect(client.profileLatency.quality).toBe(10_200);
+    // and the fast measurement survives the switch
+    expect(client.profileLatency.fast).toBe(3700);
   });
 });

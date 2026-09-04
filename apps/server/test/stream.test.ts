@@ -13,6 +13,7 @@ const req: GenerateRequest = {
   denoise: 0.55,
   steps: 4,
   seed: 12345,
+  profile: 'quality' as const,
   tag: 'room1_r7',
 };
 

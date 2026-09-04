@@ -30,6 +30,9 @@ The drawings: (a) line-art house + tree, (b) stick figure + coloured blob,
 (c) (a) with a wide noise stroke across the sky, (d) mostly noise with a few
 pen lines.
 
+**`2026-09-05-comfyui/REPORT.md` is the reference measurement** behind the
+fast/quality profile defaults (denoise 0.7, fast at 768, quality at 1024).
+
 `2026-09-05-comfyui/` is Experiment C: the real ComfyUI sweep on the local
 RTX 3070 (normal 14-step and 4-step LCM, three resolutions) with latency logs
 and `REPORT.md`. Contact sheets there are JPEG rather than PNG so three real

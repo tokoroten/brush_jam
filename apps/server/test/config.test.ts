@@ -6,15 +6,15 @@ const env = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({ ...ext
 /** Finding 15: bad configuration must fail fast, not produce broken crops. */
 describe('loadConfig', () => {
   it('uses the documented defaults', () => {
-    // patch mode: full mode deliberately locks the window to the canvas
-    expect(loadConfig(env({ AI_MODE: 'patch' }))).toMatchObject({
+    // patch mode: full mode derives the window from the profile instead
+    expect(loadConfig(env({ AI_MODE: 'patch', AI_PROFILE: 'quality' }))).toMatchObject({
       host: '127.0.0.1',
       port: 8787,
       aiBackend: 'auto',
       aiWindow: 1024,
       aiApply: 768,
       aiSteps: 14,
-      aiDenoise: 0.55,
+      aiDenoise: 0.7,
       aiDebounceMs: 400,
     });
   });
@@ -84,12 +84,14 @@ describe('AI_VAE_TILE', () => {
 });
 
 describe('canvas size and AI mode', () => {
-  it('defaults to a 1024 canvas in full mode, with the window locked to it', () => {
+  it('defaults to a 1024 canvas in full mode, generated at the profile size', () => {
     const c = loadConfig({} as NodeJS.ProcessEnv);
     expect(c.canvasSize).toBe(1024);
     expect(c.aiMode).toBe('full');
-    expect(c.aiWindow).toBe(1024);
+    // fast profile: generate at 768 and scale up to the 1024 canvas
+    expect(c.aiWindow).toBe(768);
     expect(c.aiApply).toBe(1024);
+    expect(loadConfig({ AI_PROFILE: 'quality' } as NodeJS.ProcessEnv).aiWindow).toBe(1024);
   });
 
   it('locks the apply area to the canvas in full mode, but not the window', () => {
@@ -135,10 +137,12 @@ describe('fail-fast validation', () => {
 });
 
 describe('generation resolution', () => {
-  it('defaults to the canvas size in full mode', () => {
-    const c = loadConfig({ CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+  it('defaults to the profile size, clamped to a smaller canvas', () => {
+    const c = loadConfig({ CANVAS_SIZE: '1024', AI_PROFILE: 'quality' } as NodeJS.ProcessEnv);
     expect(c.aiWindow).toBe(1024);
     expect(c.aiApply).toBe(1024);
+    // a canvas smaller than the profile default wins: never generate larger
+    expect(loadConfig({ CANVAS_SIZE: '512' } as NodeJS.ProcessEnv).aiWindow).toBe(512);
   });
 
   it('lets AI_WINDOW go below the canvas', () => {
@@ -162,47 +166,60 @@ describe('generation resolution', () => {
   });
 });
 
-describe('AI_FAST', () => {
-  it('is off by default', () => {
+describe('AI profile', () => {
+  it('defaults to fast, because 10 s per edit is too slow to work with', () => {
     const c = loadConfig({} as NodeJS.ProcessEnv);
-    expect(c.aiFast).toBe(false);
+    expect(c.aiProfile).toBe('fast');
+    // and the window follows the profile: fast is only fast when it is smaller
+    expect(c.aiWindow).toBe(768);
     expect(c.aiSteps).toBe(14);
+    expect(c.aiFastSteps).toBe(4);
+    expect(c.aiDenoise).toBe(0.7);
   });
 
-  it('switches the step default to 4 when enabled', () => {
-    const c = loadConfig({ AI_FAST: '1' } as NodeJS.ProcessEnv);
-    expect(c.aiFast).toBe(true);
-    expect(c.aiSteps).toBe(4);
-    expect(c.comfyFastLora).toBe('lcm-lora-sdxl.safetensors');
+  it('uses 1024 for the quality profile', () => {
+    const c = loadConfig({ AI_PROFILE: 'quality' } as NodeJS.ProcessEnv);
+    expect(c.aiProfile).toBe('quality');
+    expect(c.aiWindow).toBe(1024);
   });
 
-  it('still honours an explicit AI_STEPS', () => {
-    expect(loadConfig({ AI_FAST: 'true', AI_STEPS: '6' } as NodeJS.ProcessEnv).aiSteps).toBe(6);
+  it('lets an explicit AI_WINDOW beat the profile default', () => {
+    expect(loadConfig({ AI_PROFILE: 'fast', AI_WINDOW: '1024' } as NodeJS.ProcessEnv).aiWindow).toBe(1024);
+    expect(loadConfig({ AI_PROFILE: 'quality', AI_WINDOW: '512' } as NodeJS.ProcessEnv).aiWindow).toBe(512);
   });
 
-  // Review 6 finding 6: an empty LoRA used to leave fast mode "on" with no
-  // LoRA loaded, i.e. euler_ancestral at 4 steps and cfg 5.5 - neither mode.
-  it('falls all the way back to the normal workflow when the LoRA is empty', () => {
-    const c = loadConfig({ AI_FAST: '1', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
-    expect(c.aiFast).toBe(false);
+  it('keeps AI_FAST working as an alias', () => {
+    expect(loadConfig({ AI_FAST: '1' } as NodeJS.ProcessEnv).aiProfile).toBe('fast');
+    expect(loadConfig({ AI_FAST: '0' } as NodeJS.ProcessEnv).aiProfile).toBe('quality');
+    expect(loadConfig({ AI_FAST: 'yes' } as NodeJS.ProcessEnv).aiProfile).toBe('fast');
+    // AI_PROFILE wins when both are set
+    expect(loadConfig({ AI_FAST: '1', AI_PROFILE: 'quality' } as NodeJS.ProcessEnv).aiProfile).toBe('quality');
+  });
+
+  it('rejects a profile that is not one of the two', () => {
+    expect(() => loadConfig({ AI_PROFILE: 'turbo' } as NodeJS.ProcessEnv)).toThrow(/AI_PROFILE/);
+  });
+
+  // Review 6 finding 6, kept: fast without a LoRA is not fast, it is a broken
+  // 4-step euler_ancestral. Fall all the way back instead.
+  it('falls back to quality when no LoRA is configured', () => {
+    const c = loadConfig({ AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
+    expect(c.aiProfile).toBe('quality');
     expect(c.fastDisabled).toBe(true);
-    expect(c.aiSteps).toBe(14);
+    expect(c.aiWindow).toBe(1024);
   });
 
   it('treats a whitespace-only LoRA name as empty', () => {
-    expect(loadConfig({ AI_FAST: '1', COMFYUI_FAST_LORA: '   ' } as NodeJS.ProcessEnv).aiFast).toBe(false);
+    expect(loadConfig({ AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '   ' } as NodeJS.ProcessEnv).aiProfile).toBe('quality');
   });
 
-  it('does not flag fastDisabled when fast mode was never asked for', () => {
-    expect(loadConfig({ COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv).fastDisabled).toBe(false);
-    expect(loadConfig({ AI_FAST: '1' } as NodeJS.ProcessEnv).fastDisabled).toBe(false);
+  it('does not flag fastDisabled when quality was chosen anyway', () => {
+    expect(loadConfig({ AI_PROFILE: 'quality', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv).fastDisabled).toBe(false);
   });
 
-  it('accepts a custom LoRA name and the usual flag spellings', () => {
-    expect(loadConfig({ AI_FAST: 'yes', COMFYUI_FAST_LORA: 'dmd2.safetensors' } as NodeJS.ProcessEnv).comfyFastLora).toBe(
-      'dmd2.safetensors',
-    );
-    expect(loadConfig({ AI_FAST: '0' } as NodeJS.ProcessEnv).aiFast).toBe(false);
-    expect(loadConfig({ AI_FAST: 'off' } as NodeJS.ProcessEnv).aiFast).toBe(false);
+  it('accepts a custom LoRA name and a custom fast step count', () => {
+    const c = loadConfig({ COMFYUI_FAST_LORA: 'dmd2.safetensors', AI_FAST_STEPS: '8' } as NodeJS.ProcessEnv);
+    expect(c.comfyFastLora).toBe('dmd2.safetensors');
+    expect(c.aiFastSteps).toBe(8);
   });
 });

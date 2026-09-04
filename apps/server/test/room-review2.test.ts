@@ -471,3 +471,82 @@ describe('AI resolution in patch mode', () => {
     expect(snapshot(patch, alice, 'idle', { window: 1024, apply: 1024 }).aiResolutionAdjustable).toBe(false);
   });
 });
+
+/** The room-level speed/quality switch. */
+describe('AI profile', () => {
+  const room = (profile: 'fast' | 'quality' = 'fast'): ReturnType<typeof createRoom> =>
+    createRoom('profileroom', 0.7, 1024, 1024, true, profile);
+
+  it('starts on the profile the server was configured with', () => {
+    expect(room('fast').aiProfile).toBe('fast');
+    expect(room('quality').aiProfile).toBe('quality');
+  });
+
+  it('re-runs the AI like a prompt change', () => {
+    const state = room('fast');
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'quality' });
+    expect(state.aiProfile).toBe('quality');
+    expect(out.promptChanged).toBe(true);
+    expect(out.broadcast).toEqual([
+      { t: 'ai_settings_changed', denoise: 0.7, negativePrompt: '', aiResolution: 1024, aiProfile: 'quality' },
+    ]);
+  });
+
+  it('moves the generation size to the new profile default', () => {
+    const state = room('quality');
+    const alice = addMember(state, 'Alice').userId;
+    expect(state.aiResolution).toBe(1024);
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'fast' });
+    expect(state.aiResolution).toBe(768);
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'quality' });
+    expect(state.aiResolution).toBe(1024);
+  });
+
+  it('lets an explicit resolution in the same message win', () => {
+    const state = room('quality');
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'fast', aiResolution: 512 });
+    expect(state.aiProfile).toBe('fast');
+    expect(state.aiResolution).toBe(512);
+  });
+
+  it('never generates larger than the server allows', () => {
+    // a server capped at 768 must not be pushed to 1024 by switching profile
+    const state = createRoom('cappedroom', 0.7, 1024, 768, true, 'fast');
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'quality' });
+    expect(state.aiProfile).toBe('quality');
+    expect(state.aiResolution).toBe(768);
+  });
+
+  it('does nothing when the profile is unchanged', () => {
+    const state = room('fast');
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'fast' });
+    expect(out.broadcast).toEqual([]);
+    expect(out.promptChanged).toBeFalsy();
+  });
+
+  it('refuses a profile that is not one of the two', () => {
+    const state = room('fast');
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, {
+      t: 'set_ai_settings',
+      aiProfile: 'turbo',
+    } as unknown as Parameters<typeof applyClientMessage>[2]);
+    expect(JSON.stringify(out)).toMatch(/aiProfile must be fast or quality/);
+    expect(state.aiProfile).toBe('fast');
+  });
+
+  it('is carried into the render snapshot', () => {
+    const state = room('quality');
+    expect(captureRenderSnapshot(state).aiProfile).toBe('quality');
+  });
+
+  it('is in the client snapshot', () => {
+    const state = room('fast');
+    const alice = addMember(state, 'Alice').userId;
+    expect(snapshot(state, alice, 'idle', { window: 1024, apply: 1024 }).aiProfile).toBe('fast');
+  });
+});

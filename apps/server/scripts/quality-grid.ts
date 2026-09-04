@@ -2,7 +2,8 @@
  * Denoise sweep over synthetic drawings, straight through a backend.
  *
  *   pnpm --filter @brushjam/server quality-grid [--res 768] [--drawings a,b,c,d]
- *                                               [--denoise 0.5,0.65,0.8,0.9] [--out docs/experiments]
+ *                                               [--denoise 0.5,0.65,0.8,0.9]
+ *                                               [--profile fast|quality] [--out docs/experiments]
  *
  * No server and no WebSocket: it builds the four test drawings itself, calls
  * `createBackend(loadConfig())` and drives `generate()` directly, so the same
@@ -16,7 +17,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createCanvas, loadImage, type Canvas } from '@napi-rs/canvas';
-import { DEFAULT_NEGATIVE_PROMPT, renderStrokes, type RenderableStroke } from '@brushjam/shared';
+import { DEFAULT_NEGATIVE_PROMPT, renderStrokes, type AIProfileName, type RenderableStroke } from '@brushjam/shared';
 import { createBackend, FAST_CFG } from '../src/ai/backends/index.js';
 import { loadConfig } from '../src/config.js';
 import { buildFullMask } from '../src/raster.js';
@@ -29,6 +30,7 @@ const SEED = 424242;
 
 interface Options {
   res: number;
+  profile: AIProfileName;
   out: string;
   drawings: string[];
   denoises: number[];
@@ -37,6 +39,7 @@ interface Options {
 function parseArgs(argv: string[]): Options {
   const opts: Options = {
     res: 768,
+    profile: 'quality',
     out: path.resolve(process.cwd(), '../../docs/experiments'),
     drawings: ['a', 'b', 'c', 'd'],
     denoises: [0.5, 0.65, 0.8, 0.9],
@@ -45,6 +48,7 @@ function parseArgs(argv: string[]): Options {
     const arg = argv[i];
     const value = argv[i + 1];
     if (arg === '--res' && value) opts.res = Math.max(256, Number(value) || 768);
+    else if (arg === '--profile' && value) opts.profile = value === 'fast' ? 'fast' : 'quality';
     else if (arg === '--out' && value) opts.out = path.resolve(value);
     // Split on whitespace too: PowerShell turns an unquoted `a,b` into `a b`.
     else if (arg === '--drawings' && value) opts.drawings = value.split(/[\s,]+/).filter(Boolean);
@@ -212,7 +216,8 @@ const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')
 const outDir = path.join(opts.out, date);
 mkdirSync(outDir, { recursive: true });
 
-console.log(`[grid] backend ${backend.name}, res ${opts.res}, steps ${config.aiSteps}, seed ${SEED}`);
+const gridSteps = opts.profile === 'fast' ? config.aiFastSteps : config.aiSteps;
+console.log(`[grid] backend ${backend.name}, profile ${opts.profile}, res ${opts.res}, steps ${gridSteps}, seed ${SEED}`);
 console.log(`[grid] drawings ${opts.drawings.join(',')} x denoise ${opts.denoises.join(',')} -> ${outDir}`);
 
 const mask = buildFullMask(opts.res);
@@ -253,6 +258,7 @@ for (const key of opts.drawings) {
           denoise,
           steps: config.aiSteps,
           seed: SEED,
+          profile: opts.profile,
           tag: `grid-${key}-${denoise}`,
         },
         controller.signal,
@@ -313,8 +319,15 @@ writeFileSync(path.join(outDir, 'grid.png'), sheet.toBuffer('image/png'));
 // cfg is not used at all. Writing config values there made a run unreproducible.
 const workflow =
   backend.name === 'comfyui' || backend.name === 'runpod'
-    ? config.aiFast
-      ? { mode: 'fast (LCM)', steps: config.aiSteps, cfg: FAST_CFG, lora: config.comfyFastLora, sampler: 'lcm/sgm_uniform', vaeTile: config.aiVaeTile }
+    ? opts.profile === 'fast'
+      ? {
+          mode: 'fast (LCM)',
+          steps: config.aiFastSteps,
+          cfg: FAST_CFG,
+          lora: config.comfyFastLora,
+          sampler: 'lcm/sgm_uniform',
+          vaeTile: config.aiVaeTile,
+        }
       : { mode: 'normal', steps: config.aiSteps, cfg: config.aiCfg, sampler: 'euler_ancestral/normal', vaeTile: config.aiVaeTile }
     : { mode: backend.name, note: 'sampling parameters belong to the backend, not to this server config' };
 

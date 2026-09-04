@@ -52,7 +52,14 @@ export class RoomRuntime {
   private pendingImageBytes = 0;
 
   constructor(roomId: string, backend: AIBackend, private readonly config: Config) {
-    this.state = createRoom(roomId, config.aiDenoise, config.canvasSize, config.aiWindow, config.aiMode === 'full');
+    this.state = createRoom(
+      roomId,
+      config.aiDenoise,
+      config.canvasSize,
+      config.aiWindow,
+      config.aiMode === 'full',
+      config.aiProfile,
+    );
     this.scheduler = new AIScheduler(
       {
         getRevision: () => this.state.humanRevision,
@@ -65,6 +72,7 @@ export class RoomRuntime {
             denoise: snap.denoise,
             negativePrompt: snap.negativePrompt,
             resolution: snap.aiResolution,
+            profile: snap.aiProfile,
             render: (crop, size) => renderCropInput(snap, crop, size),
           };
         },
@@ -98,6 +106,7 @@ export class RoomRuntime {
         window: config.aiWindow,
         apply: config.aiApply,
         steps: config.aiSteps,
+        fastSteps: config.aiFastSteps,
         denoise: config.aiDenoise,
         debounceMs: config.aiDebounceMs,
         watchdogMs: config.aiWatchdogMs,

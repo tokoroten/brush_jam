@@ -11,6 +11,7 @@ const req: GenerateRequest = {
   denoise: 0.55,
   steps: 14,
   seed: 1,
+  profile: 'quality' as const,
   tag: 'room_r1',
 };
 

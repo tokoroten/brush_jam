@@ -120,13 +120,15 @@ are multiples of 64, denoise is 0..1, and so on).
 | `COMFYUI_CHECKPOINT` | `waiNSFWIllustrious_v150.safetensors` | Must exist in ComfyUI |
 | `CANVAS_SIZE` | `1024` | World canvas size in px (square, multiple of 64, 512-4096) |
 | `AI_MODE` | `full` | `full` regenerates the whole canvas; `patch` uses crops + dirty regions |
-| `AI_WINDOW` | `CANVAS_SIZE` in full mode, else `1024` | Generation size in px (512-2048, multiple of 64) |
+| `AI_PROFILE` | `fast` | Starting profile for new rooms: `fast` or `quality` |
+| `AI_WINDOW` | the profile's size (`fast` 768, `quality` 1024), capped by the canvas | Generation size in px (512-2048, multiple of 64) |
 | `AI_APPLY` | `768` | Central area the result is allowed to change |
-| `AI_STEPS` | `14` (`4` when `AI_FAST=1`) | Sampler steps |
-| `AI_FAST` | `0` | `1` switches ComfyUI to the 4-step LCM workflow (needs a LoRA) |
+| `AI_STEPS` | `14` | Sampler steps for the quality profile |
+| `AI_FAST_STEPS` | `4` | Sampler steps for the fast profile |
+| `AI_FAST` | - | Legacy alias: `1` means `AI_PROFILE=fast`, `0` means `quality` |
 | `AI_STREAM_AUTO` | `0` | `1` lets `AI_BACKEND=auto` consider the stream worker |
-| `COMFYUI_FAST_LORA` | `lcm-lora-sdxl.safetensors` | LoRA used by `AI_FAST` |
-| `AI_DENOISE` | `0.55` | img2img strength; the starting value of each room's slider |
+| `COMFYUI_FAST_LORA` | `lcm-lora-sdxl.safetensors` | LoRA for the fast profile; empty disables it |
+| `AI_DENOISE` | `0.7` | img2img strength; the starting value of each room's slider |
 | `AI_CFG` | `5.5` | CFG scale |
 | `AI_VAE_TILE` | `512` | VAEDecodeTiled tile size; `0` uses a plain `VAEDecode` |
 | `AI_DEBOUNCE_MS` | `400` | Quiet time before a generation starts |
@@ -176,20 +178,45 @@ LoadImage(image) → VAEEncode ┐
 LoadImage(mask) → ImageToMask ┴→ SetLatentNoiseMask → KSampler → VAEDecodeTiled → SaveImage
 ```
 
-With `AI_FAST=1` a `LoraLoader` (node 12) is inserted between the checkpoint and
-its consumers - both `CLIPTextEncode` nodes and the `KSampler` read MODEL/CLIP
-from it, while the VAE still comes from the checkpoint - and the sampler switches
-to `lcm` / `sgm_uniform` at cfg 1.5. `AI_STEPS` (4 by default in fast mode) is
-passed straight through: ComfyUI runs exactly that many sampler steps at any
-denoise - it builds the longer schedule and then keeps the last `steps + 1`
-sigmas, so denoise only picks the starting noise level. cfg 5.5 burns the image
-out at 4 steps. `COMFYUI_FAST_LORA=''` disables fast mode entirely (back to the
-14-step normal workflow), rather than leaving a 4-step `euler_ancestral`.
+### Fast and quality profiles
 
-The sampler settings come from a profile keyed off the LoRA name, because
-few-step LoRAs are not interchangeable: a name containing `dmd2` uses cfg 1.0
-(DMD2 is distilled and wants no guidance), anything else uses the LCM profile at
-cfg 1.5.
+Each room chooses one, from the segmented control next to the prompt, and the
+choice is shared like the prompt. It is a property of the request, not of the
+process: one server serves rooms that disagree.
+
+| profile | workflow | steps | cfg | default size | measured |
+| --- | --- | --- | --- | --- | --- |
+| `fast` | LCM LoRA, `lcm` / `sgm_uniform` | 4 | 1.5 | 768 | ~3.7 s |
+| `quality` | plain checkpoint, `euler_ancestral` / `normal` | 14 | 5.5 | 1024 | ~10.3 s |
+
+In the fast profile a `LoraLoader` (node 12) is inserted between the checkpoint
+and its consumers - both `CLIPTextEncode` nodes and the `KSampler` read
+MODEL/CLIP from it, while the VAE still comes from the checkpoint. Steps are
+passed straight through: ComfyUI runs exactly that many sampler steps at any
+denoise (it builds the longer schedule then keeps the last `steps + 1` sigmas,
+so denoise only picks the starting noise level). cfg 5.5 burns the image out at
+4 steps, and the sampler settings come from a named profile keyed off the LoRA,
+because few-step LoRAs are not interchangeable: a name containing `dmd2` uses
+cfg 1.0 (DMD2 is distilled and wants no guidance), anything else LCM at 1.5.
+
+Switching profile also moves the room's generation size to that profile's
+default, because the two go together - fast is only worth having if it is also
+smaller. Everything stays adjustable in the Advanced panel afterwards.
+
+`COMFYUI_FAST_LORA=''` disables the fast profile entirely: every room starts on
+quality, rather than running a 4-step `euler_ancestral`, which is neither.
+
+Switching profiles makes ComfyUI load or unload the LoRA, so the first
+generation after a switch is a few seconds slower; the server logs it rather
+than leaving it looking like a random stall.
+
+**Why these numbers.** Measured on an RTX 3070 8 GB - see
+[docs/experiments/2026-09-05-comfyui/REPORT.md](docs/experiments/2026-09-05-comfyui/REPORT.md).
+Denoise 0.5 is a no-op on this checkpoint, 0.65 decorates, 0.8 genuinely
+reinterprets (a noise-pen sky becomes buildings) and 0.9 discards the drawing,
+which is why the default is 0.7. LCM matches the 14-step result up to about 0.65
+but is visibly weaker at 0.8, so `fast` is the responsive default and `quality`
+is there for when the model should actually invent something.
 
 `SetLatentNoiseMask` (rather than `VAEEncodeForInpaint`) keeps the human drawing
 as the img2img base, so the model reinterprets the strokes instead of filling

@@ -6,6 +6,7 @@ import {
   mergeDirtyAll,
   shouldAcceptResult,
   subtractRect,
+  type AIProfileName,
   type AIState,
   type Rect,
   type ServerMessage,
@@ -28,6 +29,8 @@ export interface RenderJob {
   negativePrompt?: string;
   /** Full mode: generation size, independent of the canvas size. */
   resolution?: number;
+  /** Which workflow to run; picks the step count too. */
+  profile?: AIProfileName;
   render(crop: Rect, size: number): Promise<Buffer>;
 }
 
@@ -52,7 +55,10 @@ export interface SchedulerOptions {
   mode?: 'full' | 'patch';
   window: number;
   apply: number;
+  /** Steps for the quality profile. */
   steps: number;
+  /** Steps for the fast profile; falls back to `steps` when unset. */
+  fastSteps?: number;
   denoise: number;
   debounceMs: number;
   canvasSize?: number;
@@ -244,7 +250,8 @@ export class AIScheduler {
           maskPng: mask.png,
           size: this.opts.window,
           denoise: job.denoise ?? this.opts.denoise,
-          steps: this.opts.steps,
+          steps: this.stepsFor(job.profile),
+          profile: job.profile ?? 'quality',
           seed: (this.opts.seed ?? defaultSeed)(),
           tag: `${this.opts.tag ?? 'room'}_r${forRevision}`,
         },
@@ -293,6 +300,11 @@ export class AIScheduler {
    * everything. One request in flight, latest revision wins, and any change
    * that arrives mid-flight simply queues another whole-canvas run.
    */
+  /** The fast profile is only fast because it runs fewer steps. */
+  private stepsFor(profile: AIProfileName | undefined): number {
+    return profile === 'fast' ? this.opts.fastSteps ?? this.opts.steps : this.opts.steps;
+  }
+
   private async runFull(): Promise<void> {
     if (!this.changed) {
       this.setState('idle');
@@ -329,7 +341,8 @@ export class AIScheduler {
           maskPng: mask.png,
           size: resolution,
           denoise: job.denoise ?? this.opts.denoise,
-          steps: this.opts.steps,
+          steps: this.stepsFor(job.profile),
+          profile: job.profile ?? 'quality',
           seed: (this.opts.seed ?? defaultSeed)(),
           tag: `${this.opts.tag ?? 'room'}_r${forRevision}`,
         },

@@ -36,7 +36,7 @@ export class RunpodBackend implements AIBackend {
       steps: req.steps,
       cfg: this.opts.cfg ?? 5.5,
       vaeTile: this.opts.vaeTile ?? 512,
-      fastLora: this.opts.fastLora,
+      fastLora: req.profile === 'fast' ? this.opts.fastLora || undefined : undefined,
       denoise: req.denoise,
       filenamePrefix: `brushjam/${req.tag}`,
     });

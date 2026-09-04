@@ -11,6 +11,7 @@ const req: GenerateRequest = {
   denoise: 0.55,
   steps: 14,
   seed: 12345,
+  profile: 'quality' as const,
   tag: 'room1_r7',
 };
 
@@ -370,5 +371,85 @@ describe('fast (LCM) workflow', () => {
   it('accepts a different LoRA name', () => {
     const dmd = buildWorkflow({ ...base, fastLora: 'dmd2_sdxl_4step_lora_fp16.safetensors' });
     expect((dmd['12'] as { inputs: { lora_name: string } }).inputs.lora_name).toBe('dmd2_sdxl_4step_lora_fp16.safetensors');
+  });
+});
+
+/**
+ * The profile is a property of the request, not of the process: one backend
+ * instance serves rooms that have made different choices.
+ */
+describe('one backend instance, both profiles', () => {
+  const png = Buffer.from('png');
+
+  function stubComfy(): { prompts: Record<string, unknown>[] } {
+    const prompts: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/upload/image') return new Response(JSON.stringify({ name: 'x.png', subfolder: '', type: 'input' }), { status: 200 });
+      if (path === '/prompt') {
+        prompts.push((JSON.parse(String(init?.body)) as { prompt: Record<string, unknown> }).prompt);
+        return new Response(JSON.stringify({ prompt_id: `p${prompts.length}` }), { status: 200 });
+      }
+      if (path.startsWith('/history')) {
+        const id = path.split('/').pop()!;
+        return new Response(
+          JSON.stringify({ [id]: { status: { completed: true }, outputs: { '11': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } }),
+          { status: 200 },
+        );
+      }
+      if (path === '/view') return new Response(png, { status: 200 });
+      return new Response('{}', { status: 200 });
+    });
+    return { prompts };
+  }
+
+  const request = (profile: 'fast' | 'quality', steps: number): Parameters<ComfyUIBackend['generate']>[0] => ({
+    prompt: 'a town',
+    negativePrompt: 'lowres',
+    imagePng: Buffer.from('i'),
+    maskPng: Buffer.from('m'),
+    size: 1024,
+    denoise: 0.7,
+    steps,
+    seed: 1,
+    profile,
+    tag: 'room_r1',
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('builds the LCM graph for a fast request and the plain graph for a quality one', async () => {
+    const { prompts } = stubComfy();
+    const backend = new ComfyUIBackend({
+      url: 'http://127.0.0.1:8188',
+      checkpoint: 'ckpt.safetensors',
+      fastLora: DEFAULT_FAST_LORA,
+      pollIntervalMs: 1,
+    });
+
+    await backend.generate(request('fast', 4), new AbortController().signal);
+    await backend.generate(request('quality', 14), new AbortController().signal);
+    await backend.generate(request('fast', 4), new AbortController().signal);
+
+    const sampler = (g: Record<string, unknown>): Record<string, unknown> => (g['9'] as { inputs: Record<string, unknown> }).inputs;
+    expect(prompts).toHaveLength(3);
+
+    expect(prompts[0]!['12']).toBeDefined();
+    expect(sampler(prompts[0]!)).toMatchObject({ sampler_name: 'lcm', cfg: FAST_CFG, steps: 4, model: ['12', 0] });
+
+    expect(prompts[1]!['12']).toBeUndefined();
+    expect(sampler(prompts[1]!)).toMatchObject({ sampler_name: 'euler_ancestral', cfg: 5.5, steps: 14, model: ['1', 0] });
+
+    // and back again on the same instance
+    expect(prompts[2]!['12']).toBeDefined();
+    expect(sampler(prompts[2]!)).toMatchObject({ sampler_name: 'lcm', steps: 4 });
+  });
+
+  it('runs the quality graph for a fast request when no LoRA is configured', async () => {
+    const { prompts } = stubComfy();
+    const backend = new ComfyUIBackend({ url: 'http://127.0.0.1:8188', checkpoint: 'ckpt.safetensors', pollIntervalMs: 1 });
+    await backend.generate(request('fast', 4), new AbortController().signal);
+    expect(prompts[0]!['12']).toBeUndefined();
+    expect((prompts[0]!['9'] as { inputs: { sampler_name: string } }).inputs.sampler_name).toBe('euler_ancestral');
   });
 });

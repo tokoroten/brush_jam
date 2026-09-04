@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
 import {
+  AI_PROFILES,
   AI_RESOLUTIONS,
   CANVAS_SIZE,
   DEFAULT_NEGATIVE_PROMPT,
@@ -8,10 +9,12 @@ import {
   MAX_LAYERS,
   MAX_NEGATIVE_PROMPT,
   MIN_DENOISE,
+  PROFILE_HINT_MS,
   fitCamera,
   panBy,
   screenToWorld,
   zoomAt,
+  type AIProfileName,
   type Camera,
   type Layer,
   type Point,
@@ -339,6 +342,15 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   }, [onPaste]);
 
   // --- render ---------------------------------------------------------------
+  /**
+   * What this room has actually measured for a profile, falling back to the
+   * numbers from docs/experiments/2026-09-05-comfyui/REPORT.md until it has.
+   */
+  const hint = (p: AIProfileName): string => {
+    const ms = client.profileLatency[p] ?? PROFILE_HINT_MS[p];
+    return ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`;
+  };
+
   const statusText =
     client.aiState === 'error'
       ? `AI error: ${client.aiMessage}`
@@ -379,6 +391,20 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             setPromptDirty(true);
           }}
         />
+        <div className="segmented" title={`fast ~${hint('fast')}, quality ~${hint('quality')}`}>
+          {AI_PROFILES.map((p) => (
+            <button
+              key={p}
+              className={client.aiProfile === p ? 'active' : ''}
+              onClick={() => client.send({ t: 'set_ai_settings', aiProfile: p })}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+        <span className="hint">
+          fast ~{hint('fast')}, quality ~{hint('quality')}
+        </span>
         <button className={advanced ? 'active' : ''} onClick={() => setAdvanced((v) => !v)}>
           advanced
         </button>

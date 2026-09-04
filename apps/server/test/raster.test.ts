@@ -225,6 +225,7 @@ describe('MockBackend', () => {
       denoise: 0.5,
       steps: 8,
       seed: 1,
+      profile: 'quality' as const,
       tag: 't',
     };
     const out = await backend.generate(req, new AbortController().signal);
@@ -239,7 +240,18 @@ describe('MockBackend', () => {
     const imagePng = await renderCropInput(snapshotOf(roomWithStroke()), crop, SIZE);
     const built = buildMask([{ x: 200, y: 200, width: 60, height: 60 }], crop, SIZE, apply);
     const promise = backend.generate(
-      { prompt: 'p', negativePrompt: '', imagePng, maskPng: built.png, size: SIZE, denoise: 0.5, steps: 8, seed: 1, tag: 't' },
+      {
+        prompt: 'p',
+        negativePrompt: '',
+        imagePng,
+        maskPng: built.png,
+        size: SIZE,
+        denoise: 0.5,
+        steps: 8,
+        seed: 1,
+        profile: 'quality',
+        tag: 't',
+      },
       controller.signal,
     );
     controller.abort();

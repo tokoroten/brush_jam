@@ -54,8 +54,12 @@ function listenWithRetry(attempt = 1): void {
       console.log(`[brushjam] generation resolution ${config.aiWindow} (${note})`);
     }
     console.log(`[brushjam] ai window ${config.aiWindow} / apply ${config.aiApply} / steps ${config.aiSteps} / denoise ${config.aiDenoise}`);
-    if (config.aiFast) console.log(`[brushjam] fast mode: ${config.comfyFastLora} (${config.aiSteps}-step LCM sampler)`);
-    if (config.fastDisabled) console.warn('[brushjam] AI_FAST=1 ignored: COMFYUI_FAST_LORA is empty, using the normal workflow');
+    console.log(
+      `[brushjam] default profile ${config.aiProfile} (fast: ${config.aiFastSteps}-step LCM ${config.comfyFastLora || 'unavailable'}, quality: ${config.aiSteps}-step euler_a)`,
+    );
+    if (config.fastDisabled) {
+      console.warn('[brushjam] the fast profile is unavailable: COMFYUI_FAST_LORA is empty, so every room starts on quality');
+    }
   });
 }
 

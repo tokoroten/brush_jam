@@ -43,7 +43,12 @@ interface Harness {
   maskEmpty: { value: boolean };
   renderedAt: number[];
   logs: string[];
-  settings: { denoise: number | undefined; negativePrompt: string | undefined; resolution: number | undefined };
+  settings: {
+    denoise: number | undefined;
+    negativePrompt: string | undefined;
+    resolution: number | undefined;
+    profile: 'fast' | 'quality' | undefined;
+  };
   renderSizes: Array<{ rect: Rect; size: number }>;
 }
 
@@ -57,6 +62,7 @@ function makeHost(): Harness {
     denoise: undefined as number | undefined,
     negativePrompt: undefined as string | undefined,
     resolution: undefined as number | undefined,
+    profile: undefined as 'fast' | 'quality' | undefined,
   };
   const renderSizes: Array<{ rect: Rect; size: number }> = [];
   const maskEmpty = { value: false };
@@ -71,6 +77,7 @@ function makeHost(): Harness {
         denoise: settings.denoise,
         negativePrompt: settings.negativePrompt,
         resolution: settings.resolution,
+        profile: settings.profile,
       };
       return {
         ...captured,
@@ -702,6 +709,55 @@ describe('AIScheduler generation resolution', () => {
     await vi.advanceTimersByTimeAsync(400);
     expect(renderSizes[0]).toEqual({ rect: { x: 0, y: 0, width: 512, height: 512 }, size: 1024 });
     await backend.finish();
+    s.stop();
+  });
+});
+
+/** The profile is chosen per room, so it travels with the job, not the config. */
+describe('profile reaches the backend', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('passes the job profile and the matching step count', async () => {
+    const { host, settings } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, { ...opts, steps: 14, fastSteps: 4 });
+
+    settings.profile = 'fast';
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    await backend.finish();
+
+    settings.profile = 'quality';
+    s.markDirty([R(2100, 2100)]);
+    await vi.advanceTimersByTimeAsync(500);
+    await backend.finish();
+
+    expect(backend.calls.map((c) => ({ profile: c.profile, steps: c.steps }))).toEqual([
+      { profile: 'fast', steps: 4 },
+      { profile: 'quality', steps: 14 },
+    ]);
+    s.stop();
+  });
+
+  it('defaults to quality when a job does not say', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, { ...opts, fastSteps: 4 });
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(backend.calls[0]).toMatchObject({ profile: 'quality', steps: 14 });
+    s.stop();
+  });
+
+  it('uses the plain step count for a fast job when fastSteps is not configured', async () => {
+    const { host, settings } = makeHost();
+    const backend = new FakeBackend();
+    settings.profile = 'fast';
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(backend.calls[0]).toMatchObject({ profile: 'fast', steps: 14 });
     s.stop();
   });
 });

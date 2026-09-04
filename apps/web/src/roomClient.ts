@@ -1,4 +1,5 @@
 import {
+  type AIProfileName,
   type AIState,
   type ClientMessage,
   type Layer,
@@ -85,6 +86,13 @@ export class RoomClient {
   aiResolution = 1024;
   aiResolutionMax = 1024;
   aiResolutionAdjustable = true;
+  aiProfile: AIProfileName = 'fast';
+  /**
+   * Last measured stroke-to-result time per profile, so the hint under the
+   * fast/quality switch reflects this machine rather than my measurements.
+   * Not persisted: an empty slot falls back to PROFILE_HINT_MS.
+   */
+  readonly profileLatency: Partial<Record<AIProfileName, number>> = {};
   humanRevision = 0;
   aiRevision = 0;
   aiState: AIState = 'idle';
@@ -332,6 +340,7 @@ export class RoomClient {
         this.aiResolution = s.aiResolution;
         this.aiResolutionMax = s.aiResolutionMax;
         this.aiResolutionAdjustable = s.aiResolutionAdjustable;
+        this.aiProfile = s.aiProfile;
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;
@@ -436,6 +445,7 @@ export class RoomClient {
         this.denoise = msg.denoise;
         this.negativePrompt = msg.negativePrompt;
         this.aiResolution = msg.aiResolution;
+        this.aiProfile = msg.aiProfile;
         break;
       case 'prompt_changed':
         this.prompt = msg.prompt;
@@ -459,6 +469,8 @@ export class RoomClient {
           this.lastApply = msg.apply;
           this.aiRevision = msg.aiRevision;
           this.aiLatencyMs = msg.latencyMs;
+          // Remember what this profile actually costs on this machine.
+          this.profileLatency[this.aiProfile] = msg.latencyMs;
         } catch {
           // A dropped patch would leave a hole. Recover from the server's
           // authoritative raster, but outside the queue so nothing stalls.

@@ -6,7 +6,11 @@ export interface ComfyOptions {
   url: string;
   checkpoint: string;
   cfg?: number;
-  /** Name of the 4-step LoRA; empty/undefined keeps the many-step workflow. */
+  /**
+   * Name of the 4-step LoRA. Requests with `profile: 'fast'` load it; empty or
+   * undefined means the fast profile is unavailable and every request runs the
+   * quality workflow.
+   */
   fastLora?: string;
   /** VAE decode tile size; 0 falls back to a plain VAEDecode. */
   vaeTile?: number;
@@ -137,6 +141,8 @@ interface HistoryImage { filename: string; subfolder: string; type: string }
 export class ComfyUIBackend implements AIBackend {
   readonly name = 'comfyui';
   private readonly clientId = randomUUID();
+  /** Undefined until the first request; then the LoRA the graph last used. */
+  private lastLora: string | undefined | null = null;
 
   constructor(private readonly opts: ComfyOptions) {}
 
@@ -172,6 +178,23 @@ export class ComfyUIBackend implements AIBackend {
     return (await res.json()) as UploadResult;
   }
 
+  /**
+   * The LoRA for this request's profile, or undefined for the quality
+   * workflow. ComfyUI keeps one model in VRAM, so alternating profiles makes
+   * it load or unload the LoRA - a few seconds on the first request after a
+   * switch. Worth saying out loud when it happens rather than looking like a
+   * random slow generation.
+   */
+  private loraFor(req: GenerateRequest): string | undefined {
+    const wanted = req.profile === 'fast' ? this.opts.fastLora || undefined : undefined;
+    if (this.lastLora !== undefined && this.lastLora !== wanted) {
+      const to = wanted ? `fast (${wanted})` : 'quality';
+      console.log(`[comfyui] switching profile to ${to}; the first generation after a switch reloads the model`);
+    }
+    this.lastLora = wanted;
+    return wanted;
+  }
+
   async generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {
     const stamp = `${req.tag}_${Date.now()}`;
     const image = await this.upload(req.imagePng, `brushjam_${stamp}_img.png`, signal);
@@ -187,7 +210,7 @@ export class ComfyUIBackend implements AIBackend {
       steps: req.steps,
       cfg: this.opts.cfg ?? 5.5,
       vaeTile: this.opts.vaeTile ?? 512,
-      fastLora: this.opts.fastLora,
+      fastLora: this.loraFor(req),
       denoise: req.denoise,
       filenamePrefix: `brushjam/${req.tag}`,
     });

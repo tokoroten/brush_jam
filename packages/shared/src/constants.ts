@@ -20,6 +20,23 @@ export const MIN_DENOISE = 0.2;
 export const MAX_DENOISE = 0.95;
 export const DENOISE_STEP = 0.05;
 export const MAX_NEGATIVE_PROMPT = 1000;
+/**
+ * Room-level speed/quality choice. Measured on an RTX 3070 at 1024:
+ * quality (14-step euler_a) ~10 s, fast (4-step LCM) ~5.7 s, and fast at 768
+ * ~3.7 s - see docs/experiments/2026-09-05-comfyui/REPORT.md.
+ */
+export const AI_PROFILES = ['fast', 'quality'] as const;
+export type AIProfileName = (typeof AI_PROFILES)[number];
+
+/** Per-profile defaults a new room starts from. */
+export const PROFILE_DEFAULTS: Record<AIProfileName, { resolution: number; denoise: number; steps: number }> = {
+  fast: { resolution: 768, denoise: 0.7, steps: 4 },
+  quality: { resolution: 1024, denoise: 0.7, steps: 14 },
+};
+
+/** Fallback hints shown before this room has measured anything, in ms. */
+export const PROFILE_HINT_MS: Record<AIProfileName, number> = { fast: 4000, quality: 10_000 };
+
 /** Generation resolutions a room may pick from (bounded by AI_WINDOW). */
 export const AI_RESOLUTIONS = [512, 768, 1024] as const;
 export const MIN_AI_RESOLUTION = 512;

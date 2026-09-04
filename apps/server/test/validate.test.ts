@@ -136,3 +136,36 @@ describe('set_ai_settings aiResolution', () => {
     expect(validateClientMessage(payload).ok).toBe(false);
   });
 });
+
+/**
+ * The browser found this one: the reducer handled aiProfile but the validator
+ * silently dropped it, so the segmented control did nothing over a real socket
+ * while every unit test passed.
+ */
+describe('set_ai_settings aiProfile', () => {
+  it('accepts both profiles', () => {
+    for (const aiProfile of ['fast', 'quality']) {
+      const out = validateClientMessage({ t: 'set_ai_settings', aiProfile });
+      expect(out.ok).toBe(true);
+      expect(out.ok && out.msg).toMatchObject({ t: 'set_ai_settings', aiProfile });
+    }
+  });
+
+  it('rejects anything else', () => {
+    const out = validateClientMessage({ t: 'set_ai_settings', aiProfile: 'turbo' });
+    expect(out.ok).toBe(false);
+  });
+
+  it('rejects a non-string profile', () => {
+    expect(validateClientMessage({ t: 'set_ai_settings', aiProfile: 7 }).ok).toBe(false);
+  });
+
+  it('still requires at least one field', () => {
+    expect(validateClientMessage({ t: 'set_ai_settings' }).ok).toBe(false);
+  });
+
+  it('carries the profile alongside the other settings', () => {
+    const out = validateClientMessage({ t: 'set_ai_settings', denoise: 0.8, aiResolution: 512, aiProfile: 'quality' });
+    expect(out.ok && out.msg).toMatchObject({ denoise: 0.8, aiResolution: 512, aiProfile: 'quality' });
+  });
+});

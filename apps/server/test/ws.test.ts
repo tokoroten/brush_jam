@@ -93,7 +93,7 @@ describe('websocket room', () => {
     expect(snap.snapshot.layers).toHaveLength(1);
     expect(snap.snapshot.canvasSize).toBe(4096);
     // finding 17: the client must be told the configured sizes
-    expect(snap.snapshot.aiWindow).toBe(1024);
+    expect(snap.snapshot.aiWindow).toBe(768);
     expect(snap.snapshot.aiApply).toBe(768);
 
     alice.clear();
