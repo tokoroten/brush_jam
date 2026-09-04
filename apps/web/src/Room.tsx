@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
 import {
+  AI_RESOLUTIONS,
   CANVAS_SIZE,
   DEFAULT_NEGATIVE_PROMPT,
   DENOISE_STEP,
@@ -397,6 +398,22 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               value={denoiseDraft ?? client.denoise}
               onChange={(e) => setDenoiseDraft(Number(e.target.value))}
             />
+          </label>
+          <label title="generation resolution; the result is scaled to the canvas">
+            AI resolution
+            <select
+              value={client.aiResolution}
+              onChange={(e) => client.send({ t: 'set_ai_settings', aiResolution: Number(e.target.value) })}
+            >
+              {AI_RESOLUTIONS.filter((r) => r <= client.aiResolutionMax).map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+              {AI_RESOLUTIONS.every((r) => r !== client.aiResolution) ? (
+                <option value={client.aiResolution}>{client.aiResolution}</option>
+              ) : null}
+            </select>
           </label>
           <input
             className="prompt"

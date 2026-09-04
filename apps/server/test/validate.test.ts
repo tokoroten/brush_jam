@@ -117,3 +117,22 @@ describe('set_ai_settings', () => {
     expect(validateClientMessage(payload).ok).toBe(false);
   });
 });
+
+describe('set_ai_settings aiResolution', () => {
+  it('accepts a size on the 64 grid', () => {
+    expect(validateClientMessage({ t: 'set_ai_settings', aiResolution: 768 })).toEqual({
+      ok: true,
+      msg: { t: 'set_ai_settings', aiResolution: 768 },
+    });
+  });
+
+  it.each([
+    { t: 'set_ai_settings', aiResolution: 256 },
+    { t: 'set_ai_settings', aiResolution: 4096 },
+    { t: 'set_ai_settings', aiResolution: 700 },
+    { t: 'set_ai_settings', aiResolution: '768' },
+    { t: 'set_ai_settings', aiResolution: Number.NaN },
+  ])('rejects %j', (payload) => {
+    expect(validateClientMessage(payload).ok).toBe(false);
+  });
+});

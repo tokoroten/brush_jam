@@ -43,7 +43,8 @@ interface Harness {
   maskEmpty: { value: boolean };
   renderedAt: number[];
   logs: string[];
-  settings: { denoise: number | undefined; negativePrompt: string | undefined };
+  settings: { denoise: number | undefined; negativePrompt: string | undefined; resolution: number | undefined };
+  renderSizes: Array<{ rect: Rect; size: number }>;
 }
 
 function makeHost(): Harness {
@@ -52,17 +53,29 @@ function makeHost(): Harness {
   const masks: Array<{ crop: Rect; apply: Rect }> = [];
   const revision = { value: 10 };
   const prompt = { value: 'a prompt' };
-  const settings = { denoise: undefined as number | undefined, negativePrompt: undefined as string | undefined };
+  const settings = {
+    denoise: undefined as number | undefined,
+    negativePrompt: undefined as string | undefined,
+    resolution: undefined as number | undefined,
+  };
+  const renderSizes: Array<{ rect: Rect; size: number }> = [];
   const maskEmpty = { value: false };
   const renderedAt: number[] = [];
   const logs: string[] = [];
   const host: SchedulerHost = {
     getRevision: () => revision.value,
     beginJob: () => {
-      const captured = { revision: revision.value, prompt: prompt.value, denoise: settings.denoise, negativePrompt: settings.negativePrompt };
+      const captured = {
+        revision: revision.value,
+        prompt: prompt.value,
+        denoise: settings.denoise,
+        negativePrompt: settings.negativePrompt,
+        resolution: settings.resolution,
+      };
       return {
         ...captured,
-        render: async () => {
+        render: async (rect, size) => {
+          renderSizes.push({ rect, size });
           renderedAt.push(revision.value);
           return Buffer.from('input');
         },
@@ -82,7 +95,7 @@ function makeHost(): Harness {
     },
     emit: (msg) => emitted.push(msg),
   };
-  return { host, emitted, applied, masks, revision, prompt, maskEmpty, renderedAt, logs, settings };
+  return { host, emitted, applied, masks, revision, prompt, maskEmpty, renderedAt, logs, settings, renderSizes };
 }
 
 const opts = {
@@ -641,6 +654,54 @@ describe('scheduling deadlines', () => {
     expect(backend.calls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1200);
     expect(backend.calls).toHaveLength(2);
+    s.stop();
+  });
+});
+
+/** Generation resolution is decoupled from the canvas size in full mode. */
+describe('AIScheduler generation resolution', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const fullOpts = { ...opts, mode: 'full' as const, canvasSize: 1024, window: 768, apply: 1024 };
+
+  it('renders and generates at AI_WINDOW while applying to the whole canvas', async () => {
+    const { host, masks, applied, renderSizes } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, fullOpts);
+    s.markDirty([R(10, 10)]);
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(backend.calls[0]?.size).toBe(768);
+    expect(masks[0]?.crop).toEqual({ x: 0, y: 0, width: 768, height: 768 });
+    expect(renderSizes[0]).toEqual({ rect: { x: 0, y: 0, width: 1024, height: 1024 }, size: 768 });
+
+    await backend.finish();
+    // the result is applied to the whole canvas, not to a 768 square
+    expect(applied[0]?.crop).toEqual({ x: 0, y: 0, width: 1024, height: 1024 });
+    s.stop();
+  });
+
+  it('prefers the room setting over the server default', async () => {
+    const { host, renderSizes, settings } = makeHost();
+    settings.resolution = 512;
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, fullOpts);
+    s.markDirty([R(10, 10)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls[0]?.size).toBe(512);
+    expect(renderSizes[0]?.size).toBe(512);
+    s.stop();
+  });
+
+  it('can generate above the canvas size too', async () => {
+    const { host, renderSizes } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, { ...fullOpts, canvasSize: 512, window: 1024, apply: 512 });
+    s.markDirty([R(10, 10)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(renderSizes[0]).toEqual({ rect: { x: 0, y: 0, width: 512, height: 512 }, size: 1024 });
+    await backend.finish();
     s.stop();
   });
 });

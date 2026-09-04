@@ -20,3 +20,7 @@ export const MIN_DENOISE = 0.2;
 export const MAX_DENOISE = 0.95;
 export const DENOISE_STEP = 0.05;
 export const MAX_NEGATIVE_PROMPT = 1000;
+/** Generation resolutions a room may pick from (bounded by AI_WINDOW). */
+export const AI_RESOLUTIONS = [512, 768, 1024] as const;
+export const MIN_AI_RESOLUTION = 512;
+export const MAX_AI_RESOLUTION = 2048;

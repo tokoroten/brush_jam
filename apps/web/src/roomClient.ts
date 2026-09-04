@@ -81,6 +81,9 @@ export class RoomClient {
   /** Room-level AI settings, shared like the prompt. */
   denoise = 0.55;
   negativePrompt = '';
+  /** Generation size, and the largest this server allows. */
+  aiResolution = 1024;
+  aiResolutionMax = 1024;
   humanRevision = 0;
   aiRevision = 0;
   aiState: AIState = 'idle';
@@ -325,6 +328,8 @@ export class RoomClient {
         if (s.canvasSize !== this.canvasSize) this.resizeRasters(s.canvasSize);
         this.denoise = s.denoise;
         this.negativePrompt = s.negativePrompt;
+        this.aiResolution = s.aiResolution;
+        this.aiResolutionMax = s.aiResolutionMax;
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;
@@ -428,6 +433,7 @@ export class RoomClient {
       case 'ai_settings_changed':
         this.denoise = msg.denoise;
         this.negativePrompt = msg.negativePrompt;
+        this.aiResolution = msg.aiResolution;
         break;
       case 'prompt_changed':
         this.prompt = msg.prompt;

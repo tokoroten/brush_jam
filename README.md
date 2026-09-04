@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 398 tests across shared / server / web
+pnpm test         # 417 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -118,7 +118,7 @@ are multiples of 64, denoise is 0..1, and so on).
 | `COMFYUI_CHECKPOINT` | `waiNSFWIllustrious_v150.safetensors` | Must exist in ComfyUI |
 | `CANVAS_SIZE` | `1024` | World canvas size in px (square, multiple of 64, 512-4096) |
 | `AI_MODE` | `full` | `full` regenerates the whole canvas; `patch` uses crops + dirty regions |
-| `AI_WINDOW` | `1024` | Square generation window in world px (8 GB VRAM friendly) |
+| `AI_WINDOW` | `CANVAS_SIZE` in full mode, else `1024` | Generation size in px (512-2048, multiple of 64) |
 | `AI_APPLY` | `768` | Central area the result is allowed to change |
 | `AI_STEPS` | `14` | Sampler steps |
 | `AI_DENOISE` | `0.55` | img2img strength; the starting value of each room's slider |
@@ -174,6 +174,16 @@ feathering, so a thin line no longer comes back as a narrow repainted band. The
 window is locked to `CANVAS_SIZE`, which must therefore be <= 2048; the server
 refuses to boot otherwise and points at patch mode.
 
+**Generation resolution is not the canvas size.** `AI_WINDOW` is what the model
+actually runs at: the whole canvas is rendered, resampled down to
+`AI_WINDOW`x`AI_WINDOW`, generated, then resampled back up to the canvas and
+composited. On an 8 GB card `CANVAS_SIZE=1024 AI_WINDOW=768` (or 512) is much
+faster than generating at 1024, at the cost of detail; `AI_WINDOW` may also be
+*larger* than the canvas. The effective sizes are logged at startup, and each
+room can pick its own value from the advanced panel ("AI resolution", one of
+512/768/1024, capped by the server's `AI_WINDOW`), which re-runs like a prompt
+change.
+
 `AI_MODE=patch` restores the original large-canvas pipeline (dirty regions ->
 crop -> dilated, feathered mask -> apply rect), e.g.
 `AI_MODE=patch CANVAS_SIZE=4096 AI_WINDOW=1024 AI_APPLY=768`.
@@ -223,6 +233,8 @@ room exactly like the prompt itself:
 
 - **denoise** — 0.2 to 0.95 in 0.05 steps, starting from `AI_DENOISE`. Low values
   keep the drawing and only clean it up; high values reinterpret it.
+- **AI resolution** — 512 / 768 / 1024, capped by the server's `AI_WINDOW`.
+  Lower is faster and blurrier; the result is always scaled back to the canvas.
 - **negative prompt** — up to 1000 characters. Empty means "use the built-in
   list", which the input shows as its placeholder.
 

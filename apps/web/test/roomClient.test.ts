@@ -121,6 +121,8 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     aiApply: 768,
     denoise: 0.55,
     negativePrompt: '',
+    aiResolution: 1024,
+    aiResolutionMax: 1024,
     members: [{ userId: 'me', name: 'Me', color: '#fff' }],
     layers: [layer('l1')],
     strokes: [],
@@ -438,15 +440,18 @@ describe('ai settings', () => {
   it('takes them from the snapshot and from later broadcasts', async () => {
     const loader = makeLoader();
     const client = new RoomClient('r1', 'Me', loader.deps);
-    client.receive(snapshot({ denoise: 0.7, negativePrompt: 'no text' }));
+    client.receive(snapshot({ denoise: 0.7, negativePrompt: 'no text', aiResolution: 512, aiResolutionMax: 768 }));
     await tick();
     expect(client.denoise).toBe(0.7);
+    expect(client.aiResolution).toBe(512);
+    expect(client.aiResolutionMax).toBe(768);
     expect(client.negativePrompt).toBe('no text');
 
-    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '' });
+    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '', aiResolution: 768 });
     await tick();
     expect(client.denoise).toBe(0.35);
     expect(client.negativePrompt).toBe('');
+    expect(client.aiResolution).toBe(768);
     client.dispose();
   });
 });

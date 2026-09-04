@@ -1,4 +1,4 @@
-import { MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE, type ClientMessage, type Layer, type LayerKind, type Point } from '@brushjam/shared';
+import { MAX_AI_RESOLUTION, MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_AI_RESOLUTION, MIN_DENOISE, type ClientMessage, type Layer, type LayerKind, type Point } from '@brushjam/shared';
 
 /**
  * Hand-written runtime validation for every client message. The reducer is
@@ -138,7 +138,17 @@ export function validateClientMessage(raw: unknown): ValidationResult {
         if (raw.negativePrompt.length > MAX_NEGATIVE_PROMPT) return bad('set_ai_settings negativePrompt is too long');
         msg.negativePrompt = raw.negativePrompt;
       }
-      if (msg.denoise === undefined && msg.negativePrompt === undefined) return bad('set_ai_settings needs denoise or negativePrompt');
+      if (raw.aiResolution !== undefined) {
+        if (!isNum(raw.aiResolution)) return bad('set_ai_settings aiResolution must be a finite number');
+        if (raw.aiResolution < MIN_AI_RESOLUTION || raw.aiResolution > MAX_AI_RESOLUTION) {
+          return bad(`set_ai_settings aiResolution must be between ${MIN_AI_RESOLUTION} and ${MAX_AI_RESOLUTION}`);
+        }
+        if (raw.aiResolution % 64 !== 0) return bad('set_ai_settings aiResolution must be a multiple of 64');
+        msg.aiResolution = raw.aiResolution;
+      }
+      if (msg.denoise === undefined && msg.negativePrompt === undefined && msg.aiResolution === undefined) {
+        return bad('set_ai_settings needs denoise, negativePrompt or aiResolution');
+      }
       return { ok: true, msg };
     }
 

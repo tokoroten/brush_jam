@@ -240,7 +240,7 @@ describe('ai settings', () => {
   it('applies both values and asks the AI to re-run', () => {
     const { state, alice } = room();
     const out = applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.8, negativePrompt: 'blurry, jpeg' });
-    expect(out.broadcast[0]).toEqual({ t: 'ai_settings_changed', denoise: 0.8, negativePrompt: 'blurry, jpeg' });
+    expect(out.broadcast[0]).toMatchObject({ t: 'ai_settings_changed', denoise: 0.8, negativePrompt: 'blurry, jpeg' });
     expect(out.promptChanged).toBe(true);
     // a settings change is not a canvas edit
     expect(out.dirty).toHaveLength(0);
@@ -396,5 +396,50 @@ describe('room canvas bounds', () => {
     });
     const point = (out.relay[0] as { stroke: { points: Array<{ x: number; y: number }> } }).stroke.points[0]!;
     expect(point).toEqual({ x: 1024, y: -512 });
+  });
+});
+
+/** AI resolution is a room-level setting, bounded by the server's AI_WINDOW. */
+describe('ai resolution setting', () => {
+  it('starts at the configured value and re-runs when changed', () => {
+    const state = createRoom('res', 0.55, 1024, 768);
+    const alice = addMember(state, 'Alice').userId;
+    expect(state.aiResolution).toBe(768);
+    expect(state.aiResolutionMax).toBe(768);
+
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 512 });
+    expect(out.broadcast[0]).toMatchObject({ t: 'ai_settings_changed', aiResolution: 512 });
+    expect(out.promptChanged).toBe(true);
+    expect(state.aiResolution).toBe(512);
+  });
+
+  it('never exceeds the server ceiling', () => {
+    const state = createRoom('res2', 0.55, 1024, 768);
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 2048 });
+    expect(state.aiResolution).toBe(768);
+  });
+
+  it('snaps to the 64 grid and the floor', () => {
+    const state = createRoom('res3', 0.55, 1024, 1024);
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 700 });
+    expect(state.aiResolution).toBe(704);
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 64 });
+    expect(state.aiResolution).toBe(512);
+  });
+
+  it('does nothing when the value is unchanged', () => {
+    const state = createRoom('res4', 0.55, 1024, 1024);
+    const alice = addMember(state, 'Alice').userId;
+    expect(applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 1024 }).broadcast).toHaveLength(0);
+  });
+
+  it('rides along in the snapshot and the render snapshot', () => {
+    const state = createRoom('res5', 0.55, 1024, 1024);
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 512 });
+    expect(snapshot(state, alice, 'idle', { window: 1024, apply: 1024 })).toMatchObject({ aiResolution: 512, aiResolutionMax: 1024 });
+    expect(captureRenderSnapshot(state).aiResolution).toBe(512);
   });
 });

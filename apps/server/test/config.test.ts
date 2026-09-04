@@ -92,9 +92,10 @@ describe('canvas size and AI mode', () => {
     expect(c.aiApply).toBe(1024);
   });
 
-  it('locks window and apply to the canvas in full mode', () => {
+  it('locks the apply area to the canvas in full mode, but not the window', () => {
     const c = loadConfig({ CANVAS_SIZE: '768', AI_WINDOW: '1024', AI_APPLY: '512' } as NodeJS.ProcessEnv);
-    expect(c.aiWindow).toBe(768);
+    // AI_WINDOW is the generation resolution and may differ from the canvas
+    expect(c.aiWindow).toBe(1024);
     expect(c.aiApply).toBe(768);
   });
 
@@ -130,5 +131,33 @@ describe('fail-fast validation', () => {
     expect(() => loadConfig({ AI_DENOISE: '0.99' } as NodeJS.ProcessEnv)).toThrow(/AI_DENOISE/);
     expect(() => loadConfig({ AI_DENOISE: '0.57' } as NodeJS.ProcessEnv)).toThrow(/multiple of 0.05/);
     expect(loadConfig({ AI_DENOISE: '0.85' } as NodeJS.ProcessEnv).aiDenoise).toBe(0.85);
+  });
+});
+
+describe('generation resolution', () => {
+  it('defaults to the canvas size in full mode', () => {
+    const c = loadConfig({ CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+    expect(c.aiWindow).toBe(1024);
+    expect(c.aiApply).toBe(1024);
+  });
+
+  it('lets AI_WINDOW go below the canvas', () => {
+    const c = loadConfig({ CANVAS_SIZE: '1024', AI_WINDOW: '768' } as NodeJS.ProcessEnv);
+    expect(c.aiWindow).toBe(768);
+    // the whole canvas is still what gets replaced
+    expect(c.aiApply).toBe(1024);
+  });
+
+  it('lets AI_WINDOW go above the canvas', () => {
+    expect(loadConfig({ CANVAS_SIZE: '512', AI_WINDOW: '1024' } as NodeJS.ProcessEnv).aiWindow).toBe(1024);
+  });
+
+  it('refuses a generation size below 512 in full mode', () => {
+    expect(() => loadConfig({ CANVAS_SIZE: '1024', AI_WINDOW: '256' } as NodeJS.ProcessEnv)).toThrow(/AI_WINDOW/);
+  });
+
+  it('still refuses sizes off the 64 grid or out of range', () => {
+    expect(() => loadConfig({ AI_WINDOW: '700' } as NodeJS.ProcessEnv)).toThrow(/multiple of 64/);
+    expect(() => loadConfig({ AI_WINDOW: '4096' } as NodeJS.ProcessEnv)).toThrow(/AI_WINDOW/);
   });
 });

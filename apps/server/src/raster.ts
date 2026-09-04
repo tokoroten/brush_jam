@@ -83,6 +83,12 @@ export async function decodeUpload(bytes: Buffer, expected: { width: number; hei
 export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size: number): Promise<Buffer> {
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext('2d');
+  // Only when the crop is actually being resampled: at 1:1 the high-quality
+  // filter is not identity, and client/server parity matters more there.
+  if (size !== crop.width) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+  }
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, size, size);
   const scale = size / crop.width;
@@ -214,6 +220,11 @@ export class AICanvas {
   /** Composite an AI patch through the soft mask; returns the crop as a PNG. */
   async composite(patchPng: Buffer, crop: Rect, mask: Canvas): Promise<Buffer> {
     const patch = await loadImage(patchPng);
+    // The patch is generation-sized; drawing it into the crop scales it back.
+    if (mask.width !== crop.width) {
+      this.ctx.imageSmoothingEnabled = true;
+      this.ctx.imageSmoothingQuality = 'high';
+    }
     const work = createCanvas(mask.width, mask.height);
     const wctx = work.getContext('2d');
     wctx.drawImage(patch, 0, 0, mask.width, mask.height);

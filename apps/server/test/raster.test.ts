@@ -97,6 +97,9 @@ describe('layer compositing matches the browser (finding 5)', () => {
   async function browserReference(state: RoomState, size: number): Promise<Buffer> {
     const out = createCanvas(size, size);
     const octx = out.getContext('2d');
+    // the server asks for high-quality resampling whenever it rescales
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
     octx.fillStyle = '#ffffff';
     octx.fillRect(0, 0, size, size);
     const scale = size / crop.width;

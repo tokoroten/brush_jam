@@ -1,6 +1,8 @@
 import {
   CANVAS_SIZE,
   DENOISE_STEP,
+  MAX_AI_RESOLUTION,
+  MIN_AI_RESOLUTION,
   translateRect,
   MAX_DENOISE,
   MAX_LAYERS,
@@ -24,6 +26,13 @@ import { memberColor, shortId } from './ids.js';
 export const DEFAULT_DENOISE = 0.55;
 
 /** Keeps the shared value on the slider's grid and inside its range. */
+/** Snap a requested generation size to the 64 grid and the allowed range. */
+export function clampResolution(value: number, max: number): number {
+  if (!Number.isFinite(value)) return max;
+  const stepped = Math.round(value / 64) * 64;
+  return Math.min(max, Math.max(MIN_AI_RESOLUTION, Math.min(MAX_AI_RESOLUTION, stepped)));
+}
+
 export function clampDenoise(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_DENOISE;
   const stepped = Math.round(value / DENOISE_STEP) * DENOISE_STEP;
@@ -49,6 +58,10 @@ export interface RoomState {
   denoise: number;
   /** Empty means "use the backend's built-in default negative list". */
   negativePrompt: string;
+  /** Generation size in px; the result is scaled back to the canvas. */
+  aiResolution: number;
+  /** Ceiling for the above, from the server's AI_WINDOW. */
+  aiResolutionMax: number;
   humanRevision: number;
   aiRevision: number;
   layers: Layer[];
@@ -106,13 +119,20 @@ const refuseStroke = (userId: string, strokeId: string, message: string): ApplyR
   ],
 });
 
-export function createRoom(id: string, denoise = DEFAULT_DENOISE, canvasSize = CANVAS_SIZE): RoomState {
+export function createRoom(
+  id: string,
+  denoise = DEFAULT_DENOISE,
+  canvasSize = CANVAS_SIZE,
+  resolution = canvasSize,
+): RoomState {
   return {
     id,
     canvasSize,
     prompt: 'anime style, fantasy town, vibrant colors',
     denoise: clampDenoise(denoise),
     negativePrompt: '',
+    aiResolution: clampResolution(resolution, resolution),
+    aiResolutionMax: clampResolution(resolution, resolution),
     humanRevision: 0,
     aiRevision: 0,
     layers: [
@@ -245,6 +265,8 @@ export function snapshot(
     aiApply: ai.apply,
     denoise: room.denoise,
     negativePrompt: room.negativePrompt,
+    aiResolution: room.aiResolution,
+    aiResolutionMax: room.aiResolutionMax,
     members: [...room.members.values()],
     layers: sortedLayers(room),
     strokes: room.strokes,
@@ -548,10 +570,18 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       // everyone sees it, and the AI re-runs without anyone having to draw.
       const denoise = msg.denoise === undefined ? room.denoise : clampDenoise(msg.denoise);
       const negativePrompt = msg.negativePrompt === undefined ? room.negativePrompt : msg.negativePrompt.slice(0, MAX_NEGATIVE_PROMPT);
-      if (denoise === room.denoise && negativePrompt === room.negativePrompt) return empty();
+      const aiResolution =
+        msg.aiResolution === undefined ? room.aiResolution : clampResolution(msg.aiResolution, room.aiResolutionMax);
+      if (denoise === room.denoise && negativePrompt === room.negativePrompt && aiResolution === room.aiResolution) return empty();
       room.denoise = denoise;
       room.negativePrompt = negativePrompt;
-      return { broadcast: [{ t: 'ai_settings_changed', denoise, negativePrompt }], relay: [], dirty: [], promptChanged: true };
+      room.aiResolution = aiResolution;
+      return {
+        broadcast: [{ t: 'ai_settings_changed', denoise, negativePrompt, aiResolution }],
+        relay: [],
+        dirty: [],
+        promptChanged: true,
+      };
     }
 
     case 'set_prompt': {
@@ -575,6 +605,7 @@ export interface RenderSnapshot {
   prompt: string;
   denoise: number;
   negativePrompt: string;
+  aiResolution: number;
   layers: Layer[];
   strokes: Stroke[];
   undone: ReadonlySet<string>;
@@ -587,6 +618,7 @@ export function captureRenderSnapshot(room: RoomState): RenderSnapshot {
     prompt: room.prompt,
     denoise: room.denoise,
     negativePrompt: room.negativePrompt,
+    aiResolution: room.aiResolution,
     layers: sortedLayers(room).map((l) => ({ ...l })),
     strokes: [...room.strokes],
     undone: new Set(room.undone),

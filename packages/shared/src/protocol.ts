@@ -65,6 +65,10 @@ export interface RoomSnapshot {
   denoise: number;
   /** Empty means "use the built-in default list". */
   negativePrompt: string;
+  /** Generation size in px; the result is scaled back to the canvas. */
+  aiResolution: number;
+  /** Largest resolution this server allows (the configured AI_WINDOW). */
+  aiResolutionMax: number;
   members: Member[];
   layers: Layer[];
   strokes: Stroke[];
@@ -94,7 +98,7 @@ export type ClientMessage =
   | { t: 'layer_delete'; id: string }
   | { t: 'layer_reorder'; ids: string[] }
   | { t: 'set_prompt'; prompt: string }
-  | { t: 'set_ai_settings'; denoise?: number; negativePrompt?: string };
+  | { t: 'set_ai_settings'; denoise?: number; negativePrompt?: string; aiResolution?: number };
 
 export type ServerMessage =
   | { t: 'snapshot'; snapshot: RoomSnapshot }
@@ -112,7 +116,7 @@ export type ServerMessage =
   | { t: 'layer_deleted'; id: string; humanRevision: number }
   | { t: 'layers_reordered'; layers: Layer[]; humanRevision: number }
   | { t: 'prompt_changed'; prompt: string }
-  | { t: 'ai_settings_changed'; denoise: number; negativePrompt: string }
+  | { t: 'ai_settings_changed'; denoise: number; negativePrompt: string; aiResolution: number }
   | { t: 'ai_status'; state: AIState; forRevision: number; message?: string; latencyMs?: number }
   | { t: 'ai_result'; rect: Rect; url: string; aiRevision: number; crop: Rect; apply: Rect; latencyMs: number }
   | { t: 'error'; message: string };

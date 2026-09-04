@@ -26,6 +26,8 @@ export interface RenderJob {
   /** Room-level overrides; absent means "use the server defaults". */
   denoise?: number;
   negativePrompt?: string;
+  /** Full mode: generation size, independent of the canvas size. */
+  resolution?: number;
   render(crop: Rect, size: number): Promise<Buffer>;
 }
 
@@ -300,7 +302,10 @@ export class AIScheduler {
     const rect: Rect = { x: 0, y: 0, width: size, height: size };
     const job = this.host.beginJob();
     const forRevision = job.revision;
-    const mask = this.host.buildFullMask(this.opts.window);
+    // The whole canvas is rendered, then resampled to the generation size; the
+    // result is scaled back to the canvas when it is composited.
+    const resolution = job.resolution ?? this.opts.window;
+    const mask = this.host.buildFullMask(resolution);
 
     this.changed = false;
     this.inFlight = true;
@@ -315,14 +320,14 @@ export class AIScheduler {
     }, this.opts.watchdogMs ?? 180_000);
 
     try {
-      const imagePng = await job.render(rect, this.opts.window);
+      const imagePng = await job.render(rect, resolution);
       const patch = await this.backend.generate(
         {
           prompt: job.prompt,
           negativePrompt: job.negativePrompt?.trim() ? job.negativePrompt : DEFAULT_NEGATIVE_PROMPT,
           imagePng,
           maskPng: mask.png,
-          size: this.opts.window,
+          size: resolution,
           denoise: job.denoise ?? this.opts.denoise,
           steps: this.opts.steps,
           seed: (this.opts.seed ?? defaultSeed)(),

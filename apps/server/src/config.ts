@@ -102,15 +102,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   if (config.aiMode === 'full') {
-    // The whole canvas is the generation window, so it has to fit in one pass.
+    // The whole canvas is regenerated, but not necessarily at canvas
+    // resolution: AI_WINDOW is the *generation* size, so an 8 GB card can run a
+    // 1024 canvas at 768 or 512 and the result is scaled back up.
     if (config.canvasSize > 2048) {
       errors.push(`AI_MODE=full needs CANVAS_SIZE <= 2048 (got ${config.canvasSize}); use AI_MODE=patch for a large canvas`);
     }
-    config.aiWindow = config.canvasSize;
+    if (env.AI_WINDOW === undefined) config.aiWindow = config.canvasSize;
+    if (config.aiWindow < 512) {
+      errors.push(`AI_MODE=full needs AI_WINDOW >= 512 (got ${config.aiWindow})`);
+    }
+    // the whole canvas is always the applied area in full mode
     config.aiApply = config.canvasSize;
   }
 
-  if (config.aiApply > config.aiWindow) {
+  // In full mode the apply area is the canvas and the window is only the
+  // generation resolution, so the patch-mode relation between them does not apply.
+  if (config.aiMode === 'patch' && config.aiApply > config.aiWindow) {
     errors.push(`AI_APPLY (${config.aiApply}) must not exceed AI_WINDOW (${config.aiWindow})`);
   }
   try {

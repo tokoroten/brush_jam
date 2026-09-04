@@ -49,6 +49,10 @@ function listenWithRetry(attempt = 1): void {
     server.off('error', onError);
     console.log(`[brushjam] server on http://${config.host}:${config.port} (set HOST=0.0.0.0 to expose on the LAN)`);
     console.log(`[brushjam] canvas ${config.canvasSize} / ai mode ${config.aiMode}`);
+    if (config.aiMode === 'full') {
+      const note = config.aiWindow === config.canvasSize ? 'same as canvas' : `resampled from/to ${config.canvasSize}`;
+      console.log(`[brushjam] generation resolution ${config.aiWindow} (${note})`);
+    }
     console.log(`[brushjam] ai window ${config.aiWindow} / apply ${config.aiApply} / steps ${config.aiSteps} / denoise ${config.aiDenoise}`);
   });
 }
