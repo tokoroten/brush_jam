@@ -6,6 +6,7 @@ export interface RunpodOptions {
   apiKey: string;
   checkpoint: string;
   cfg?: number;
+  vaeTile?: number;
   baseUrl?: string;
 }
 
@@ -33,6 +34,7 @@ export class RunpodBackend implements AIBackend {
       seed: req.seed,
       steps: req.steps,
       cfg: this.opts.cfg ?? 5.5,
+      vaeTile: this.opts.vaeTile ?? 512,
       denoise: req.denoise,
       filenamePrefix: `brushjam/${req.tag}`,
     });

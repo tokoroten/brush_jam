@@ -6,6 +6,8 @@ export interface ComfyOptions {
   url: string;
   checkpoint: string;
   cfg?: number;
+  /** VAE decode tile size; 0 falls back to a plain VAEDecode. */
+  vaeTile?: number;
   pollIntervalMs?: number;
   /** Overall deadline for one generation. */
   timeoutMs?: number;
@@ -24,6 +26,12 @@ export interface WorkflowInput {
   cfg: number;
   denoise: number;
   filenamePrefix: string;
+  /**
+   * Tile size for VAEDecodeTiled. Plain VAEDecode of a 1024x1024 latent takes
+   * 1-4 minutes on an 8 GB card once VRAM is contended (sampling itself is
+   * ~22 s), so tiling is the default. 0 restores the plain node.
+   */
+  vaeTile?: number;
 }
 
 /**
@@ -56,8 +64,19 @@ export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
         denoise: i.denoise,
       },
     },
-    '10': { class_type: 'VAEDecode', inputs: { samples: ['9', 0], vae: ['1', 2] } },
+    '10': decodeNode(i.vaeTile),
     '11': { class_type: 'SaveImage', inputs: { images: ['10', 0], filename_prefix: i.filenamePrefix } },
+  };
+}
+
+/** VAEDecodeTiled on ComfyUI 0.28 requires all four size inputs. */
+function decodeNode(tile: number | undefined): Record<string, unknown> {
+  const samples: [string, number] = ['9', 0];
+  const vae: [string, number] = ['1', 2];
+  if (!tile || tile <= 0) return { class_type: 'VAEDecode', inputs: { samples, vae } };
+  return {
+    class_type: 'VAEDecodeTiled',
+    inputs: { samples, vae, tile_size: tile, overlap: 64, temporal_size: 64, temporal_overlap: 8 },
   };
 }
 
@@ -116,6 +135,7 @@ export class ComfyUIBackend implements AIBackend {
       seed: req.seed,
       steps: req.steps,
       cfg: this.opts.cfg ?? 5.5,
+      vaeTile: this.opts.vaeTile ?? 512,
       denoise: req.denoise,
       filenamePrefix: `brushjam/${req.tag}`,
     });

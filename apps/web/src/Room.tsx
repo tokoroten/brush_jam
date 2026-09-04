@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
 import {
   CANVAS_SIZE,
+  DEFAULT_NEGATIVE_PROMPT,
+  DENOISE_STEP,
+  MAX_DENOISE,
   MAX_LAYERS,
+  MAX_NEGATIVE_PROMPT,
+  MIN_DENOISE,
   fitCamera,
   panBy,
   screenToWorld,
@@ -51,6 +56,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const [promptDraft, setPromptDraft] = useState('');
   const [promptDirty, setPromptDirty] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  const [denoiseDraft, setDenoiseDraft] = useState<number | null>(null);
+  const [negativeDraft, setNegativeDraft] = useState<string | null>(null);
 
   const dragRef = useRef<Drag | null>(null);
   const spaceRef = useRef(false);
@@ -72,6 +80,26 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     }, 500);
     return () => clearTimeout(timer);
   }, [promptDraft, promptDirty, client]);
+
+  // Advanced settings are room-level, so they debounce and echo back exactly
+  // like the prompt: a local draft wins until the server confirms it.
+  useEffect(() => {
+    if (denoiseDraft === null) return;
+    const timer = setTimeout(() => {
+      client.send({ t: 'set_ai_settings', denoise: denoiseDraft });
+      setDenoiseDraft(null);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [denoiseDraft, client]);
+
+  useEffect(() => {
+    if (negativeDraft === null) return;
+    const timer = setTimeout(() => {
+      client.send({ t: 'set_ai_settings', negativePrompt: negativeDraft });
+      setNegativeDraft(null);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [negativeDraft, client]);
 
   // --- camera helpers -------------------------------------------------------
   const stageSize = (e: { currentTarget: HTMLCanvasElement }): { w: number; h: number } => {
@@ -278,9 +306,35 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             setPromptDirty(true);
           }}
         />
+        <button className={advanced ? 'active' : ''} onClick={() => setAdvanced((v) => !v)}>
+          advanced
+        </button>
         <span className={`pill ${client.aiState}`}>{statusText}</span>
         <span className={`pill ${client.connected ? 'idle' : 'error'}`}>{client.connected ? 'online' : 'offline'}</span>
       </header>
+
+      {advanced ? (
+        <div className="tools">
+          <label>
+            denoise {(denoiseDraft ?? client.denoise).toFixed(2)}
+            <input
+              type="range"
+              min={MIN_DENOISE}
+              max={MAX_DENOISE}
+              step={DENOISE_STEP}
+              value={denoiseDraft ?? client.denoise}
+              onChange={(e) => setDenoiseDraft(Number(e.target.value))}
+            />
+          </label>
+          <input
+            className="prompt"
+            value={negativeDraft ?? client.negativePrompt}
+            maxLength={MAX_NEGATIVE_PROMPT}
+            placeholder={DEFAULT_NEGATIVE_PROMPT}
+            onChange={(e) => setNegativeDraft(e.target.value)}
+          />
+        </div>
+      ) : null}
 
       <div className="tools">
         {(['pen', 'eraser', 'move'] as const).map((t) => (

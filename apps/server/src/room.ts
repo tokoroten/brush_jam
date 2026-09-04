@@ -1,6 +1,10 @@
 import {
   CANVAS_SIZE,
+  DENOISE_STEP,
+  MAX_DENOISE,
   MAX_LAYERS,
+  MAX_NEGATIVE_PROMPT,
+  MIN_DENOISE,
   strokeBBox,
   unionRects,
   type ClientMessage,
@@ -15,6 +19,16 @@ import {
 } from '@brushjam/shared';
 import { memberColor, shortId } from './ids.js';
 
+/** Matches the AI_DENOISE default; a room can be created with the configured one. */
+export const DEFAULT_DENOISE = 0.55;
+
+/** Keeps the shared value on the slider's grid and inside its range. */
+export function clampDenoise(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_DENOISE;
+  const stepped = Math.round(value / DENOISE_STEP) * DENOISE_STEP;
+  return Math.min(MAX_DENOISE, Math.max(MIN_DENOISE, Math.round(stepped * 100) / 100));
+}
+
 export interface RoomImage {
   id: string;
   mime: string;
@@ -28,6 +42,10 @@ export interface RoomImage {
 export interface RoomState {
   id: string;
   prompt: string;
+  /** img2img strength, adjustable from the Advanced panel. */
+  denoise: number;
+  /** Empty means "use the backend's built-in default negative list". */
+  negativePrompt: string;
   humanRevision: number;
   aiRevision: number;
   layers: Layer[];
@@ -85,10 +103,12 @@ const refuseStroke = (userId: string, strokeId: string, message: string): ApplyR
   ],
 });
 
-export function createRoom(id: string): RoomState {
+export function createRoom(id: string, denoise = DEFAULT_DENOISE): RoomState {
   return {
     id,
     prompt: 'anime style, fantasy town, vibrant colors',
+    denoise: clampDenoise(denoise),
+    negativePrompt: '',
     humanRevision: 0,
     aiRevision: 0,
     layers: [
@@ -219,6 +239,8 @@ export function snapshot(
     canvasSize: CANVAS_SIZE,
     aiWindow: ai.window,
     aiApply: ai.apply,
+    denoise: room.denoise,
+    negativePrompt: room.negativePrompt,
     members: [...room.members.values()],
     layers: sortedLayers(room),
     strokes: room.strokes,
@@ -493,6 +515,17 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       };
     }
 
+    case 'set_ai_settings': {
+      // Both are room-level, so a change behaves exactly like a prompt change:
+      // everyone sees it, and the AI re-runs without anyone having to draw.
+      const denoise = msg.denoise === undefined ? room.denoise : clampDenoise(msg.denoise);
+      const negativePrompt = msg.negativePrompt === undefined ? room.negativePrompt : msg.negativePrompt.slice(0, MAX_NEGATIVE_PROMPT);
+      if (denoise === room.denoise && negativePrompt === room.negativePrompt) return empty();
+      room.denoise = denoise;
+      room.negativePrompt = negativePrompt;
+      return { broadcast: [{ t: 'ai_settings_changed', denoise, negativePrompt }], relay: [], dirty: [], promptChanged: true };
+    }
+
     case 'set_prompt': {
       const prompt = msg.prompt.slice(0, 800);
       if (prompt === room.prompt) return empty();
@@ -512,6 +545,8 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
 export interface RenderSnapshot {
   revision: number;
   prompt: string;
+  denoise: number;
+  negativePrompt: string;
   layers: Layer[];
   strokes: Stroke[];
   undone: ReadonlySet<string>;
@@ -522,6 +557,8 @@ export function captureRenderSnapshot(room: RoomState): RenderSnapshot {
   return {
     revision: room.humanRevision,
     prompt: room.prompt,
+    denoise: room.denoise,
+    negativePrompt: room.negativePrompt,
     layers: sortedLayers(room).map((l) => ({ ...l })),
     strokes: [...room.strokes],
     undone: new Set(room.undone),

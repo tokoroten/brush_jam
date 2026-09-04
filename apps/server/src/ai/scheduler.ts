@@ -23,6 +23,9 @@ export interface MaskHandle {
 export interface RenderJob {
   revision: number;
   prompt: string;
+  /** Room-level overrides; absent means "use the server defaults". */
+  denoise?: number;
+  negativePrompt?: string;
   render(crop: Rect, size: number): Promise<Buffer>;
 }
 
@@ -185,11 +188,12 @@ export class AIScheduler {
       const patch = await this.backend.generate(
         {
           prompt: job.prompt,
-          negativePrompt: DEFAULT_NEGATIVE_PROMPT,
+          // An empty room setting means "keep the built-in list".
+          negativePrompt: job.negativePrompt?.trim() ? job.negativePrompt : DEFAULT_NEGATIVE_PROMPT,
           imagePng,
           maskPng: mask.png,
           size: this.opts.window,
-          denoise: this.opts.denoise,
+          denoise: job.denoise ?? this.opts.denoise,
           steps: this.opts.steps,
           seed: (this.opts.seed ?? defaultSeed)(),
           tag: `${this.opts.tag ?? 'room'}_r${forRevision}`,

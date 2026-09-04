@@ -1,4 +1,4 @@
-import type { ClientMessage, Layer, LayerKind, Point } from '@brushjam/shared';
+import { MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE, type ClientMessage, type Layer, type LayerKind, type Point } from '@brushjam/shared';
 
 /**
  * Hand-written runtime validation for every client message. The reducer is
@@ -121,6 +121,24 @@ export function validateClientMessage(raw: unknown): ValidationResult {
     case 'set_prompt':
       if (!isStr(raw.prompt)) return bad('set_prompt needs a string prompt');
       return { ok: true, msg: { t: 'set_prompt', prompt: raw.prompt } };
+
+    case 'set_ai_settings': {
+      const msg: ClientMessage = { t: 'set_ai_settings' };
+      if (raw.denoise !== undefined) {
+        if (!isNum(raw.denoise)) return bad('set_ai_settings denoise must be a finite number');
+        if (raw.denoise < MIN_DENOISE || raw.denoise > MAX_DENOISE) {
+          return bad(`set_ai_settings denoise must be between ${MIN_DENOISE} and ${MAX_DENOISE}`);
+        }
+        msg.denoise = raw.denoise;
+      }
+      if (raw.negativePrompt !== undefined) {
+        if (!isStr(raw.negativePrompt)) return bad('set_ai_settings negativePrompt must be a string');
+        if (raw.negativePrompt.length > MAX_NEGATIVE_PROMPT) return bad('set_ai_settings negativePrompt is too long');
+        msg.negativePrompt = raw.negativePrompt;
+      }
+      if (msg.denoise === undefined && msg.negativePrompt === undefined) return bad('set_ai_settings needs denoise or negativePrompt');
+      return { ok: true, msg };
+    }
 
     default:
       return bad(`unknown message type: ${t.slice(0, 32)}`);

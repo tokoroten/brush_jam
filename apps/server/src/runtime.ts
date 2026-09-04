@@ -41,7 +41,7 @@ export class RoomRuntime {
   private pendingImageBytes = 0;
 
   constructor(roomId: string, backend: AIBackend, private readonly config: Config) {
-    this.state = createRoom(roomId);
+    this.state = createRoom(roomId, config.aiDenoise);
     this.scheduler = new AIScheduler(
       {
         getRevision: () => this.state.humanRevision,
@@ -51,6 +51,8 @@ export class RoomRuntime {
           return {
             revision: snap.revision,
             prompt: snap.prompt,
+            denoise: snap.denoise,
+            negativePrompt: snap.negativePrompt,
             render: (crop, size) => renderCropInput(snap, crop, size),
           };
         },

@@ -55,6 +55,10 @@ export interface RoomSnapshot {
   /** Configured AI window / apply sizes, so the client never hard-codes them. */
   aiWindow: number;
   aiApply: number;
+  /** Room-level AI settings, shared by everyone like the prompt. */
+  denoise: number;
+  /** Empty means "use the built-in default list". */
+  negativePrompt: string;
   members: Member[];
   layers: Layer[];
   strokes: Stroke[];
@@ -83,7 +87,8 @@ export type ClientMessage =
   | { t: 'layer_update'; id: string; patch: Partial<Layer> }
   | { t: 'layer_delete'; id: string }
   | { t: 'layer_reorder'; ids: string[] }
-  | { t: 'set_prompt'; prompt: string };
+  | { t: 'set_prompt'; prompt: string }
+  | { t: 'set_ai_settings'; denoise?: number; negativePrompt?: string };
 
 export type ServerMessage =
   | { t: 'snapshot'; snapshot: RoomSnapshot }
@@ -101,6 +106,7 @@ export type ServerMessage =
   | { t: 'layer_deleted'; id: string; humanRevision: number }
   | { t: 'layers_reordered'; layers: Layer[]; humanRevision: number }
   | { t: 'prompt_changed'; prompt: string }
+  | { t: 'ai_settings_changed'; denoise: number; negativePrompt: string }
   | { t: 'ai_status'; state: AIState; forRevision: number; message?: string; latencyMs?: number }
   | { t: 'ai_result'; rect: Rect; url: string; aiRevision: number; crop: Rect; apply: Rect; latencyMs: number }
   | { t: 'error'; message: string };

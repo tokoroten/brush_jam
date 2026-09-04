@@ -89,3 +89,31 @@ describe('validateClientMessage', () => {
     expect(() => applyClientMessage(state, userId, { t: 'layer_create', layer: { kind: 'draw' } })).not.toThrow();
   });
 });
+
+describe('set_ai_settings', () => {
+  it('accepts a denoise inside the range', () => {
+    expect(validateClientMessage({ t: 'set_ai_settings', denoise: 0.75 })).toEqual({ ok: true, msg: { t: 'set_ai_settings', denoise: 0.75 } });
+  });
+
+  it('accepts a negative prompt on its own', () => {
+    const out = validateClientMessage({ t: 'set_ai_settings', negativePrompt: 'blurry' });
+    expect(out).toEqual({ ok: true, msg: { t: 'set_ai_settings', negativePrompt: 'blurry' } });
+  });
+
+  it('accepts an empty negative prompt (means "use the default")', () => {
+    expect(validateClientMessage({ t: 'set_ai_settings', negativePrompt: '' }).ok).toBe(true);
+  });
+
+  it.each([
+    { t: 'set_ai_settings' },
+    { t: 'set_ai_settings', denoise: 0.1 },
+    { t: 'set_ai_settings', denoise: 1.5 },
+    { t: 'set_ai_settings', denoise: Number.NaN },
+    { t: 'set_ai_settings', denoise: Number.POSITIVE_INFINITY },
+    { t: 'set_ai_settings', denoise: '0.5' },
+    { t: 'set_ai_settings', negativePrompt: 42 },
+    { t: 'set_ai_settings', negativePrompt: 'x'.repeat(1001) },
+  ])('rejects %j', (payload) => {
+    expect(validateClientMessage(payload).ok).toBe(false);
+  });
+});

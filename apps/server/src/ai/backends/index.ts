@@ -12,7 +12,7 @@ export { RunpodBackend } from './runpod.js';
 /** Pick a backend from config; `auto` uses ComfyUI when it answers at boot. */
 export async function createBackend(config: Config, log: (m: string) => void = console.log): Promise<AIBackend> {
   const comfy = (): AIBackend =>
-    new ComfyUIBackend({ url: config.comfyUrl, checkpoint: config.comfyCheckpoint, cfg: config.aiCfg });
+    new ComfyUIBackend({ url: config.comfyUrl, checkpoint: config.comfyCheckpoint, cfg: config.aiCfg, vaeTile: config.aiVaeTile });
 
   if (config.aiBackend === 'mock') {
     log('[ai] backend: mock (AI_BACKEND=mock)');
@@ -25,6 +25,7 @@ export async function createBackend(config: Config, log: (m: string) => void = c
       apiKey: config.runpodApiKey,
       checkpoint: config.comfyCheckpoint,
       cfg: config.aiCfg,
+      vaeTile: config.aiVaeTile,
     });
   }
   if (config.aiBackend === 'comfyui') {

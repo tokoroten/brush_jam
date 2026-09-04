@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE } from '@brushjam/shared';
 import {
+  captureRenderSnapshot,
+  snapshot,
   addMember,
   applyClientMessage,
   createRoom,
@@ -229,5 +232,64 @@ describe('session table under pressure', () => {
     expect(state.sessions.get('full-new')?.userId).toBe(latecomer.userId);
     expect(state.sessions.has('full-3')).toBe(false);
     expect(state.sessions.size).toBe(64);
+  });
+});
+
+/** Feature: room-level AI settings behave like the prompt. */
+describe('ai settings', () => {
+  it('applies both values and asks the AI to re-run', () => {
+    const { state, alice } = room();
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.8, negativePrompt: 'blurry, jpeg' });
+    expect(out.broadcast[0]).toEqual({ t: 'ai_settings_changed', denoise: 0.8, negativePrompt: 'blurry, jpeg' });
+    expect(out.promptChanged).toBe(true);
+    // a settings change is not a canvas edit
+    expect(out.dirty).toHaveLength(0);
+    expect(state.humanRevision).toBe(0);
+    expect(state.denoise).toBe(0.8);
+    expect(state.negativePrompt).toBe('blurry, jpeg');
+  });
+
+  it('changes only what was sent', () => {
+    const { state, alice } = room();
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.8, negativePrompt: 'keep me' });
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.3 });
+    expect(state.negativePrompt).toBe('keep me');
+    expect(state.denoise).toBe(0.3);
+  });
+
+  it('snaps denoise to the slider grid and clamps it to the range', () => {
+    const { state, alice } = room();
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.77 });
+    expect(state.denoise).toBe(0.75);
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 99 });
+    expect(state.denoise).toBe(MAX_DENOISE);
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: -5 });
+    expect(state.denoise).toBe(MIN_DENOISE);
+  });
+
+  it('does nothing when the values are unchanged', () => {
+    const { state, alice } = room();
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.8 });
+    const again = applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.8, negativePrompt: '' });
+    expect(again.broadcast).toHaveLength(0);
+    expect(again.promptChanged).toBeFalsy();
+  });
+
+  it('truncates an over-long negative prompt', () => {
+    const { state, alice } = room();
+    applyClientMessage(state, alice, { t: 'set_ai_settings', negativePrompt: 'z'.repeat(2000) });
+    expect(state.negativePrompt).toHaveLength(MAX_NEGATIVE_PROMPT);
+  });
+
+  it('carries the settings in the render snapshot and the room snapshot', () => {
+    const { state, alice } = room();
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.9, negativePrompt: 'no text' });
+    expect(captureRenderSnapshot(state)).toMatchObject({ denoise: 0.9, negativePrompt: 'no text' });
+    expect(snapshot(state, alice, 'idle', { window: 1024, apply: 768 })).toMatchObject({ denoise: 0.9, negativePrompt: 'no text' });
+  });
+
+  it('defaults denoise to the configured value', () => {
+    expect(createRoom('cfg', 0.4).denoise).toBe(0.4);
+    expect(createRoom('cfg2').negativePrompt).toBe('');
   });
 });

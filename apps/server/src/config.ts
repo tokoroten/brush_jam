@@ -9,6 +9,8 @@ export interface Config {
   aiSteps: number;
   aiDenoise: number;
   aiCfg: number;
+  /** VAE decode tile size; 0 uses a plain (non-tiled) VAEDecode. */
+  aiVaeTile: number;
   aiDebounceMs: number;
   aiWatchdogMs: number;
   roomIdleMs: number;
@@ -68,6 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     aiSteps: num(env, 'AI_STEPS', 14, { min: 1, max: 150, integer: true }, errors),
     aiDenoise: num(env, 'AI_DENOISE', 0.55, { min: 0, max: 1 }, errors),
     aiCfg: num(env, 'AI_CFG', 5.5, { min: 0, max: 30 }, errors),
+    aiVaeTile: num(env, 'AI_VAE_TILE', 512, { min: 0, max: 4096, integer: true }, errors),
     aiDebounceMs: num(env, 'AI_DEBOUNCE_MS', 400, { min: 0, max: 600_000, integer: true }, errors),
     aiWatchdogMs: num(env, 'AI_WATCHDOG_MS', 180_000, { min: 1000, max: 3_600_000, integer: true }, errors),
     roomIdleMs: num(env, 'ROOM_IDLE_MS', 30 * 60_000, { min: 10_000, max: 24 * 3_600_000, integer: true }, errors),

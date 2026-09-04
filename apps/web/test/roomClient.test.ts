@@ -116,6 +116,8 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     canvasSize: CANVAS_SIZE,
     aiWindow: 1024,
     aiApply: 768,
+    denoise: 0.55,
+    negativePrompt: '',
     members: [{ userId: 'me', name: 'Me', color: '#fff' }],
     layers: [layer('l1')],
     strokes: [],
@@ -424,6 +426,24 @@ describe('stale ai.png loads', () => {
     await tick();
     const ctx = (client.aiCanvas as unknown as ReturnType<typeof createCanvas>).getContext('2d');
     expect(ctx.getImageData(1, 1, 1, 1).data[3]).toBeGreaterThan(0);
+    client.dispose();
+  });
+});
+
+/** Feature: room-level AI settings arrive like any other shared state. */
+describe('ai settings', () => {
+  it('takes them from the snapshot and from later broadcasts', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ denoise: 0.7, negativePrompt: 'no text' }));
+    await tick();
+    expect(client.denoise).toBe(0.7);
+    expect(client.negativePrompt).toBe('no text');
+
+    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '' });
+    await tick();
+    expect(client.denoise).toBe(0.35);
+    expect(client.negativePrompt).toBe('');
     client.dispose();
   });
 });

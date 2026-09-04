@@ -77,6 +77,9 @@ export class RoomClient {
   strokes: Stroke[] = [];
   undone = new Set<string>();
   prompt = '';
+  /** Room-level AI settings, shared like the prompt. */
+  denoise = 0.55;
+  negativePrompt = '';
   humanRevision = 0;
   aiRevision = 0;
   aiState: AIState = 'idle';
@@ -279,6 +282,8 @@ export class RoomClient {
         this.strokes = s.strokes;
         this.undone = new Set(s.undone);
         this.prompt = s.prompt;
+        this.denoise = s.denoise;
+        this.negativePrompt = s.negativePrompt;
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;
@@ -371,6 +376,10 @@ export class RoomClient {
       case 'layers_reordered':
         this.layers = msg.layers;
         this.humanRevision = msg.humanRevision;
+        break;
+      case 'ai_settings_changed':
+        this.denoise = msg.denoise;
+        this.negativePrompt = msg.negativePrompt;
         break;
       case 'prompt_changed':
         this.prompt = msg.prompt;

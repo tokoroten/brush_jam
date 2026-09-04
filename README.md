@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 290 tests across shared / server / web
+pnpm test         # 318 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -119,8 +119,9 @@ are multiples of 64, denoise is 0..1, and so on).
 | `AI_WINDOW` | `1024` | Square generation window in world px (8 GB VRAM friendly) |
 | `AI_APPLY` | `768` | Central area the result is allowed to change |
 | `AI_STEPS` | `14` | Sampler steps |
-| `AI_DENOISE` | `0.55` | img2img strength |
+| `AI_DENOISE` | `0.55` | img2img strength; the starting value of each room's slider |
 | `AI_CFG` | `5.5` | CFG scale |
+| `AI_VAE_TILE` | `512` | VAEDecodeTiled tile size; `0` uses a plain `VAEDecode` |
 | `AI_DEBOUNCE_MS` | `400` | Quiet time before a generation starts |
 | `AI_WATCHDOG_MS` | `180000` | A generation past this is abandoned, not left in flight |
 | `ROOM_IDLE_MS` | `1800000` | Empty rooms are reclaimed after this long |
@@ -144,7 +145,7 @@ node ids fixed so tests can assert on it):
 ```
 CheckpointLoaderSimple → 2× CLIPTextEncode
 LoadImage(image) → VAEEncode ┐
-LoadImage(mask) → ImageToMask ┴→ SetLatentNoiseMask → KSampler → VAEDecode → SaveImage
+LoadImage(mask) → ImageToMask ┴→ SetLatentNoiseMask → KSampler → VAEDecodeTiled → SaveImage
 ```
 
 `SetLatentNoiseMask` (rather than `VAEEncodeForInpaint`) keeps the human drawing
@@ -159,6 +160,28 @@ input format (`{ input: { workflow, images: [{name, image: base64}] } }`), so
 moving to the cloud is a transport change, not a pipeline change. Nothing in this
 repository deploys to RunPod, and the adapter has not been run against a live
 endpoint — treat it as untested code.
+
+### Room-level AI settings
+
+Behind the **advanced** toggle next to the prompt, and shared by everyone in the
+room exactly like the prompt itself:
+
+- **denoise** — 0.2 to 0.95 in 0.05 steps, starting from `AI_DENOISE`. Low values
+  keep the drawing and only clean it up; high values reinterpret it.
+- **negative prompt** — up to 1000 characters. Empty means "use the built-in
+  list", which the input shows as its placeholder.
+
+Both debounce for 500 ms, broadcast as `ai_settings_changed`, ride along in the
+snapshot, and behave like a prompt change: the last painted area is re-dirtied so
+the effect is visible without anyone having to draw.
+
+### Why the decode is tiled
+
+On this box a 1024² KSampler pass finishes in ~22 s, but the plain `VAEDecode`
+that follows took **1–4 minutes** whenever VRAM was contended (one run was still
+decoding 2.5 minutes after sampling finished, and was cut off by the watchdog).
+`VAEDecodeTiled` at `tile_size` 512 / `overlap` 64 decodes in slices instead, and
+is the default. Set `AI_VAE_TILE=0` to go back to the plain node.
 
 ## Measured behaviour
 

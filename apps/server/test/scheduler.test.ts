@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Rect, ServerMessage } from '@brushjam/shared';
+import { DEFAULT_NEGATIVE_PROMPT, type Rect, type ServerMessage } from '@brushjam/shared';
 import { AIScheduler, type MaskHandle, type SchedulerHost } from '../src/ai/scheduler.js';
 import { AbortedError, type AIBackend, type GenerateRequest } from '../src/ai/backends/index.js';
 
@@ -43,6 +43,7 @@ interface Harness {
   maskEmpty: { value: boolean };
   renderedAt: number[];
   logs: string[];
+  settings: { denoise: number | undefined; negativePrompt: string | undefined };
 }
 
 function makeHost(): Harness {
@@ -51,13 +52,14 @@ function makeHost(): Harness {
   const masks: Array<{ crop: Rect; apply: Rect }> = [];
   const revision = { value: 10 };
   const prompt = { value: 'a prompt' };
+  const settings = { denoise: undefined as number | undefined, negativePrompt: undefined as string | undefined };
   const maskEmpty = { value: false };
   const renderedAt: number[] = [];
   const logs: string[] = [];
   const host: SchedulerHost = {
     getRevision: () => revision.value,
     beginJob: () => {
-      const captured = { revision: revision.value, prompt: prompt.value };
+      const captured = { revision: revision.value, prompt: prompt.value, denoise: settings.denoise, negativePrompt: settings.negativePrompt };
       return {
         ...captured,
         render: async () => {
@@ -76,7 +78,7 @@ function makeHost(): Harness {
     },
     emit: (msg) => emitted.push(msg),
   };
-  return { host, emitted, applied, masks, revision, prompt, maskEmpty, renderedAt, logs };
+  return { host, emitted, applied, masks, revision, prompt, maskEmpty, renderedAt, logs, settings };
 }
 
 const opts = {
@@ -452,5 +454,44 @@ describe('AIScheduler', () => {
       expect(backend.calls).toHaveLength(2);
       s.stop();
     });
+  });
+});
+
+/** Feature: the room's AI settings reach the backend. */
+describe('room AI settings', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('falls back to the server defaults when the room sets nothing', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls[0]).toMatchObject({ denoise: 0.55, negativePrompt: DEFAULT_NEGATIVE_PROMPT });
+    s.stop();
+  });
+
+  it('passes the room denoise and negative prompt through', async () => {
+    const { host, settings } = makeHost();
+    settings.denoise = 0.85;
+    settings.negativePrompt = 'no text, no watermark';
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls[0]).toMatchObject({ denoise: 0.85, negativePrompt: 'no text, no watermark' });
+    s.stop();
+  });
+
+  it('treats a blank room negative prompt as "use the built-in list"', async () => {
+    const { host, settings } = makeHost();
+    settings.negativePrompt = '   ';
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls[0]?.negativePrompt).toBe(DEFAULT_NEGATIVE_PROMPT);
+    s.stop();
   });
 });

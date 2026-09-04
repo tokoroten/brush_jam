@@ -65,3 +65,17 @@ describe('loadConfig', () => {
     }
   });
 });
+
+describe('AI_VAE_TILE', () => {
+  it('defaults to 512', () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).aiVaeTile).toBe(512);
+  });
+
+  it('accepts 0 to mean "plain VAEDecode"', () => {
+    expect(loadConfig({ AI_VAE_TILE: '0' } as NodeJS.ProcessEnv).aiVaeTile).toBe(0);
+  });
+
+  it('refuses a value outside the node range', () => {
+    expect(() => loadConfig({ AI_VAE_TILE: '9000' } as NodeJS.ProcessEnv)).toThrow();
+  });
+});

@@ -227,3 +227,62 @@ describe('ComfyUIBackend', () => {
     expect(await comfyReachable('http://127.0.0.1:8188')).toBe(false);
   });
 });
+
+/** Performance: plain VAEDecode stalls for minutes on an 8 GB card. */
+describe('VAE decode node', () => {
+  it('tiles the decode by default', () => {
+    const tiled = buildWorkflow({
+      checkpoint: 'c.safetensors',
+      prompt: 'a town',
+      negativePrompt: 'lowres',
+      imageName: 'img.png',
+      maskName: 'mask.png',
+      seed: 7,
+      steps: 14,
+      cfg: 5.5,
+      denoise: 0.55,
+      filenamePrefix: 'brushjam/room1',
+      vaeTile: 512,
+    });
+    expect(tiled['10']).toEqual({
+      class_type: 'VAEDecodeTiled',
+      inputs: { samples: ['9', 0], vae: ['1', 2], tile_size: 512, overlap: 64, temporal_size: 64, temporal_overlap: 8 },
+    });
+    // the SaveImage still reads from node 10
+    expect((tiled['11'] as { inputs: { images: unknown } }).inputs.images).toEqual(['10', 0]);
+  });
+
+  it('falls back to a plain VAEDecode when tiling is turned off', () => {
+    const plain = buildWorkflow({
+      checkpoint: 'c.safetensors',
+      prompt: 'a town',
+      negativePrompt: 'lowres',
+      imageName: 'img.png',
+      maskName: 'mask.png',
+      seed: 7,
+      steps: 14,
+      cfg: 5.5,
+      denoise: 0.55,
+      filenamePrefix: 'brushjam/room1',
+      vaeTile: 0,
+    });
+    expect(plain['10']).toEqual({ class_type: 'VAEDecode', inputs: { samples: ['9', 0], vae: ['1', 2] } });
+  });
+
+  it('uses the room denoise and negative prompt the request carries', () => {
+    const wf = buildWorkflow({
+      checkpoint: 'c.safetensors',
+      prompt: 'a town',
+      negativePrompt: 'no text, no watermark',
+      imageName: 'img.png',
+      maskName: 'mask.png',
+      seed: 7,
+      steps: 14,
+      cfg: 5.5,
+      denoise: 0.85,
+      filenamePrefix: 'brushjam/room1',
+    });
+    expect((wf['3'] as { inputs: { text: string } }).inputs.text).toBe('no text, no watermark');
+    expect((wf['9'] as { inputs: { denoise: number } }).inputs.denoise).toBe(0.85);
+  });
+});

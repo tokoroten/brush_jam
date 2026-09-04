@@ -15,3 +15,8 @@ export const MAX_ZOOM = 8;
 export const DEFAULT_NEGATIVE_PROMPT =
   'lowres, bad anatomy, bad hands, text, error, worst quality, low quality, jpeg artifacts, signature, watermark, blurry';
 export const QUALITY_SUFFIX = ', masterpiece, best quality';
+/** Room-adjustable img2img strength. */
+export const MIN_DENOISE = 0.2;
+export const MAX_DENOISE = 0.95;
+export const DENOISE_STEP = 0.05;
+export const MAX_NEGATIVE_PROMPT = 1000;
