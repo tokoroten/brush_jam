@@ -286,6 +286,16 @@ The client never hard-codes a canvas size: it takes `canvasSize` from the
 snapshot, sizes its rasters to it and fits the camera to it. In full mode the
 crop/apply overlay rectangles are hidden, because they are the whole canvas.
 
+### Brush sizes
+
+Each drawing tool keeps its own width - pen 14, eraser 32, noise 64 - persisted
+in `localStorage` and restored when you switch back. They are not
+interchangeable: a 14 px noise stroke is useless as an "invent something here"
+seed, because it averages to flat grey before the model sees it (worse at lower
+AI resolutions), while an eraser sized for line work is painful for clearing an
+area. The `move` tool has no width of its own and keeps showing the last
+drawing tool's.
+
 ### The noise pen
 
 A third stroke tool next to pen and eraser. It fills the stroke shape with

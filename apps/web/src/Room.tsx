@@ -19,6 +19,18 @@ import {
   type Layer,
   type Point,
 } from '@brushjam/shared';
+import {
+  brushStorage,
+  isSizedTool,
+  loadBrushSizes,
+  saveBrushSizes,
+  sizeForTool,
+  withSize,
+  MAX_BRUSH,
+  MIN_BRUSH,
+  type BrushSizes,
+  type SizedTool,
+} from './brushSize.js';
 import { LayerPanel } from './LayerPanel.js';
 import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, scaledBy } from './move.js';
 import { newId } from './id.js';
@@ -58,7 +70,19 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const [camera, setCamera] = useState<Camera>({ centerX: CANVAS_SIZE / 2, centerY: CANVAS_SIZE / 2, zoom: 0.25 });
   const [tool, setTool] = useState<Tool>('pen');
   const [color, setColor] = useState('#1b1b1b');
-  const [width, setWidth] = useState(14);
+  // Per tool, so switching back to the noise pen restores the wide brush it
+  // needs rather than the line width the pen was left on.
+  const [brushSizes, setBrushSizes] = useState<BrushSizes>(() => loadBrushSizes(brushStorage()));
+  const [lastSized, setLastSized] = useState<SizedTool>('pen');
+  const width = sizeForTool(brushSizes, tool, lastSized);
+  const setWidth = (next: number): void => {
+    const target = isSizedTool(tool) ? tool : lastSized;
+    setBrushSizes((prev) => {
+      const updated = withSize(prev, target, next);
+      saveBrushSizes(brushStorage(), updated);
+      return updated;
+    });
+  };
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
   const [promptDraft, setPromptDraft] = useState('');
   const [promptDirty, setPromptDirty] = useState(false);
@@ -467,14 +491,28 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
 
       <div className="tools">
         {(['pen', 'noise', 'eraser', 'move'] as const).map((t) => (
-          <button key={t} className={tool === t ? 'active' : ''} onClick={() => setTool(t)}>
+          <button
+            key={t}
+            className={tool === t ? 'active' : ''}
+            title={t === 'noise' ? 'noise: the AI invents something here (use a wide brush)' : undefined}
+            onClick={() => {
+              setTool(t);
+              if (isSizedTool(t)) setLastSized(t);
+            }}
+          >
             {t}
           </button>
         ))}
         <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
         <label>
           size {width}
-          <input type="range" min={1} max={128} value={width} onChange={(e) => setWidth(Number(e.target.value))} />
+          <input
+            type="range"
+            min={MIN_BRUSH}
+            max={MAX_BRUSH}
+            value={width}
+            onChange={(e) => setWidth(Number(e.target.value))}
+          />
         </label>
         <button onClick={() => client.send({ t: 'undo' })}>undo (Ctrl+Z)</button>
         <button onClick={fit}>fit</button>
