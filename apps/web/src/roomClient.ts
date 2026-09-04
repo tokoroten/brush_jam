@@ -172,7 +172,8 @@ export class RoomClient {
           if (layer.imageId) await this.ensureImage(layer.imageId);
           this.repaint(layer);
         }
-        await this.loadAiCanvas();
+        // Nothing to fetch before the first result (the route 404s by design).
+        if (s.aiRevision > 0) await this.loadAiCanvas();
         break;
       }
       case 'presence': {
