@@ -9,23 +9,22 @@ CUDA 12.4 wheels, ComfyUI 0.28 running alongside on :8188.
 
 ---
 
-## 1. Why a stream worker at all — and why that premise is now half wrong
+## 1. Why a stream worker at all
 
-**Read §4.6 before investing further in this component.** The reasoning below is
-what motivated it; the measurements have since undercut most of it.
+The ComfyUI backend re-walks a graph for every request, costing ~10 s at
+1024²/14 steps — far from the "AI reacts while you draw" feeling
+`BRUSHJAM_CONTEXT.md` §11 wants. A resident process that holds the model in VRAM
+and runs 4 LCM steps answers the *same* JSON contract far faster.
 
-The original argument: the ComfyUI backend re-walks a graph for every request,
-costing ~10–24 s at 1024²/14 steps, which is far from the "AI reacts while you
-draw" feeling `BRUSHJAM_CONTEXT.md` §11 wants. Everything expensive in that
-number looked like fixed cost we could pay once — model load, prompt encoding,
-sampler setup — so a resident process running 4 LCM steps should answer the same
-contract in well under a second.
+**Measured, warm, on an RTX 3070 8 GB: 0.76 s at 512², 1.73 s at 768², 3.35 s at
+1024²** (§4.1), against 2.6 / 3.7 / 5.7 s for the same 4-step workflow through
+ComfyUI (§4.6). It wins at every size.
 
-Two things turned out to be wrong. The resident process does **not** answer in
-well under a second (§4.1). And the honest comparison was never against 14-step
-ComfyUI: once ComfyUI runs the *same* 4-step LCM workflow, most of the gap
-closes on its own (§4.6). The graph-walking overhead this component exists to
-remove was a small part of that 10–24 s.
+That was not true for most of this component's life. Until the VAE was replaced
+it was 1.6 / 5.7 / 14.3 s and lost to ComfyUI at two sizes out of three; §4.2
+and §4.3 record how that was diagnosed, including two confident A/B tests that
+found nothing. The history is kept deliberately — the wrong turns are the
+useful part.
 
 ## 2. StreamDiffusion evaluation (step 1 of the brief)
 
@@ -240,44 +239,47 @@ Cold start: checkpoint load + LoRA fuse **~30 s**, plus one warm-up generation
 (3.0 s at 512², 9.9 s at 768²) — **~35–41 s to first useful request** with a warm
 file cache, ~90 s from cold.
 
-### 4.1 Final numbers (shipped configuration)
+### 4.1 Final numbers (shipped configuration: `STREAM_VAE=fp16fix`)
 
-| size | runs | wall median | min | max | diffusion median |
-| --- | --- | --- | --- | --- | --- |
-| 512² | 5 | **1682 ms** | 1625 ms | 1702 ms | 1554 ms |
-| 768² | 5 | **6025 ms** | 5949 ms | 6048 ms | 5619 ms |
-| 1024² | 5 | **15234 ms** | 11092 ms | 17167 ms | 14448 ms |
+| size | runs | wall median | min | max | UNet | VAE encode | VAE decode |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 512² | 5 | **764 ms** | 754 ms | 813 ms | 517 ms | 70 ms | 108 ms |
+| 768² | 5 | **1729 ms** | 1719 ms | 1736 ms | 1029 ms | 208 ms | 383 ms |
+| 1024² | 5 | **3354 ms** | 3346 ms | 3479 ms | 1880 ms | 423 ms | 896 ms |
 
-Non-diffusion overhead: prompt embedding 0 ms (cache hit), mask composite
-10–70 ms, PNG encode 23–83 ms, `empty_cache` 67–755 ms (see §4.3).
+Cold start ~30–50 s (checkpoint load + LoRA fuse + one warm-up run). Prompt
+embedding is 0 ms on a cache hit, PNG encode 22–78 ms, `empty_cache` 10–11 ms.
 
-Comparison with what it is meant to replace — the ComfyUI backend at 1024²/14
-steps is 10–24 s on this box. So the worker is **decisively better at 512²**
-(1.7 s), **better at 768²** (6 s), and **roughly a wash at 1024²** (15 s), while
-also being the only one of the two that can serve 512² and 768² cheaply.
+The spread is now tight (512² varies by 59 ms across five runs, 768² by 17 ms),
+which is itself evidence that the VRAM spill described in §4.3 is gone.
 
-**This is short of the goal.** The brief was few-step, sub-second, "AI reacts
-while you draw". 512² at 1.7 s is the closest it gets, and that is still ~4×
-slower than an RTX 3070 should manage for 8 UNet evaluations on a 64×64 latent.
-§4.4 says where the remaining time goes and what to do next.
+**The goal is met at 512² and close at 768².** "Sub-second, AI reacts while you
+draw" is true at 512²; 1024² at 3.35 s is a different interaction — fast enough
+to feel responsive between strokes, not fast enough to feel live.
 
-### 4.2 What was measured to get there (three A/B tests)
+### 4.2 How it got there — including two confident wrong turns
 
-Two obvious suspects were wrong, and the third was worth 2–8×. The numbers are
-the interesting part, because two of them are *negative* results:
+Four A/B tests. **Two found nothing**, and they are the instructive ones,
+because both were plausible and both were wrong:
 
 | variable | 512² | 768² | 1024² | verdict |
 | --- | --- | --- | --- | --- |
-| baseline (CFG 1.5, VAE tiling on) | 1542 ms | 12269 ms | 122763 ms | — |
+| baseline (CFG 1.5, tiling on, checkpoint VAE) | 1542 ms | 12269 ms | 122763 ms | — |
 | `STREAM_GUIDANCE=1.0` (no CFG: half the UNet work) | 1670 ms | 11740 ms | — | **no effect** |
 | `STREAM_VAE_TILING=0` (plain VAE decode) | 1674 ms | 12233 ms | — | **no effect** |
-| `STREAM_EMPTY_CACHE=1` (+ `expandable_segments`) | 1682 ms | **6025 ms** | **15234 ms** | **2× / 8×** |
+| `STREAM_EMPTY_CACHE=1` (+ `expandable_segments`) | 1621 ms | 5654 ms | 14309 ms | **2× / 8×** |
+| **`STREAM_VAE=fp16fix`** | **764 ms** | **1729 ms** | **3354 ms** | **2× / 3× / 4×** |
 
 1. **Halving the UNet work changed nothing.** With CFG on, 512² runs 8 UNet
-   evaluations in ~1.5 s; with CFG off it runs 4 in ~1.6 s. The UNet was never
-   the bottleneck.
-2. **Turning off VAE tiling changed nothing either.** So it was not the tiling.
-3. **Returning the allocator's cache was the fix.** See §4.3.
+   evaluations in ~1.5 s; with CFG off it runs 4 in ~1.6 s.
+2. **Turning off VAE tiling changed nothing either.**
+3. **Returning the allocator's cache was worth 2–8×** (§4.3).
+4. **Replacing the VAE was worth another 2–4×** (§4.4).
+
+Why (1) and (2) both missed: neither touches the VAE's *dtype*, and the fp32
+upcast was ~80% of the time at 1024². Test (2) in particular looked like it had
+exonerated the VAE — it had only exonerated *tiling*. Ruling out a component by
+testing one of its knobs is not ruling out the component.
 
 ### 4.3 The actual bug: the allocator held 2.5 GB it was not using
 
@@ -306,48 +308,49 @@ The fix is `torch.cuda.empty_cache()` after each generation (`STREAM_EMPTY_CACHE
 on by default) plus `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. It costs
 70 ms at 512² and ~600 ms at 1024², and buys 2× at 768² and 8× at 1024².
 
-### 4.4 Where the remaining time goes, and what to do next
+### 4.4 The VAE was the fixed cost — measured, not inferred
 
-Even fixed, 512² is ~1.7 s for what should be a few hundred ms. By elimination
-(the UNet was ruled out in §4.2) the remaining fixed cost is the **VAE**: this
-checkpoint sets `force_upcast=True`, so diffusers casts the VAE to **fp32** on
-every call, decodes in fp32, and casts back — visible as a deprecation warning
-in the log on each generation, and as the 1.5 GB gap between `allocated_gb` and
-`max_allocated_gb`.
+This checkpoint's VAE config sets `force_upcast=True`, so diffusers cast it to
+**fp32** for every encode and decode. `STREAM_VAE` now selects an alternative,
+and the three-way comparison (`scripts/bench_vae.py`, 5 runs per cell, ComfyUI
+stopped) settles it:
 
-**The VAE swap is now implemented but NOT yet measured.** `STREAM_VAE` selects
-`fp16fix` (default, `madebyollin/sdxl-vae-fp16-fix` — same weights rescaled so
-fp16 does not overflow, with `force_upcast` forced off), `taesd`
-(`madebyollin/taesdxl`, distilled, much faster and slightly softer), or
-`checkpoint` (the old upcasting behaviour, kept so the comparison is possible).
-`/generate` now also reports `unet_ms` / `vae_encode_ms` / `vae_decode_ms`, so
-the next run can attribute the time instead of inferring it.
+| VAE | cold start | 512² | 768² | 1024² |
+| --- | --- | --- | --- | --- |
+| `checkpoint` (fp32 upcast) | 22.3 s | 1621 ms | 5654 ms | 14309 ms |
+| **`fp16fix`** (default) | 48.5 s | **764 ms** | **1729 ms** | **3354 ms** |
+| `taesd` (distilled) | 20.3 s | 697 ms | 1176 ms | 2113 ms |
 
-Next steps, in the order I would take them:
+The phase breakdown shows exactly where it went. **The UNet is unchanged across
+all three** — the entire difference is VAE decode:
 
-1. **Run the comparison.** One command measures all three VAEs at all three
-   sizes, starting and stopping its own worker per configuration:
+| VAE | 1024² UNet | 1024² VAE encode | 1024² VAE decode |
+| --- | --- | --- | --- |
+| `checkpoint` | 1915 ms | 2500 ms | **9133 ms** |
+| `fp16fix` | 1880 ms | 423 ms | 896 ms |
+| `taesd` | 1878 ms | 47 ms | 65 ms |
 
-   ```bash
-   cd apps/stream-worker && uv run python scripts/bench_vae.py
-   ```
+An fp32 decode of a 1024² latent was costing **9.1 s** against 0.9 s in fp16 —
+a 10× penalty for a dtype flag, on a model whose actual sampling takes 1.9 s.
 
-   Free ComfyUI first (§3.1). Expect ~15 minutes for the full 3×3 grid; narrow
-   it with `--vaes fp16fix --sizes 512 768` if the window is short.
-2. Check `memory.max_allocated_gb` in `/healthz` afterwards. If it drops toward
-   `allocated_gb` (5.05), the fp32 upcast was the transient-memory problem too,
-   and `STREAM_EMPTY_CACHE` may stop being necessary — worth re-testing with it
-   off, since it costs 70–755 ms per request.
-3. Sweep denoise (`scripts/quality_probe.py 512`) to replace the 0.75–0.85
-   estimate in §4.5 with a measurement.
-4. Only then consider RCFG / TensorRT (§2.4).
+`fp16fix` is `madebyollin/sdxl-vae-fp16-fix`: the same architecture with weights
+rescaled so activations do not overflow fp16. It is a numerical fix, not an
+approximation, so output should be equivalent to the checkpoint VAE. Its slower
+cold start (48.5 s) is the one-time HF download on first run.
 
-**Prediction, recorded before measuring so it can be wrong:** `fp16fix` should
-remove most of the ~1.4 s fixed cost at 512² and a larger share at 768²/1024²,
-because the fp32 upcast doubles VAE memory traffic and inflates the transient
-peak. `taesd` should be faster still. If `fp16fix` changes nothing, my §4.2
-elimination was wrong and the next suspect is the img2img pipeline's own
-pre/post-processing rather than the VAE.
+**On `taesd`:** faster again (2.1 s at 1024²) and it frees ~0.7 GB of VRAM. It
+is a *distilled* VAE, so unlike `fp16fix` it genuinely trades fidelity for
+speed, and **I have not looked at its output**. Do not default to it without a
+visual comparison. It is the right lever if 1024² under 2 s is worth softer
+detail.
+
+Remaining leads, now that the VAE is fixed:
+
+1. `STREAM_EMPTY_CACHE` costs 10–11 ms with `fp16fix`, down from 67–755 ms with
+   the old VAE, because there is far less to reclaim. Worth re-testing with it
+   off — it may no longer be needed at all.
+2. The UNet is now the dominant cost (1.9 s of 3.35 s at 1024²), so RCFG and
+   TensorRT (§2.4) are finally the right things to look at. They were not before.
 
 ### 4.5 Output quality at 4 steps is also disappointing
 
@@ -390,46 +393,43 @@ is weakest precisely at the setting that makes the feature worth having. Still
 worth comparing `STREAM_LORA=dmd2`, which usually holds line art better on
 Illustrious-class checkpoints.
 
-### 4.6 Against a fair baseline, this component barely wins
+### 4.6 Against a fair baseline: the worker now wins at every size
 
-The comparison in §1 was against ComfyUI at **14 steps**. That was the wrong
-baseline: §5's 4-step LoRA workflow makes ComfyUI do the same work this worker
-does. Measured by the `apps/server` agent on this box, ComfyUI alone, after the
-contention was removed:
+The right baseline is not ComfyUI at 14 steps, it is ComfyUI running §5's own
+4-step LoRA workflow. Measured by the `apps/server` agent on this box with
+nothing else resident:
 
-| size | ComfyUI 14-step | ComfyUI 4-step (`AI_FAST`) | this worker (4-step) |
+| size | ComfyUI 14-step | ComfyUI 4-step (`AI_FAST`) | this worker (`fp16fix`) |
 | --- | --- | --- | --- |
-| 512² | — | 2.6 s | **1.7 s** |
-| 768² | — | **3.7 s** | 6.0 s |
-| 1024² | 10.3 s | **5.7 s** | 15.2 s |
+| 512 | - | 2.6 s | **0.76 s** |
+| 768 | - | 3.7 s | **1.73 s** |
+| 1024 | 10.3 s | 5.7 s | **3.35 s** |
 
-So the resident worker wins at 512² by ~0.9 s, and **loses at 768² and 1024²** —
-badly at 1024². A separate 5 GB process, a second model copy, and a GPU that can
-then hold only one of the two services (§3.1) currently buys us one size class.
+**Caveat that matters:** their figures are end-to-end through the server
+(render, mask, composite, broadcast); mine are worker-only. Their logs put the
+server-side share at roughly 400-450 ms, so the fair 1024 comparison is about
+3.8 s versus 5.7 s, not 3.35 versus 5.7. The worker still leads at every size,
+by 1.5-3x rather than 1.7-3.4x.
 
-Note also that ComfyUI's 14-step 1024² is 10.3 s, not the 10–24 s in §1: the
-wide spread in the older figure was my worker being resident at the same time.
-My own presence inflated the baseline I was arguing against.
+For most of this component's life the opposite was true - at 1.6 / 5.7 / 14.3 s
+it lost at two sizes out of three, and an earlier version of this section
+recommended deleting it in favour of `AI_FAST`. The VAE fix (§4.4) reversed
+that. The recommendation is now **keep the worker, default `STREAM_VAE=fp16fix`**.
 
-What this does *not* settle: the VAE work in §4.4 is implemented but unmeasured,
-and if `fp16fix`/`taesd` removes the ~1.4 s fixed cost, the ranking changes at
-every size. That measurement is the deciding one. **If it does not, the honest
-recommendation is to drop this component and put the 4-step LoRA workflow behind
-`AI_FAST` in the ComfyUI backend instead** — same model, same LoRA, same
-sampler, one process, no VRAM handover, and it is already implemented.
-
-Two further caveats that argue against a 512-only niche:
+Two caveats that survive the reversal, both from the `apps/server` agent's
+quality grids and neither addressed by making things faster:
 
 - **Downsampling destroys the noise pen.** At 768 a noise-pen stroke already
-  averages to flat grey before it reaches the model, and 512 is worse. "Reinterpret
-  this texture" is precisely the interaction the AI panel exists for, and it wants
-  native 1024 — the one size where this worker is furthest behind.
+  averages to flat grey before the model sees it. That makes 1024 the size that
+  matters for texture reinterpretation - which is why 1024 dropping from 14.3 s
+  to 3.35 s is the important cell in the table, not 512.
 - **LCM is not a free win at high denoise.** Up to ~0.65 it tracks the 14-step
-  result closely; at 0.8 — the denoise §4.5 recommends for actual
-  reinterpretation — it is visibly weaker, resolving textures into speckled
+  result closely; at 0.8 - the denoise §4.5 recommends for real
+  reinterpretation - it is visibly weaker, resolving textures into speckled
   clutter where 14 steps resolves them into structure. Few-step sampling is a
-  latency/quality trade, not a strict improvement, and that is true of this
-  worker and of `AI_FAST` equally.
+  latency/quality trade, and it is weakest exactly where the feature earns its
+  keep. This applies to `AI_FAST` and to this worker equally, and it is a
+  question about *sampling*, not about which process runs it.
 
 ## 5. ComfyUI: the same LoRA, a 4-step Illustrious workflow
 
