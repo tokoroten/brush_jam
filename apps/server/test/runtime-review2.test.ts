@@ -1,8 +1,9 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MockBackend } from '../src/ai/backends/index.js';
+import type { BackendCapabilities } from '../src/ai/backends/types.js';
 import { loadConfig } from '../src/config.js';
-import { RoomRegistry, RoomRuntime, MAX_ROOMS } from '../src/runtime.js';
+import { RoomRegistry, RoomRuntime, MAX_ROOMS, looksLikeLimitError } from '../src/runtime.js';
 import { decodedCacheStats, forgetImages, renderCropInput } from '../src/raster.js';
 import { applyClientMessage, addMember, captureRenderSnapshot } from '../src/room.js';
 
@@ -235,5 +236,184 @@ describe('dirty region clipping', () => {
     }
     expect(room.scheduler.dirtyRegions).toHaveLength(0);
     room.dispose();
+  });
+});
+
+/**
+ * Review 7 finding 2: a worker that restarts with different limits leaves every
+ * room asking for a size it will now refuse - a 400 on every generation.
+ */
+describe('backend limits changing under a live room', () => {
+  /** Enough of a socket for join(): the room only ever sends to it. */
+  class FakeSocket {
+    readonly sent: string[] = [];
+    readyState = 1;
+    send(data: string): void {
+      this.sent.push(data);
+    }
+    close(): void {
+      this.readyState = 3;
+    }
+  }
+
+  function room(): RoomRuntime {
+    const config = loadConfig({ AI_BACKEND: 'mock', CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+    return new RoomRuntime('limits', new MockBackend(1), config, {
+      profiles: ['fast', 'quality'],
+      maxDenoise: 0.95,
+      maxResolution: 1024,
+    });
+  }
+
+  it('clamps a room into smaller limits and tells everyone', () => {
+    const rt = room();
+    const socket = new FakeSocket();
+    rt.join(socket as never, 'Alice', 'tok-a');
+    // fast default: starts at 768 with room to reach 1024
+    expect(rt.state.aiResolution).toBe(768);
+    expect(rt.state.aiResolutionMax).toBe(1024);
+
+    rt.applyLimits({ profiles: ['fast'], maxDenoise: 0.8, maxResolution: 512 });
+
+    expect(rt.state.aiResolutionMax).toBe(512);
+    expect(rt.state.aiResolution).toBe(512);
+    expect(rt.state.maxDenoise).toBe(0.8);
+    expect(rt.state.denoise).toBeLessThanOrEqual(0.8);
+    expect(rt.state.aiProfiles).toEqual(['fast']);
+    expect(rt.state.aiProfile).toBe('fast');
+    // and everyone in the room is told, not just the next joiner
+    const settings = socket.sent.map((m) => JSON.parse(m) as { t: string }).filter((m) => m.t === 'ai_settings_changed');
+    expect(settings.at(-1)).toMatchObject({ aiResolution: 512, aiProfile: 'fast' });
+  });
+
+  it('raises the ceiling again when the worker comes back bigger', () => {
+    const rt = room();
+    rt.join(new FakeSocket() as never, 'Alice', 'tok-a');
+    rt.applyLimits({ profiles: ['fast'], maxDenoise: 0.8, maxResolution: 512 });
+    expect(rt.state.aiResolutionMax).toBe(512);
+    expect(rt.state.aiResolution).toBe(512);
+
+    rt.applyLimits({ profiles: ['fast', 'quality'], maxDenoise: 0.95, maxResolution: 1024 });
+    expect(rt.state.aiResolutionMax).toBe(1024);
+    expect(rt.state.aiProfiles).toEqual(['fast', 'quality']);
+    // the room stays where it was clamped to; the user can raise it again
+    expect(rt.state.aiResolution).toBe(512);
+  });
+
+  it('keeps a room that is already inside the new limits untouched', () => {
+    const rt = room();
+    rt.join(new FakeSocket() as never, 'Alice', 'tok-a');
+    const before = { ...rt.state };
+    rt.applyLimits({ profiles: ['fast', 'quality'], maxDenoise: 0.95, maxResolution: 1024 });
+    expect(rt.state.aiResolution).toBe(before.aiResolution);
+    expect(rt.state.aiProfile).toBe(before.aiProfile);
+  });
+});
+
+/** Review 7 finding 2, registry half: notice the change and push it out. */
+describe('capability re-probing', () => {
+  class ShiftingBackend extends MockBackend {
+    maxResolution = 1024;
+    profiles: ('fast' | 'quality')[] = ['fast', 'quality'];
+    probes = 0;
+    override async capabilities(): Promise<BackendCapabilities> {
+      this.probes += 1;
+      return {
+        profiles: this.profiles,
+        maxResolution: this.maxResolution,
+        maxDenoise: 0.95,
+        negativePromptActive: { fast: true, quality: true },
+      };
+    }
+  }
+
+  const cfg = loadConfig({ AI_BACKEND: 'mock', CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+
+  it('pushes smaller limits into every live room', async () => {
+    const backend = new ShiftingBackend(1);
+    const registry = new RoomRegistry(backend, cfg, { profiles: ['fast', 'quality'], maxDenoise: 0.95, maxResolution: 1024 });
+    const a = registry.ensure('rooma')!;
+    const b = registry.ensure('roomb')!;
+
+    backend.maxResolution = 512;
+    await registry.refreshCapabilities();
+
+    expect(a.state.aiResolutionMax).toBe(512);
+    expect(b.state.aiResolutionMax).toBe(512);
+    expect(registry.backendLimits.maxResolution).toBe(512);
+  });
+
+  it('does nothing when the limits are unchanged', async () => {
+    const backend = new ShiftingBackend(1);
+    const registry = new RoomRegistry(backend, cfg, { profiles: ['fast', 'quality'], maxDenoise: 0.95, maxResolution: 1024 });
+    const room = registry.ensure('roomc')!;
+    const before = room.state.aiResolutionMax;
+    await registry.refreshCapabilities();
+    expect(room.state.aiResolutionMax).toBe(before);
+  });
+
+  it('applies the new limits to rooms created afterwards too', async () => {
+    const backend = new ShiftingBackend(1);
+    const registry = new RoomRegistry(backend, cfg, { profiles: ['fast', 'quality'], maxDenoise: 0.95, maxResolution: 1024 });
+    backend.profiles = ['fast'];
+    backend.maxResolution = 768;
+    await registry.refreshCapabilities();
+    expect(registry.ensure('roomd')!.state.aiProfiles).toEqual(['fast']);
+    expect(registry.ensure('roomd')!.state.aiResolutionMax).toBe(768);
+  });
+
+  it('survives a probe that throws, keeping the last known limits', async () => {
+    const backend = new ShiftingBackend(1);
+    const registry = new RoomRegistry(backend, cfg, { profiles: ['fast', 'quality'], maxDenoise: 0.95, maxResolution: 1024 });
+    const room = registry.ensure('roome')!;
+    backend.capabilities = async () => {
+      throw new Error('worker is down');
+    };
+    await registry.refreshCapabilities();
+    expect(room.state.aiResolutionMax).toBe(1024);
+  });
+
+  it('only re-probes for errors that look like a limit problem', () => {
+    expect(looksLikeLimitError('stream worker /generate failed: 400 size 1024 out of range [256, 768]')).toBe(true);
+    expect(looksLikeLimitError('this profile is not supported')).toBe(true);
+    expect(looksLikeLimitError('generation timed out')).toBe(false);
+    expect(looksLikeLimitError('ECONNREFUSED')).toBe(false);
+  });
+});
+
+/** The capability must reach a live room, not just the snapshot of a new one. */
+describe('negative prompt activity through the registry', () => {
+  class NegBackend extends MockBackend {
+    active = { fast: false, quality: true };
+    override async capabilities(): Promise<BackendCapabilities> {
+      return { profiles: ['fast', 'quality'], maxResolution: 1024, maxDenoise: 0.95, negativePromptActive: this.active };
+    }
+  }
+
+  const cfg = loadConfig({ AI_BACKEND: 'mock', CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+  const limits = { profiles: ['fast', 'quality'] as const, maxDenoise: 0.95, maxResolution: 1024 };
+
+  it('pushes a changed negative-prompt capability into live rooms', async () => {
+    const backend = new NegBackend(1);
+    const registry = new RoomRegistry(backend, cfg, { ...limits, profiles: [...limits.profiles] });
+    const room = registry.ensure('negreg')!;
+    room.state.aiProfile = 'fast';
+
+    await registry.refreshCapabilities();
+
+    expect(room.state.negativeActive).toEqual({ fast: false, quality: true });
+  });
+
+  it('treats a changed capability alone as a reason to re-broadcast', async () => {
+    const backend = new NegBackend(1);
+    const registry = new RoomRegistry(backend, cfg, {
+      ...limits,
+      profiles: [...limits.profiles],
+      negativePromptActive: { fast: false, quality: true },
+    });
+    const room = registry.ensure('negreg2')!;
+    backend.active = { fast: true, quality: true };
+    await registry.refreshCapabilities();
+    expect(room.state.negativeActive.fast).toBe(true);
   });
 });

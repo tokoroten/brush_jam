@@ -6,7 +6,7 @@ import { StreamBackend, streamHealth } from './stream.js';
 import type { AIBackend } from './types.js';
 
 export * from './types.js';
-export { buildWorkflow, ComfyUIBackend, comfyReachable, DEFAULT_FAST_LORA, FAST_CFG } from './comfyui.js';
+export { buildWorkflow, ComfyUIBackend, comfyReachable, fastProfile, DEFAULT_FAST_LORA, FAST_CFG } from './comfyui.js';
 export { MockBackend } from './mock.js';
 export { RunpodBackend } from './runpod.js';
 export { StreamBackend, streamHealth, streamReachable, pngSize } from './stream.js';

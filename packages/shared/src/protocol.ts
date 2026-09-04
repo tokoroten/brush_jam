@@ -58,6 +58,12 @@ export interface RoomSnapshot {
   prompt: string;
   humanRevision: number;
   aiRevision: number;
+  /**
+   * Accepted AI results so far. Use this, not `aiRevision`, to decide whether
+   * there is a full raster worth fetching: a generation started by a settings
+   * change in an untouched room lands at revision 0.
+   */
+  aiGeneration: number;
   canvasSize: number;
   /** Configured AI window / apply sizes, so the client never hard-codes them. */
   aiWindow: number;
@@ -73,6 +79,12 @@ export interface RoomSnapshot {
   aiProfiles: AIProfileName[];
   /** Largest denoise this backend accepts; the room slider stops here. */
   maxDenoise: number;
+  /**
+   * Whether the negative prompt does anything with the CURRENT profile. A
+   * distilled 4-step model at CFG 1.0 never evaluates the negative branch, so
+   * the box is inert and the UI greys it rather than pretending.
+   */
+  negativePromptActive: boolean;
   /** Empty means "use the built-in default list". */
   negativePrompt: string;
   /** Generation size in px; the result is scaled back to the canvas. */
@@ -131,7 +143,25 @@ export type ServerMessage =
   | { t: 'layer_deleted'; id: string; humanRevision: number }
   | { t: 'layers_reordered'; layers: Layer[]; humanRevision: number }
   | { t: 'prompt_changed'; prompt: string }
-  | { t: 'ai_settings_changed'; denoise: number; negativePrompt: string; aiResolution: number; aiProfile: AIProfileName }
+  | {
+      t: 'ai_settings_changed';
+      denoise: number;
+      negativePrompt: string;
+      aiResolution: number;
+      aiProfile: AIProfileName;
+      negativePromptActive: boolean;
+    }
   | { t: 'ai_status'; state: AIState; forRevision: number; message?: string; latencyMs?: number }
-  | { t: 'ai_result'; rect: Rect; url: string; aiRevision: number; crop: Rect; apply: Rect; latencyMs: number }
+  | {
+      t: 'ai_result';
+      rect: Rect;
+      url: string;
+      aiRevision: number;
+      aiGeneration: number;
+      crop: Rect;
+      apply: Rect;
+      latencyMs: number;
+      /** The profile this result was generated with, not the room's current one. */
+      profile: AIProfileName;
+    }
   | { t: 'error'; message: string };

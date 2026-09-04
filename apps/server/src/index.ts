@@ -2,7 +2,7 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './ai/backends/index.js';
-import { applyBackendDefaults, loadConfig, type Config } from './config.js';
+import { loadConfig, resolveBackendConfig, type Config } from './config.js';
 import { createBrushJamServer } from './server.js';
 
 // Optional repo-root .env (RunPod credentials etc). Never logged.
@@ -26,16 +26,18 @@ try {
 const backend = await createBackend(config);
 // The chosen backend gets the last word on the defaults (`auto` only resolves
 // here) and on what a room may ask for at all.
-config = applyBackendDefaults(config, backend.name);
 const capabilities = await backend.capabilities();
-if (!capabilities.profiles.includes(config.aiProfile)) {
-  console.warn(
-    `[brushjam] the ${backend.name} backend has no ${config.aiProfile} profile; rooms will start on ${capabilities.profiles[0]}`,
-  );
+try {
+  config = resolveBackendConfig(config, backend.name, capabilities);
+} catch (err) {
+  console.error(`[brushjam] ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
 }
 const { server, close } = createBrushJamServer(config, backend, {
   profiles: capabilities.profiles,
   maxDenoise: capabilities.maxDenoise,
+  maxResolution: config.maxResolution,
+  negativePromptActive: capabilities.negativePromptActive,
 });
 
 /**

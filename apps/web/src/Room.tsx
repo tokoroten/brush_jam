@@ -31,6 +31,12 @@ import {
   type BrushSizes,
   type SizedTool,
 } from './brushSize.js';
+
+/**
+ * Shown instead of letting someone type into a box the sampler will not read:
+ * a distilled 4-step model runs at CFG 1.0, where there is no negative branch.
+ */
+const NEGATIVE_INACTIVE_HINT = 'inactive with the current fast profile (CFG 1.0)';
 import { LayerPanel } from './LayerPanel.js';
 import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, scaledBy } from './move.js';
 import { newId } from './id.js';
@@ -484,8 +490,11 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             value={negativeDraft ?? client.negativePrompt}
             maxLength={MAX_NEGATIVE_PROMPT}
             placeholder={DEFAULT_NEGATIVE_PROMPT}
+            disabled={!client.negativePromptActive}
+            title={client.negativePromptActive ? undefined : NEGATIVE_INACTIVE_HINT}
             onChange={(e) => setNegativeDraft(e.target.value)}
           />
+          {client.negativePromptActive ? null : <span className="hint">{NEGATIVE_INACTIVE_HINT}</span>}
         </div>
       ) : null}
 

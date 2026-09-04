@@ -7,7 +7,7 @@ class FakeBackend implements AIBackend {
   readonly name = 'fake';
 
   async capabilities(): Promise<BackendCapabilities> {
-    return { profiles: ['fast', 'quality'], maxResolution: 2048, maxDenoise: 0.95 };
+    return { profiles: ['fast', 'quality'], maxResolution: 2048, maxDenoise: 0.95, negativePromptActive: { fast: true, quality: true } };
   }
 
   readonly calls: GenerateRequest[] = [];
@@ -103,7 +103,7 @@ function makeHost(): Harness {
     },
     applyResult: async (_patch, crop, apply, _mask, forRevision) => {
       applied.push({ crop, apply, forRevision });
-      return { rect: crop, url: '/patch.png' };
+      return { rect: crop, url: '/patch.png', aiGeneration: applied.length };
     },
     emit: (msg) => emitted.push(msg),
   };
@@ -763,6 +763,99 @@ describe('profile reaches the backend', () => {
     s.markDirty([R(2000, 2000)]);
     await vi.advanceTimersByTimeAsync(500);
     expect(backend.calls[0]).toMatchObject({ profile: 'fast', steps: 14 });
+    s.stop();
+  });
+});
+
+/**
+ * Review 7 finding 1: a 400 "size out of range" never becomes true by waiting.
+ * Retrying it every two seconds hides the message behind a status flicker and
+ * keeps a doomed request on the GPU queue.
+ */
+describe('permanent backend errors', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  class AlwaysFails implements AIBackend {
+    readonly name = 'broken';
+    calls = 0;
+    constructor(private readonly message = 'size 1024 out of range [256, 768]') {}
+    async capabilities(): Promise<BackendCapabilities> {
+      return { profiles: ['fast', 'quality'], maxResolution: 768, maxDenoise: 0.9, negativePromptActive: { fast: true, quality: true } };
+    }
+    async generate(): Promise<Buffer> {
+      this.calls += 1;
+      throw new Error(this.message);
+    }
+  }
+
+  it('stops retrying after two identical failures', async () => {
+    const { host, emitted } = makeHost();
+    const backend = new AlwaysFails();
+    const s = new AIScheduler(host, backend, { ...opts, errorBackoffMs: 100 });
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(backend.calls).toBe(2);
+    const errors = emitted.filter((m) => m.t === 'ai_status' && m.state === 'error');
+    expect(JSON.stringify(errors.at(-1))).toMatch(/not retrying until something changes/);
+    s.stop();
+  });
+
+  it('reports every failure to the owner so it can re-probe the backend', async () => {
+    const { host } = makeHost();
+    const seen: Array<{ message: string; repeated: number }> = [];
+    host.onError = (message, repeated) => seen.push({ message, repeated });
+    const s = new AIScheduler(host, new AlwaysFails(), { ...opts, errorBackoffMs: 100 });
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(seen.map((e) => e.repeated)).toEqual([1, 2]);
+    expect(seen[0]!.message).toMatch(/out of range/);
+    s.stop();
+  });
+
+  it('a new edit unsticks it', async () => {
+    const { host } = makeHost();
+    const backend = new AlwaysFails();
+    const s = new AIScheduler(host, backend, { ...opts, errorBackoffMs: 100 });
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(backend.calls).toBe(2);
+
+    s.markDirty([R(2200, 2200)]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(backend.calls).toBeGreaterThan(2);
+    s.stop();
+  });
+
+  it('a different error is not treated as the same failure', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, { ...opts, errorBackoffMs: 100 });
+    backend.failNext = true;
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(1000);
+    // the second attempt succeeds, so nothing is stuck
+    await backend.finish();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(backend.calls.length).toBeGreaterThanOrEqual(2);
+    s.stop();
+  });
+});
+
+describe('ai_result metadata', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('carries the generation counter and the profile it ran with', async () => {
+    const { host, emitted, settings } = makeHost();
+    const backend = new FakeBackend();
+    settings.profile = 'fast';
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    await backend.finish();
+    const result = emitted.find((m) => m.t === 'ai_result');
+    expect(result).toMatchObject({ profile: 'fast', aiGeneration: 1 });
     s.stop();
   });
 });

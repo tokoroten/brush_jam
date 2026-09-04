@@ -72,6 +72,7 @@ export function createBrushJamServer(config: Config, backend: AIBackend, limits:
   // Rooms are capped by what the backend can actually do (probed at startup).
   const registry = new RoomRegistry(backend, config, limits);
   registry.startSweeper();
+  registry.startCapabilityWatch();
   const webDist = config.webDist ?? defaultWebDist();
   const hasWeb = existsSync(path.join(webDist, 'index.html'));
 

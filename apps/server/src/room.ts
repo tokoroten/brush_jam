@@ -40,6 +40,12 @@ export function clampResolution(value: number, max: number): number {
 export interface RoomLimits {
   profiles?: AIProfileName[];
   maxDenoise?: number;
+  negativePromptActive?: Record<AIProfileName, boolean>;
+  /**
+   * Ceiling for the generation size, which is NOT the starting size: a fast
+   * room starts at 768 but may still switch to quality at 1024.
+   */
+  maxResolution?: number;
 }
 
 export function clampDenoise(value: number): number {
@@ -78,8 +84,16 @@ export interface RoomState {
   /** What the running backend supports; the room cannot leave these. */
   aiProfiles: AIProfileName[];
   maxDenoise: number;
+  /** Per profile: does the negative prompt reach the sampler at all? */
+  negativeActive: Record<AIProfileName, boolean>;
   humanRevision: number;
   aiRevision: number;
+  /**
+   * Accepted AI results so far. `aiRevision` cannot answer "is there anything
+   * to load": a generation triggered by a settings change in an untouched room
+   * completes at revision 0, which is indistinguishable from "never ran".
+   */
+  aiGeneration: number;
   layers: Layer[];
   strokes: Stroke[];
   undone: Set<string>;
@@ -145,6 +159,7 @@ export function createRoom(
   limits: RoomLimits = {},
 ): RoomState {
   const profiles = limits.profiles?.length ? limits.profiles : [...AI_PROFILES];
+  const resolutionMax = clampResolution(limits.maxResolution ?? resolution, MAX_AI_RESOLUTION);
   const maxDenoise = Math.min(limits.maxDenoise ?? MAX_DENOISE, MAX_DENOISE);
   // A room can only start on a profile the backend has.
   const startProfile = profiles.includes(profile) ? profile : profiles[0]!;
@@ -154,14 +169,16 @@ export function createRoom(
     prompt: 'anime style, fantasy town, vibrant colors',
     denoise: Math.min(clampDenoise(denoise), maxDenoise),
     negativePrompt: '',
-    aiResolution: clampResolution(resolution, resolution),
-    aiResolutionMax: clampResolution(resolution, resolution),
+    aiResolution: clampResolution(resolution, resolutionMax),
+    aiResolutionMax: resolutionMax,
     aiResolutionAdjustable: adjustableResolution,
     aiProfile: startProfile,
     aiProfiles: profiles,
     maxDenoise,
+    negativeActive: limits.negativePromptActive ?? { fast: true, quality: true },
     humanRevision: 0,
     aiRevision: 0,
+    aiGeneration: 0,
     layers: [
       { id: shortId(6), name: 'Layer 1', kind: 'draw', visible: true, locked: false, opacity: 1, order: 0, includeInAI: true },
     ],
@@ -287,6 +304,7 @@ export function snapshot(
     prompt: room.prompt,
     humanRevision: room.humanRevision,
     aiRevision: room.aiRevision,
+    aiGeneration: room.aiGeneration,
     canvasSize: ai.canvasSize ?? CANVAS_SIZE,
     aiWindow: ai.window,
     aiApply: ai.apply,
@@ -298,6 +316,7 @@ export function snapshot(
     aiProfile: room.aiProfile,
     aiProfiles: room.aiProfiles,
     maxDenoise: room.maxDenoise,
+    negativePromptActive: room.negativeActive[room.aiProfile] !== false,
     members: [...room.members.values()],
     layers: sortedLayers(room),
     strokes: room.strokes,
@@ -615,6 +634,11 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (msg.aiProfile !== undefined && !room.aiProfiles.includes(msg.aiProfile)) {
         return refuse(`this backend only supports the ${room.aiProfiles.join(' and ')} profile`);
       }
+      if (msg.aiResolution !== undefined && clampResolution(msg.aiResolution, MAX_AI_RESOLUTION) > room.aiResolutionMax) {
+        // Clamping silently is how a version-skewed client ends up drawing at a
+        // size it never asked for, with no way to tell.
+        return refuse(`this room can generate at up to ${room.aiResolutionMax}`);
+      }
       const aiProfile = msg.aiProfile ?? room.aiProfile;
       // Switching profile also moves the generation size to that profile's
       // default, because the two go together (fast is only fast at 768). An
@@ -638,7 +662,16 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       room.aiResolution = aiResolution;
       room.aiProfile = aiProfile;
       return {
-        broadcast: [{ t: 'ai_settings_changed', denoise, negativePrompt, aiResolution, aiProfile }],
+        broadcast: [
+          {
+            t: 'ai_settings_changed',
+            denoise,
+            negativePrompt,
+            aiResolution,
+            aiProfile,
+            negativePromptActive: room.negativeActive[aiProfile] !== false,
+          },
+        ],
         relay: [],
         dirty: [],
         promptChanged: true,

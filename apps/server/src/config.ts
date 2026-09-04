@@ -1,4 +1,5 @@
-import { AI_PROFILES, PROFILE_DEFAULTS, type AIProfileName } from '@brushjam/shared';
+import { DEFAULT_FAST_LORA } from './ai/backends/comfyui.js';
+import { AI_PROFILES, PROFILE_DEFAULTS, type AIProfileName, MAX_AI_RESOLUTION, MIN_AI_RESOLUTION } from '@brushjam/shared';
 
 export interface Config {
   host: string;
@@ -37,6 +38,23 @@ export interface Config {
   runpodEndpointId: string;
   runpodApiKey: string;
   webDist: string | null;
+  /**
+   * Which AI settings the operator pinned. Backend defaults may only fill in
+   * the rest: silently overriding an explicit AI_PROFILE (or moving AI_WINDOW
+   * under an explicit AI_APPLY) produced a configuration that had never been
+   * validated as a whole.
+   */
+  explicit: ExplicitEnv;
+  /** Ceiling for a room's generation size; the starting size is aiWindow. */
+  maxResolution: number;
+}
+
+export interface ExplicitEnv {
+  window: boolean;
+  apply: boolean;
+  denoise: boolean;
+  profile: boolean;
+  steps: boolean;
 }
 
 /** `1`, `true`, `yes`, `on` (case-insensitive) are true; anything else false. */
@@ -84,14 +102,72 @@ function num(env: NodeJS.ProcessEnv, key: string, fallback: number, rule: Number
 export const STREAM_DEFAULTS = { resolution: 768, denoise: 0.8 } as const;
 
 /**
- * Apply the backend's own defaults to a config the operator did not pin.
- * Called once the backend is known, because `auto` only resolves at startup.
+ * Reconcile the configuration with the backend that was actually selected -
+ * `auto` only resolves at startup, and the backend's own limits are only known
+ * after probing it.
+ *
+ * Order matters: backend defaults fill in *unset* values first, then the whole
+ * thing is validated again. Applying them after validation (as an earlier
+ * version did) could move AI_WINDOW below an explicit AI_APPLY, producing a
+ * combination that had passed validation in a form nobody ever ran.
+ *
+ * An explicit choice is never silently replaced: a pinned profile the backend
+ * cannot run, or a pinned window larger than it accepts, is an error - both
+ * would otherwise fail on every generation with a 400 the user cannot see.
  */
-export function applyBackendDefaults(config: Config, backendName: string, env: NodeJS.ProcessEnv = process.env): Config {
-  if (backendName !== 'stream') return config;
-  const next = { ...config, aiProfile: 'fast' as const };
-  if (env.AI_WINDOW === undefined) next.aiWindow = Math.min(STREAM_DEFAULTS.resolution, config.canvasSize);
-  if (env.AI_DENOISE === undefined) next.aiDenoise = STREAM_DEFAULTS.denoise;
+export function resolveBackendConfig(
+  config: Config,
+  backendName: string,
+  capabilities: { profiles: AIProfileName[]; maxResolution: number; maxDenoise: number },
+): Config {
+  const errors: string[] = [];
+  const next: Config = { ...config };
+
+  if (backendName === 'stream') {
+    if (!config.explicit.window) next.aiWindow = Math.min(STREAM_DEFAULTS.resolution, config.canvasSize);
+    if (!config.explicit.denoise) next.aiDenoise = STREAM_DEFAULTS.denoise;
+    if (!config.explicit.profile) next.aiProfile = 'fast';
+  }
+
+  if (!capabilities.profiles.includes(next.aiProfile)) {
+    if (config.explicit.profile) {
+      errors.push(
+        `AI_PROFILE=${next.aiProfile} is not supported by the ${backendName} backend (it offers ${capabilities.profiles.join(', ')})`,
+      );
+    } else {
+      next.aiProfile = capabilities.profiles[0] ?? 'quality';
+      if (!config.explicit.window) next.aiWindow = Math.min(PROFILE_DEFAULTS[next.aiProfile].resolution, next.aiWindow);
+    }
+  }
+
+  // A window the backend will refuse is a permanent 400 on every generation.
+  if (next.aiWindow > capabilities.maxResolution) {
+    if (config.explicit.window) {
+      errors.push(
+        `AI_WINDOW=${next.aiWindow} is larger than the ${backendName} backend accepts (${capabilities.maxResolution})`,
+      );
+    } else {
+      next.aiWindow = Math.max(MIN_AI_RESOLUTION, Math.floor(capabilities.maxResolution / 64) * 64);
+    }
+  }
+  if (next.aiDenoise > capabilities.maxDenoise) {
+    if (config.explicit.denoise) {
+      errors.push(
+        `AI_DENOISE=${next.aiDenoise} is above what the ${backendName} backend accepts (${capabilities.maxDenoise})`,
+      );
+    } else {
+      next.aiDenoise = capabilities.maxDenoise;
+    }
+  }
+
+  next.maxResolution = Math.min(
+    config.explicit.window ? next.aiWindow : Math.max(next.aiWindow, 1024),
+    capabilities.maxResolution,
+    MAX_AI_RESOLUTION,
+  );
+
+  crossFieldErrors(next, errors);
+  if (errors.length > 0) throw new ConfigError(`invalid configuration:\n  - ${errors.join('\n  - ')}`);
   return next;
 }
 
@@ -109,7 +185,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // The fast profile is only fast if there is a LoRA to load. Asking for it
   // with COMFYUI_FAST_LORA='' must fall all the way back to quality, not leave
   // a 4-step euler_ancestral at cfg 5.5, which is neither profile.
-  const fastLora = (env.COMFYUI_FAST_LORA ?? 'lcm-lora-sdxl.safetensors').trim();
+  const fastLora = (env.COMFYUI_FAST_LORA ?? DEFAULT_FAST_LORA).trim();
   // AI_PROFILE is the setting. AI_FAST survives as an alias so existing
   // scripts keep working: AI_FAST=1 means fast, AI_FAST=0 means quality.
   const aliased = env.AI_FAST === undefined ? undefined : flag(env.AI_FAST) ? 'fast' : 'quality';
@@ -121,6 +197,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const fastRequested = requested === 'fast';
   const fast = fastRequested && fastLora !== '';
   const profile: AIProfileName = fast ? 'fast' : 'quality';
+
+  const explicit: ExplicitEnv = {
+    window: env.AI_WINDOW !== undefined && env.AI_WINDOW !== '',
+    apply: env.AI_APPLY !== undefined && env.AI_APPLY !== '',
+    denoise: env.AI_DENOISE !== undefined && env.AI_DENOISE !== '',
+    profile: env.AI_PROFILE !== undefined || env.AI_FAST !== undefined,
+    steps: env.AI_STEPS !== undefined && env.AI_STEPS !== '',
+  };
 
   const config: Config = {
     host: env.HOST ?? '127.0.0.1',
@@ -151,6 +235,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     runpodEndpointId: env.RUNPOD_ENDPOINT_ID ?? '',
     runpodApiKey: env.RUNPOD_API_KEY ?? '',
     webDist: env.WEB_DIST ?? null,
+    explicit,
+    // Filled in below: a room may go up to here even when it starts smaller.
+    maxResolution: 0,
   };
 
   // ComfyUI's VAEDecodeTiled has a minimum tile of 64; 0 means "do not tile".
@@ -165,6 +252,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     errors.push(`AI_DENOISE must be a multiple of 0.05 (got ${config.aiDenoise})`);
   }
 
+  crossFieldErrors(config, errors);
+  config.maxResolution = defaultMaxResolution(config);
+  if (errors.length > 0) throw new ConfigError(`invalid configuration:\n  - ${errors.join('\n  - ')}`);
+  return config;
+}
+
+/**
+ * A room starts at `aiWindow` but may go up to here. The two were the same
+ * value, which meant the default fast server (768) could never reach the
+ * documented 1024 quality profile. An explicit AI_WINDOW is still a hard cap:
+ * an operator who pins the size means it.
+ */
+function defaultMaxResolution(config: Config): number {
+  const ceiling = config.explicit.window ? config.aiWindow : Math.max(config.aiWindow, QUALITY_CEILING);
+  return Math.min(MAX_AI_RESOLUTION, Math.max(MIN_AI_RESOLUTION, ceiling));
+}
+
+/** The 1024 the quality profile is documented to use. */
+const QUALITY_CEILING = 1024;
+
+function crossFieldErrors(config: Config, errors: string[]): void {
   if (config.aiMode === 'full') {
     // The whole canvas is regenerated, but not necessarily at canvas
     // resolution: AI_WINDOW is the *generation* size, so an 8 GB card can run a
@@ -174,7 +282,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
     // The profile already chose the generation size (fast 768, quality 1024);
     // only clamp it to a canvas that is smaller than that.
-    if (env.AI_WINDOW === undefined) config.aiWindow = Math.min(config.aiWindow, config.canvasSize);
+    if (!config.explicit.window) config.aiWindow = Math.min(config.aiWindow, config.canvasSize);
     if (config.aiWindow < 512) {
       errors.push(`AI_MODE=full needs AI_WINDOW >= 512 (got ${config.aiWindow})`);
     }
@@ -200,7 +308,4 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (config.aiBackend === 'runpod' && (!config.runpodEndpointId || !config.runpodApiKey)) {
     errors.push('AI_BACKEND=runpod requires RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY');
   }
-
-  if (errors.length > 0) throw new ConfigError(`invalid configuration:\n  - ${errors.join('\n  - ')}`);
-  return config;
 }

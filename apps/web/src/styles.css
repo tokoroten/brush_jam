@@ -17,6 +17,7 @@ input[type='text'], input.prompt, input:not([type]) { background: #1d2026; color
 .members { display: flex; gap: 4px; flex-wrap: wrap; }
 .chip { border: 1px solid; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 .prompt { flex: 1 1 16rem; min-width: 12rem; }
+.prompt:disabled { opacity: 0.45; cursor: not-allowed; }
 .pill { border-radius: 10px; padding: 2px 8px; font-size: 11px; background: #2b2f36; }
 .pill.generating { background: #3d6bd8; }
 .pill.queued { background: #4a4f5a; }

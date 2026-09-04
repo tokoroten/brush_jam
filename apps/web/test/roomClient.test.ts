@@ -116,6 +116,8 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     prompt: 'p',
     humanRevision: 0,
     aiRevision: 0,
+    aiGeneration: 0,
+    negativePromptActive: true,
     canvasSize: CANVAS_SIZE,
     aiWindow: 1024,
     aiApply: 768,
@@ -137,8 +139,10 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
 });
 
 const rect = { x: 0, y: 0, width: 64, height: 64 };
-const aiResult = (n: number, latencyMs = 10): ServerMessage => ({
+const aiResult = (n: number, latencyMs = 10, profile: 'fast' | 'quality' = 'fast'): ServerMessage => ({
   t: 'ai_result',
+  aiGeneration: n,
+  profile,
   rect,
   url: `/patch-${n}.png`,
   aiRevision: n,
@@ -180,7 +184,7 @@ describe('snapshot resets AI state', () => {
   it('fetches ai.png when the snapshot does have output', async () => {
     const loader = makeLoader();
     const client = new RoomClient('r1', 'Me', loader.deps);
-    client.receive(snapshot({ aiRevision: 5 }));
+    client.receive(snapshot({ aiRevision: 5, aiGeneration: 2 }));
     await tick();
     expect(loader.pending().some((s) => s.includes('ai.png'))).toBe(true);
     loader.resolve('ai.png');
@@ -429,7 +433,7 @@ describe('stale ai.png loads', () => {
   it('still applies a full raster when nothing newer was painted', async () => {
     const loader = makeLoader();
     const client = new RoomClient('r1', 'Me', loader.deps);
-    client.receive(snapshot({ aiRevision: 4 }));
+    client.receive(snapshot({ aiRevision: 4, aiGeneration: 1 }));
     await tick();
     loader.resolve('ai.png');
     await tick();
@@ -451,7 +455,7 @@ describe('ai settings', () => {
     expect(client.aiResolutionMax).toBe(768);
     expect(client.negativePrompt).toBe('no text');
 
-    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '', aiResolution: 768, aiProfile: 'fast' });
+    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '', aiResolution: 768, aiProfile: 'fast', negativePromptActive: true });
     await tick();
     expect(client.denoise).toBe(0.35);
     expect(client.negativePrompt).toBe('');
@@ -542,6 +546,7 @@ describe('AI profile', () => {
     negativePrompt: '',
     aiResolution: aiProfile === 'fast' ? 768 : 1024,
     aiProfile,
+    negativePromptActive: aiProfile === 'quality',
   });
 
   it('takes the profile from the snapshot', async () => {
@@ -569,7 +574,7 @@ describe('AI profile', () => {
     client.receive(snapshot({ aiProfile: 'fast' }));
     await tick();
 
-    client.receive(aiResult(1, 3700));
+    client.receive(aiResult(1, 3700, 'fast'));
     await tick();
     loader.resolve('/patch-1.png');
     await tick();
@@ -578,7 +583,7 @@ describe('AI profile', () => {
 
     client.receive(changed('quality'));
     await tick();
-    client.receive(aiResult(2, 10_200));
+    client.receive(aiResult(2, 10_200, 'quality'));
     await tick();
     loader.resolve('/patch-2.png');
     await tick();
@@ -604,5 +609,74 @@ describe('backend capabilities', () => {
     const client = new RoomClient('r1', 'Me', loader.deps);
     expect(client.aiProfiles).toEqual(['fast', 'quality']);
     expect(client.maxDenoise).toBe(0.95);
+  });
+});
+
+/** Review 7 findings 3 and 8. */
+describe('AI result bookkeeping', () => {
+  it('fetches the full raster whenever anything has been generated, even at revision 0', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    // a settings-triggered generation in an untouched room: revision 0, but
+    // there is a raster waiting.
+    client.receive(snapshot({ aiRevision: 0, aiGeneration: 3 }));
+    await tick();
+    expect(loader.pending().some((u) => u.includes('ai.png'))).toBe(true);
+  });
+
+  it('does not fetch anything in a room that has never generated', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ aiRevision: 0, aiGeneration: 0 }));
+    await tick();
+    expect(loader.pending().some((u) => u.includes('ai.png'))).toBe(false);
+  });
+
+  it('attributes latency to the profile the result was generated with', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ aiProfile: 'fast' }));
+    await tick();
+
+    // the room switches to quality while a fast run is still in flight
+    client.receive({ t: 'ai_settings_changed', denoise: 0.7, negativePrompt: '', aiResolution: 1024, aiProfile: 'quality', negativePromptActive: true });
+    await tick();
+    client.receive(aiResult(1, 3700, 'fast'));
+    await tick();
+    loader.resolve('/patch-1.png');
+    await tick();
+
+    expect(client.profileLatency.fast).toBe(3700);
+    expect(client.profileLatency.quality).toBeUndefined();
+  });
+});
+
+/** The room tells the client whether the negative prompt reaches the sampler. */
+describe('negative prompt activity', () => {
+  it('defaults to active', () => {
+    expect(new RoomClient('r1', 'Me', makeLoader().deps).negativePromptActive).toBe(true);
+  });
+
+  it('takes it from the snapshot', async () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.receive(snapshot({ negativePromptActive: false }));
+    await tick();
+    expect(client.negativePromptActive).toBe(false);
+  });
+
+  it('follows a profile switch broadcast', async () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.receive(snapshot({ negativePromptActive: false }));
+    await tick();
+    client.receive({
+      t: 'ai_settings_changed',
+      denoise: 0.7,
+      negativePrompt: '',
+      aiResolution: 1024,
+      aiProfile: 'quality',
+      negativePromptActive: true,
+    });
+    await tick();
+    expect(client.negativePromptActive).toBe(true);
   });
 });

@@ -92,6 +92,11 @@ export class RoomClient {
   aiProfiles: AIProfileName[] = ['fast', 'quality'];
   maxDenoise = MAX_DENOISE;
   /**
+   * False when the current profile runs at CFG 1.0, where the sampler never
+   * evaluates the negative branch: the box would accept text and do nothing.
+   */
+  negativePromptActive = true;
+  /**
    * Last measured stroke-to-result time per profile, so the hint under the
    * fast/quality switch reflects this machine rather than my measurements.
    * Not persisted: an empty slot falls back to PROFILE_HINT_MS.
@@ -347,6 +352,7 @@ export class RoomClient {
         this.aiProfile = s.aiProfile;
         this.aiProfiles = s.aiProfiles;
         this.maxDenoise = s.maxDenoise;
+        this.negativePromptActive = s.negativePromptActive;
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;
@@ -367,7 +373,10 @@ export class RoomClient {
         this.lastCrop = null;
         this.lastApply = null;
         // Nothing to fetch before the first result (the route 404s by design).
-        if (s.aiRevision > 0) await this.loadAiCanvas();
+        // aiGeneration, not aiRevision: a generation triggered by a settings
+        // change in an untouched room finishes at revision 0, and a joiner that
+        // checked the revision stayed blank until somebody drew again.
+        if (s.aiGeneration > 0) await this.loadAiCanvas();
         break;
       }
       case 'presence': {
@@ -452,6 +461,7 @@ export class RoomClient {
         this.negativePrompt = msg.negativePrompt;
         this.aiResolution = msg.aiResolution;
         this.aiProfile = msg.aiProfile;
+        this.negativePromptActive = msg.negativePromptActive;
         break;
       case 'prompt_changed':
         this.prompt = msg.prompt;
@@ -476,7 +486,10 @@ export class RoomClient {
           this.aiRevision = msg.aiRevision;
           this.aiLatencyMs = msg.latencyMs;
           // Remember what this profile actually costs on this machine.
-          this.profileLatency[this.aiProfile] = msg.latencyMs;
+          // Attribute to the profile the result was GENERATED with: a switch
+          // during an in-flight run would otherwise file a fast timing under
+          // quality and leave both estimates wrong.
+          this.profileLatency[msg.profile ?? this.aiProfile] = msg.latencyMs;
         } catch {
           // A dropped patch would leave a hole. Recover from the server's
           // authoritative raster, but outside the queue so nothing stalls.

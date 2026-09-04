@@ -337,3 +337,33 @@ describe('StreamBackend', () => {
     await expect(streamReachable('http://127.0.0.1:8790')).resolves.toBe(false);
   });
 });
+
+/**
+ * The worker runs a distilled model whose guidance setting decides whether the
+ * negative prompt is evaluated at all. It reports that; we relay it verbatim.
+ */
+describe('negative prompt capability', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const caps = async (body: Record<string, unknown>): Promise<boolean> => {
+    stubFetch(() => new Response(JSON.stringify({ ok: true, warm: true, ...body }), { status: 200 }));
+    const c = await new StreamBackend({ url: 'http://127.0.0.1:8790' }).capabilities();
+    return c.negativePromptActive.fast;
+  };
+
+  it('takes negative_prompt_active from /healthz when the worker says false', async () => {
+    await expect(caps({ negative_prompt_active: false })).resolves.toBe(false);
+  });
+
+  it('takes it when the worker says true', async () => {
+    await expect(caps({ negative_prompt_active: true })).resolves.toBe(true);
+  });
+
+  it('assumes active when the worker does not report the field', async () => {
+    await expect(caps({})).resolves.toBe(true);
+  });
+
+  it('ignores a non-boolean value rather than trusting it', async () => {
+    await expect(caps({ negative_prompt_active: 'no' })).resolves.toBe(true);
+  });
+});

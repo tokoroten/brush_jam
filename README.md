@@ -127,7 +127,7 @@ are multiples of 64, denoise is 0..1, and so on).
 | `AI_FAST_STEPS` | `4` | Sampler steps for the fast profile |
 | `AI_FAST` | - | Legacy alias: `1` means `AI_PROFILE=fast`, `0` means `quality` |
 | `AI_STREAM_AUTO` | `0` | `1` lets `AI_BACKEND=auto` consider the stream worker |
-| `COMFYUI_FAST_LORA` | `lcm-lora-sdxl.safetensors` | LoRA for the fast profile; empty disables it |
+| `COMFYUI_FAST_LORA` | `dmd2_sdxl_4step_lora_fp16.safetensors` | LoRA for the fast profile; `lcm-lora-sdxl.safetensors` also recognised, empty disables it |
 | `AI_DENOISE` | `0.7` | img2img strength; the starting value of each room's slider |
 | `AI_CFG` | `5.5` | CFG scale |
 | `AI_VAE_TILE` | `512` | VAEDecodeTiled tile size; `0` uses a plain `VAEDecode` |
@@ -186,8 +186,13 @@ process: one server serves rooms that disagree.
 
 | profile | workflow | steps | cfg | default size | measured |
 | --- | --- | --- | --- | --- | --- |
-| `fast` | LCM LoRA, `lcm` / `sgm_uniform` | 4 | 1.5 | 768 | ~3.7 s |
+| `fast` | DMD2 LoRA, `lcm` / `sgm_uniform` | 4 | 1.0 | 768 | ~2.4 s |
 | `quality` | plain checkpoint, `euler_ancestral` / `normal` | 14 | 5.5 | 1024 | ~10.3 s |
+
+Measured medians, which are also the fallback hints in the UI: fast is the
+stream worker at 768 end-to-end through the app, quality is ComfyUI at 1024
+(`docs/experiments/2026-09-05-stream/REPORT.md` and `.../2026-09-05-comfyui/`).
+Each room replaces them with its own timings after one generation.
 
 In the fast profile a `LoraLoader` (node 12) is inserted between the checkpoint
 and its consumers - both `CLIPTextEncode` nodes and the `KSampler` read
@@ -198,6 +203,16 @@ so denoise only picks the starting noise level). cfg 5.5 burns the image out at
 4 steps, and the sampler settings come from a named profile keyed off the LoRA,
 because few-step LoRAs are not interchangeable: a name containing `dmd2` uses
 cfg 1.0 (DMD2 is distilled and wants no guidance), anything else LCM at 1.5.
+DMD2 is the default because it measured both faster and better at reinterpreting
+a drawing at the same denoise (`docs/experiments/2026-09-05-stream/REPORT.md`
+section 8).
+
+At cfg 1.0 the sampler never evaluates the negative branch, so the negative
+prompt does nothing. Rather than accepting text into a box that is ignored, the
+backend reports `negativePromptActive` per profile, the room puts the value for
+its current profile in the snapshot and in `ai_settings_changed`, and the UI
+greys the input with "inactive with the current fast profile (CFG 1.0)". The
+text itself is kept, so switching to quality brings it back.
 
 Switching profile also moves the room's generation size to that profile's
 default, because the two go together - fast is only worth having if it is also
@@ -217,11 +232,11 @@ and rooms are capped by it: the UI disables a profile the backend does not have
 and stops the denoise slider at its ceiling, and the server refuses anything
 outside it rather than silently substituting.
 
-| backend | profiles | max resolution | max denoise |
-| --- | --- | --- | --- |
-| comfyui / runpod | fast + quality (quality only without a LoRA) | 2048 | 0.95 |
-| stream | **fast only** | worker's `max_size`, else 1024 | worker's `max_denoise`, else 0.9 |
-| mock | fast + quality | 2048 | 0.95 |
+| backend | profiles | max resolution | max denoise | negative prompt |
+| --- | --- | --- | --- | --- |
+| comfyui / runpod | fast + quality (quality only without a LoRA) | 2048 | 0.95 | inactive for `fast` at cfg 1.0 (DMD2) |
+| stream | **fast only** | worker's `max_size`, else 1024 | worker's `max_denoise`, else 0.9 | worker's `negative_prompt_active`, else active |
+| mock | fast + quality | 2048 | 0.95 | active |
 
 The stream worker holds one fused LCM LoRA, so it has no quality mode at all -
 asking it for 14 steps would silently run 4. Its defaults also differ, and the
@@ -340,7 +355,8 @@ room exactly like the prompt itself:
 - **AI resolution** — 512 / 768 / 1024, capped by the server's `AI_WINDOW`.
   Lower is faster and blurrier; the result is always scaled back to the canvas.
 - **negative prompt** — up to 1000 characters. Empty means "use the built-in
-  list", which the input shows as its placeholder.
+  list", which the input shows as its placeholder. Greyed out while the current
+  profile runs at cfg 1.0, where the sampler ignores it.
 
 Both debounce for 500 ms, broadcast as `ai_settings_changed`, ride along in the
 snapshot, and behave like a prompt change: the last painted area is re-dirtied so

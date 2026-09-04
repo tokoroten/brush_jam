@@ -97,9 +97,14 @@ export class RoomRuntime {
             this.patches.delete(oldest);
           }
           this.state.aiRevision = forRevision;
-          return { rect: crop, url: `/rooms/${roomId}/patches/${id}.png` };
+          // Counted separately from the revision: a settings-triggered run in
+          // an untouched room lands at revision 0, and a late joiner has to be
+          // able to tell that from "nothing has ever been generated".
+          this.state.aiGeneration += 1;
+          return { rect: crop, url: `/rooms/${roomId}/patches/${id}.png`, aiGeneration: this.state.aiGeneration };
         },
         emit: (msg) => this.broadcast(msg),
+        onError: (message, repeated) => this.onGenerationError(message, repeated),
       },
       backend,
       {
@@ -284,6 +289,53 @@ export class RoomRuntime {
     this.ai = null;
   }
 
+  /**
+   * The backend's limits changed under us (a worker restarted with a different
+   * max_size, or came back at all). Clamp the room into the new limits, tell
+   * everyone, and let the AI re-run at the corrected size.
+   */
+  applyLimits(limits: RoomLimits): void {
+    const profiles = limits.profiles?.length ? limits.profiles : this.state.aiProfiles;
+    const maxDenoise = limits.maxDenoise ?? this.state.maxDenoise;
+    const maxResolution = limits.maxResolution ?? this.state.aiResolutionMax;
+    if (limits.negativePromptActive) this.state.negativeActive = { ...limits.negativePromptActive };
+    const before = {
+      denoise: this.state.denoise,
+      resolution: this.state.aiResolution,
+      profile: this.state.aiProfile,
+    };
+
+    this.state.aiProfiles = [...profiles];
+    this.state.maxDenoise = maxDenoise;
+    this.state.aiResolutionMax = maxResolution;
+    this.state.denoise = Math.min(this.state.denoise, maxDenoise);
+    this.state.aiResolution = Math.min(this.state.aiResolution, maxResolution);
+    if (!profiles.includes(this.state.aiProfile)) this.state.aiProfile = profiles[0]!;
+
+    const changed =
+      before.denoise !== this.state.denoise ||
+      before.resolution !== this.state.aiResolution ||
+      before.profile !== this.state.aiProfile;
+    this.broadcast({
+      t: 'ai_settings_changed',
+      denoise: this.state.denoise,
+      negativePrompt: this.state.negativePrompt,
+      aiResolution: this.state.aiResolution,
+      aiProfile: this.state.aiProfile,
+      negativePromptActive: this.state.negativeActive[this.state.aiProfile] !== false,
+    });
+    // Retry once, at the size the backend will actually accept.
+    if (changed) this.scheduler.nudge();
+  }
+
+  /** A generation failed; the owner may want to re-probe the backend. */
+  private onGenerationError(message: string, repeated: number): void {
+    this.onError?.(message, repeated);
+  }
+
+  /** Set by the registry so a failure can trigger a capability re-probe. */
+  onError: ((message: string, repeated: number) => void) | null = null;
+
   broadcast(msg: ServerMessage): void {
     const data = JSON.stringify(msg);
     for (const [userId, socket] of this.sockets) this.trySend(userId, socket, data);
@@ -314,15 +366,75 @@ export class RoomRuntime {
   }
 }
 
+/** How often idle capabilities are re-checked; a restarted worker is silent. */
+export const CAPABILITY_POLL_MS = 60_000;
+
 export class RoomRegistry {
   private readonly rooms = new Map<string, RoomRuntime>();
   private sweeper: ReturnType<typeof setInterval> | null = null;
+  private capabilityTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshing: Promise<void> | null = null;
+  private limits: RoomLimits;
 
   constructor(
     private readonly backend: AIBackend,
     private readonly config: Config,
-    private readonly limits: RoomLimits = {},
-  ) {}
+    limits: RoomLimits = {},
+  ) {
+    this.limits = { ...limits };
+  }
+
+  /** Current backend limits, as last probed. */
+  get backendLimits(): RoomLimits {
+    return { ...this.limits };
+  }
+
+  /**
+   * Re-probe the backend and push any change into every room. A worker that
+   * restarts with a smaller max_size otherwise leaves every room asking for a
+   * size it will now refuse - a 400 on every generation, forever.
+   */
+  async refreshCapabilities(): Promise<void> {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = (async () => {
+      try {
+        const caps = await this.backend.capabilities();
+        const maxResolution = Math.min(
+          caps.maxResolution,
+          this.config.explicit.window ? this.config.aiWindow : Math.max(this.config.aiWindow, 1024),
+        );
+        const next: RoomLimits = {
+          profiles: caps.profiles,
+          maxDenoise: caps.maxDenoise,
+          maxResolution,
+          negativePromptActive: caps.negativePromptActive,
+        };
+        if (sameLimits(this.limits, next)) return;
+        console.log(
+          `[ai] backend limits changed: ${next.profiles?.join('/')} up to ${next.maxResolution} at denoise <= ${next.maxDenoise}`,
+        );
+        this.limits = next;
+        for (const room of this.rooms.values()) room.applyLimits(next);
+      } catch {
+        /* a probe failure is not a reason to change what rooms believe */
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  /** Poll while idle so a worker that came back is noticed without an edit. */
+  startCapabilityWatch(intervalMs = CAPABILITY_POLL_MS): void {
+    if (this.capabilityTimer) return;
+    this.capabilityTimer = setInterval(() => void this.refreshCapabilities(), intervalMs);
+    this.capabilityTimer.unref?.();
+  }
+
+  stopCapabilityWatch(): void {
+    if (this.capabilityTimer) clearInterval(this.capabilityTimer);
+    this.capabilityTimer = null;
+  }
 
   /** Reclaim rooms nobody has been in for a while (each holds a large raster). */
   startSweeper(intervalMs = 15_000): void {
@@ -355,6 +467,10 @@ export class RoomRegistry {
     let id = shortId(8);
     while (this.rooms.has(id)) id = shortId(8);
     const room = new RoomRuntime(id, this.backend, this.config, this.limits);
+    // A failing generation is the first sign a worker changed under us.
+    room.onError = (message) => {
+      if (looksLikeLimitError(message)) void this.refreshCapabilities();
+    };
     this.rooms.set(id, room);
     return room;
   }
@@ -369,6 +485,10 @@ export class RoomRegistry {
     if (existing) return existing;
     if (this.atCapacity && this.sweep() === 0 && this.atCapacity) return null;
     const room = new RoomRuntime(id, this.backend, this.config, this.limits);
+    // A failing generation is the first sign a worker changed under us.
+    room.onError = (message) => {
+      if (looksLikeLimitError(message)) void this.refreshCapabilities();
+    };
     this.rooms.set(id, room);
     return room;
   }
@@ -386,3 +506,21 @@ export class RoomRegistry {
 }
 
 export type { Rect };
+
+function sameLimits(a: RoomLimits, b: RoomLimits): boolean {
+  return (
+    a.maxDenoise === b.maxDenoise &&
+    a.maxResolution === b.maxResolution &&
+    (a.profiles ?? []).join(',') === (b.profiles ?? []).join(',') &&
+    JSON.stringify(a.negativePromptActive ?? null) === JSON.stringify(b.negativePromptActive ?? null)
+  );
+}
+
+/**
+ * Worth a re-probe: the backend refused the request itself rather than failing
+ * to do it. "size out of range" is the one that actually happens, when a worker
+ * restarts smaller than the room it is serving.
+ */
+export function looksLikeLimitError(message: string): boolean {
+  return /out of range|too large|max_size|not supported|unsupported|400/i.test(message);
+}

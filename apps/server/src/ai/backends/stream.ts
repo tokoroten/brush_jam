@@ -46,6 +46,8 @@ export interface StreamHealth {
   currentRequestId?: string;
   /** Largest denoise the worker accepts; absent means it did not say. */
   maxDenoise?: number;
+  /** Whether its guidance setting makes the negative prompt do anything. */
+  negativePromptActive?: boolean;
   /** Whatever it reports about how it samples: steps, guidance, vae, model. */
   sampling: StreamSampling;
   /** Why the worker is not usable, for the log line. */
@@ -209,6 +211,7 @@ export class StreamBackend implements AIBackend {
         warm?: boolean;
         max_size?: number;
         max_denoise?: number;
+        negative_prompt_active?: boolean;
         busy?: boolean;
         backend?: string;
         current_request_id?: string;
@@ -226,6 +229,7 @@ export class StreamBackend implements AIBackend {
         warm: body.warm === true,
         maxSize: num(body.max_size) ?? 0,
         maxDenoise: num(body.max_denoise),
+        negativePromptActive: typeof body.negative_prompt_active === 'boolean' ? body.negative_prompt_active : undefined,
         busy: body.busy === true,
         backend: str(body.backend) ?? 'stream',
         currentRequestId: str(body.current_request_id),
@@ -249,11 +253,15 @@ export class StreamBackend implements AIBackend {
    */
   async capabilities(): Promise<BackendCapabilities> {
     const health = await this.health();
+    // The worker knows whether its own guidance setting evaluates the negative
+    // branch; assume it does when it does not say.
+    const negative = health.negativePromptActive ?? true;
     return {
       profiles: ['fast'],
       maxResolution: health.maxSize > 0 ? health.maxSize : DEFAULT_STREAM_MAX_RESOLUTION,
       // Above ~0.9 an LCM worker tends to ignore the drawing entirely.
       maxDenoise: health.maxDenoise ?? DEFAULT_STREAM_MAX_DENOISE,
+      negativePromptActive: { fast: negative, quality: negative },
     };
   }
 

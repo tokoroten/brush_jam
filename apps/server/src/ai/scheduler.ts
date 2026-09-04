@@ -43,7 +43,15 @@ export interface SchedulerHost {
   buildMask(dirty: Rect[], crop: Rect, size: number, apply: Rect): MaskHandle;
   /** Fully opaque mask: full-canvas mode regenerates everything. */
   buildFullMask(size: number): MaskHandle;
-  applyResult(patch: Buffer, crop: Rect, apply: Rect, mask: unknown, forRevision: number): Promise<{ rect: Rect; url: string }>;
+  /** Called on every failed generation, with the run of identical failures. */
+  onError?(message: string, repeated: number): void;
+  applyResult(
+    patch: Buffer,
+    crop: Rect,
+    apply: Rect,
+    mask: unknown,
+    forRevision: number,
+  ): Promise<{ rect: Rect; url: string; aiGeneration: number }>;
   emit(msg: ServerMessage): void;
 }
 
@@ -57,6 +65,13 @@ export interface SchedulerOptions {
   apply: number;
   /** Steps for the quality profile. */
   steps: number;
+  /**
+   * Identical consecutive failures after which the scheduler stops retrying by
+   * itself. A 400 "size out of range" never becomes true by waiting, and
+   * retrying it every two seconds hides the message behind an endless
+   * generating/error flicker.
+   */
+  maxRepeatedErrors?: number;
   /** Steps for the fast profile; falls back to `steps` when unset. */
   fastSteps?: number;
   denoise: number;
@@ -99,6 +114,10 @@ export class AIScheduler {
   /** Absolute end of an error backoff. */
   private backoffUntil = 0;
   private timerAt = 0;
+  /** The error that made the scheduler stop retrying, if any. */
+  private stuckOn: string | null = null;
+  private lastError: string | null = null;
+  private repeatedError = 0;
 
   constructor(
     private readonly host: SchedulerHost,
@@ -120,6 +139,8 @@ export class AIScheduler {
 
   markDirty(rects: readonly Rect[]): void {
     if (this.stopped || rects.length === 0) return;
+    // A new edit is a different request; give it a chance.
+    this.clearStuck();
     if (this.full) {
       // No regions, no crop selection: the whole canvas is the unit of work.
       this.changed = true;
@@ -139,6 +160,7 @@ export class AIScheduler {
    */
   nudge(): void {
     if (this.stopped) return;
+    this.clearStuck();
     // Bumped even while a run is in flight: that run captured the old prompt and
     // must be re-done, otherwise the new prompt is silently dropped.
     this.promptEpoch += 1;
@@ -265,7 +287,18 @@ export class AIScheduler {
         this.lastAccepted = forRevision;
         this.lastAppliedRect = apply;
         const latencyMs = Date.now() - startedAt;
-        this.host.emit({ t: 'ai_result', rect: applied.rect, url: applied.url, aiRevision: forRevision, crop, apply, latencyMs });
+        this.host.emit({
+          t: 'ai_result',
+          rect: applied.rect,
+          url: applied.url,
+          aiRevision: forRevision,
+          aiGeneration: applied.aiGeneration,
+          crop,
+          apply,
+          latencyMs,
+          // The profile this run used, which may no longer be the room's.
+          profile: job.profile ?? 'quality',
+        });
         this.consumeDirty(apply, crop, region);
         if (promptEpoch !== this.promptEpoch) {
           // The prompt changed while this was generating: redo the same area so
@@ -287,6 +320,14 @@ export class AIScheduler {
         return;
       }
       const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
+      this.noteError(message);
+      if (this.stuckOn !== null) {
+        // A request the backend refuses outright will be refused again.
+        this.setState('error', `${message} - not retrying until something changes`);
+        this.inFlight = false;
+        this.controller = null;
+        return;
+      }
       this.setState('error', message);
       this.backoffUntil = Date.now() + (this.opts.errorBackoffMs ?? 2000);
       this.afterRun(this.opts.errorBackoffMs ?? 2000);
@@ -356,7 +397,17 @@ export class AIScheduler {
         this.lastAccepted = forRevision;
         this.lastAppliedRect = rect;
         const latencyMs = Date.now() - startedAt;
-        this.host.emit({ t: 'ai_result', rect: applied.rect, url: applied.url, aiRevision: forRevision, crop: rect, apply: rect, latencyMs });
+        this.host.emit({
+          t: 'ai_result',
+          rect: applied.rect,
+          url: applied.url,
+          aiRevision: forRevision,
+          aiGeneration: applied.aiGeneration,
+          crop: rect,
+          apply: rect,
+          latencyMs,
+          profile: job.profile ?? 'quality',
+        });
         this.setState('idle', undefined, latencyMs);
       }
       this.afterRun(0);
@@ -374,12 +425,39 @@ export class AIScheduler {
       // the work was not done, so it is still owed
       this.changed = true;
       const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
+      this.noteError(message);
+      if (this.stuckOn !== null) {
+        this.setState('error', `${message} - not retrying until something changes`);
+        this.inFlight = false;
+        this.controller = null;
+        clearTimeout(watchdog);
+        return;
+      }
       this.setState('error', message);
       this.backoffUntil = Date.now() + (this.opts.errorBackoffMs ?? 2000);
       this.afterRun(this.opts.errorBackoffMs ?? 2000);
     } finally {
       clearTimeout(watchdog);
     }
+  }
+
+  /**
+   * Repeated identical errors mean the request itself is wrong, not that the
+   * backend is busy. `host.onError` lets the owner re-probe the backend, which
+   * is how a worker that came back with different limits gets noticed.
+   */
+  private noteError(message: string): void {
+    this.repeatedError = this.lastError === message ? this.repeatedError + 1 : 1;
+    this.lastError = message;
+    if (this.repeatedError >= (this.opts.maxRepeatedErrors ?? 2)) this.stuckOn = message;
+    this.host.onError?.(message, this.repeatedError);
+  }
+
+  /** Any real change (an edit, a settings change, new limits) unsticks it. */
+  private clearStuck(): void {
+    this.stuckOn = null;
+    this.repeatedError = 0;
+    this.lastError = null;
   }
 
   private afterRun(delayMs: number): void {

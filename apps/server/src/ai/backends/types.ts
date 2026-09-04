@@ -32,6 +32,12 @@ export interface BackendCapabilities {
   /** Largest square the backend will generate. */
   maxResolution: number;
   maxDenoise: number;
+  /**
+   * Whether the negative prompt does anything, per profile. A distilled
+   * few-step model running at CFG 1.0 never evaluates the negative branch, so
+   * the box is inert and the UI says so rather than pretending.
+   */
+  negativePromptActive: Record<AIProfileName, boolean>;
 }
 
 export interface AIBackend {

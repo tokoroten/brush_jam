@@ -34,8 +34,13 @@ export const PROFILE_DEFAULTS: Record<AIProfileName, { resolution: number; denoi
   quality: { resolution: 1024, denoise: 0.7, steps: 14 },
 };
 
-/** Fallback hints shown before this room has measured anything, in ms. */
-export const PROFILE_HINT_MS: Record<AIProfileName, number> = { fast: 4000, quality: 10_000 };
+/**
+ * Fallback hints shown before this room has measured anything, in ms. Measured
+ * end-to-end medians: stream worker at 768 (docs/experiments/2026-09-05-stream/
+ * REPORT.md) and ComfyUI 14-step at 1024 (docs/experiments/2026-09-05-comfyui/
+ * REPORT.md). The room replaces these with its own timings after one run.
+ */
+export const PROFILE_HINT_MS: Record<AIProfileName, number> = { fast: 2400, quality: 10_300 };
 
 /** Generation resolutions a room may pick from (bounded by AI_WINDOW). */
 export const AI_RESOLUTIONS = [512, 768, 1024] as const;

@@ -102,7 +102,13 @@ export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
 
 /** LCM wants cfg 1.0-2.0; the normal 5.5 destroys a 4-step result. */
 export const FAST_CFG = 1.5;
-export const DEFAULT_FAST_LORA = 'lcm-lora-sdxl.safetensors';
+/**
+ * DMD2 rather than LCM: measured faster (768 in 1.38 s) and it reinterprets a
+ * drawing better at the same denoise - see docs/experiments/2026-09-05-stream/
+ * REPORT.md section 8. `COMFYUI_FAST_LORA=lcm-lora-sdxl.safetensors` still
+ * selects the LCM profile.
+ */
+export const DEFAULT_FAST_LORA = 'dmd2_sdxl_4step_lora_fp16.safetensors';
 
 /**
  * Few-step LoRAs are not interchangeable: DMD2 is a distilled model that wants
@@ -118,6 +124,15 @@ export interface FastProfile {
 
 const LCM_PROFILE: FastProfile = { name: 'lcm', cfg: FAST_CFG, sampler: 'lcm', scheduler: 'sgm_uniform' };
 const DMD2_PROFILE: FastProfile = { name: 'dmd2', cfg: 1.0, sampler: 'lcm', scheduler: 'sgm_uniform' };
+
+/**
+ * At CFG 1.0 the sampler does not evaluate the negative branch at all, so the
+ * negative prompt is inert: DMD2 is distilled to run without guidance. Saying
+ * so is better than letting someone type into a box that does nothing.
+ */
+export function negativePromptActive(profile: FastProfile | null, cfg: number): boolean {
+  return (profile ? profile.cfg : cfg) > 1.0;
+}
 
 export function fastProfile(lora: string | undefined): FastProfile | null {
   if (!lora) return null;
@@ -152,10 +167,15 @@ export class ComfyUIBackend implements AIBackend {
 
   async capabilities(): Promise<BackendCapabilities> {
     // Both profiles, unless there is no LoRA to build the fast graph from.
+    const cfg = this.opts.cfg ?? 5.5;
     return {
       profiles: this.opts.fastLora ? ['fast', 'quality'] : ['quality'],
       maxResolution: MAX_AI_RESOLUTION,
       maxDenoise: MAX_DENOISE,
+      negativePromptActive: {
+        fast: negativePromptActive(fastProfile(this.opts.fastLora), cfg),
+        quality: negativePromptActive(null, cfg),
+      },
     };
   }
 

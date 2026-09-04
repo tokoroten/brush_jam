@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ComfyUIBackend, createBackend, MockBackend, PROBE_TIMEOUT_MS, StreamBackend } from '../src/ai/backends/index.js';
-import { applyBackendDefaults, loadConfig } from '../src/config.js';
+import { loadConfig, resolveBackendConfig } from '../src/config.js';
 
 interface Probes {
   stream?: 'ok' | 'loading' | 'error' | 'hang';
@@ -236,30 +236,97 @@ describe('backend capabilities', () => {
 
 /** The stream worker's defaults differ from ComfyUI's and must not be guessed. */
 describe('backend defaults', () => {
-  const base = (): ReturnType<typeof loadConfig> => config();
+  const caps = (over: Partial<{ profiles: ('fast' | 'quality')[]; maxResolution: number; maxDenoise: number }> = {}) => ({
+    profiles: ['fast', 'quality'] as ('fast' | 'quality')[],
+    maxResolution: 2048,
+    maxDenoise: 0.95,
+    ...over,
+  });
+  const streamCaps = caps({ profiles: ['fast'], maxResolution: 1024, maxDenoise: 0.9 });
 
   it('moves a stream server to 768 and denoise 0.8', () => {
-    const c = applyBackendDefaults(base(), 'stream', {} as NodeJS.ProcessEnv);
+    const c = resolveBackendConfig(config(), 'stream', streamCaps);
     expect(c.aiWindow).toBe(768);
     expect(c.aiDenoise).toBe(0.8);
     expect(c.aiProfile).toBe('fast');
   });
 
   it('leaves an explicit AI_WINDOW and AI_DENOISE alone', () => {
-    const env = { AI_WINDOW: '512', AI_DENOISE: '0.6' } as NodeJS.ProcessEnv;
-    const c = applyBackendDefaults(loadConfig(env), 'stream', env);
+    const c = resolveBackendConfig(config({ AI_WINDOW: '512', AI_DENOISE: '0.6' }), 'stream', streamCaps);
     expect(c.aiWindow).toBe(512);
     expect(c.aiDenoise).toBe(0.6);
   });
 
   it('never generates larger than the canvas', () => {
-    const env = { CANVAS_SIZE: '512' } as NodeJS.ProcessEnv;
-    expect(applyBackendDefaults(loadConfig(env), 'stream', env).aiWindow).toBe(512);
+    expect(resolveBackendConfig(config({ CANVAS_SIZE: '512' }), 'stream', streamCaps).aiWindow).toBe(512);
   });
 
-  it('leaves comfyui and mock untouched', () => {
-    const before = base();
-    expect(applyBackendDefaults(before, 'comfyui', {} as NodeJS.ProcessEnv)).toBe(before);
-    expect(applyBackendDefaults(before, 'mock', {} as NodeJS.ProcessEnv)).toBe(before);
+  it('leaves comfyui and mock configuration untouched', () => {
+    const before = config();
+    expect(resolveBackendConfig(before, 'comfyui', caps())).toMatchObject({
+      aiWindow: before.aiWindow,
+      aiDenoise: before.aiDenoise,
+      aiProfile: before.aiProfile,
+    });
+  });
+
+  // Review 7 finding 6: defaults used to be applied AFTER validation, so they
+  // could produce a combination that had never been validated together.
+  it('validates the combination the server actually runs', () => {
+    // Explicit apply 768 is fine against the default window of 768, but a
+    // backend that only does 512 clamps the window under it. That combination
+    // used to be applied after validation and run anyway.
+    const cfg = config({ AI_MODE: 'patch', AI_APPLY: '768' });
+    expect(() => resolveBackendConfig(cfg, 'stream', caps({ profiles: ['fast'], maxResolution: 512 }))).toThrow(/AI_APPLY/);
+  });
+
+  // Review 7 finding 6: an explicit choice is an instruction, not a hint.
+  it('refuses an explicit profile the backend cannot run', () => {
+    expect(() => resolveBackendConfig(config({ AI_PROFILE: 'quality' }), 'stream', streamCaps)).toThrow(
+      /AI_PROFILE=quality is not supported/,
+    );
+  });
+
+  it('falls back quietly when the profile was not pinned', () => {
+    const c = resolveBackendConfig(config(), 'comfyui', caps({ profiles: ['quality'] }));
+    expect(c.aiProfile).toBe('quality');
+  });
+
+  // Review 7 finding 1: an oversized window is a 400 on every generation.
+  it('refuses an explicit AI_WINDOW the backend will not accept', () => {
+    expect(() => resolveBackendConfig(config({ AI_WINDOW: '1024' }), 'stream', caps({ profiles: ['fast'], maxResolution: 768 }))).toThrow(
+      /AI_WINDOW=1024 is larger than/,
+    );
+  });
+
+  it('clamps an implicit window to what the backend accepts', () => {
+    const c = resolveBackendConfig(config(), 'stream', caps({ profiles: ['fast'], maxResolution: 512, maxDenoise: 0.9 }));
+    expect(c.aiWindow).toBe(512);
+    expect(c.maxResolution).toBe(512);
+  });
+
+  it('caps denoise at the backend ceiling, or refuses an explicit one', () => {
+    // the implicit 0.7 default is pulled down to a lower ceiling
+    expect(resolveBackendConfig(config(), 'comfyui', caps({ maxDenoise: 0.6 })).aiDenoise).toBe(0.6);
+    expect(() => resolveBackendConfig(config({ AI_DENOISE: '0.9' }), 'comfyui', caps({ maxDenoise: 0.75 }))).toThrow(
+      /AI_DENOISE=0.9 is above/,
+    );
+  });
+
+  // Review 7 finding 4: starting size and ceiling are different things.
+  it('keeps a 1024 ceiling for a fast room so quality can still reach it', () => {
+    const c = resolveBackendConfig(config(), 'comfyui', caps());
+    expect(c.aiWindow).toBe(768);
+    expect(c.maxResolution).toBe(1024);
+  });
+
+  it('treats an explicit AI_WINDOW as a hard ceiling', () => {
+    const c = resolveBackendConfig(config({ AI_WINDOW: '768' }), 'comfyui', caps());
+    expect(c.maxResolution).toBe(768);
+  });
+
+  it('never lets the ceiling exceed the backend', () => {
+    expect(resolveBackendConfig(config(), 'stream', streamCaps).maxResolution).toBe(1024);
+    expect(resolveBackendConfig(config(), 'stream', caps({ profiles: ['fast'], maxResolution: 768 })).maxResolution).toBe(768);
   });
 });

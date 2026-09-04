@@ -1,5 +1,5 @@
 import { MAX_AI_RESOLUTION, MAX_DENOISE } from '@brushjam/shared';
-import { buildWorkflow } from './comfyui.js';
+import { buildWorkflow, fastProfile, negativePromptActive } from './comfyui.js';
 import { AbortedError, type AIBackend, type GenerateRequest, type BackendCapabilities } from './types.js';
 
 export interface RunpodOptions {
@@ -25,10 +25,15 @@ export class RunpodBackend implements AIBackend {
 
   async capabilities(): Promise<BackendCapabilities> {
     // Same workflow builder as ComfyUI, so the same two profiles.
+    const cfg = this.opts.cfg ?? 5.5;
     return {
       profiles: this.opts.fastLora ? ['fast', 'quality'] : ['quality'],
       maxResolution: MAX_AI_RESOLUTION,
       maxDenoise: MAX_DENOISE,
+      negativePromptActive: {
+        fast: negativePromptActive(fastProfile(this.opts.fastLora), cfg),
+        quality: negativePromptActive(null, cfg),
+      },
     };
   }
 

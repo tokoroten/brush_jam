@@ -222,4 +222,14 @@ describe('AI profile', () => {
     expect(c.comfyFastLora).toBe('dmd2.safetensors');
     expect(c.aiFastSteps).toBe(8);
   });
+
+  it('defaults the fast LoRA to DMD2', () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).comfyFastLora).toBe('dmd2_sdxl_4step_lora_fp16.safetensors');
+  });
+
+  it('still lets LCM be selected explicitly', () => {
+    expect(loadConfig({ COMFYUI_FAST_LORA: 'lcm-lora-sdxl.safetensors' } as NodeJS.ProcessEnv).comfyFastLora).toBe(
+      'lcm-lora-sdxl.safetensors',
+    );
+  });
 });

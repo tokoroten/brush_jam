@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ComfyUIBackend, DEFAULT_FAST_LORA, FAST_CFG, buildWorkflow, comfyReachable } from '../src/ai/backends/comfyui.js';
+import {
+  ComfyUIBackend,
+  DEFAULT_FAST_LORA,
+  FAST_CFG,
+  buildWorkflow,
+  comfyReachable,
+  fastProfile,
+  negativePromptActive,
+} from '../src/ai/backends/comfyui.js';
 import type { GenerateRequest } from '../src/ai/backends/types.js';
 
 const req: GenerateRequest = {
@@ -308,7 +316,7 @@ describe('fast (LCM) workflow', () => {
   it('adds a LoraLoader fed by the checkpoint', () => {
     expect(fast['12']).toEqual({
       class_type: 'LoraLoader',
-      inputs: { model: ['1', 0], clip: ['1', 1], lora_name: 'lcm-lora-sdxl.safetensors', strength_model: 1, strength_clip: 1 },
+      inputs: { model: ['1', 0], clip: ['1', 1], lora_name: DEFAULT_FAST_LORA, strength_model: 1, strength_clip: 1 },
     });
   });
 
@@ -326,7 +334,8 @@ describe('fast (LCM) workflow', () => {
       // ComfyUI runs exactly `steps` sampler steps at any denoise: it builds the
       // longer schedule and keeps the last steps+1 sigmas. No division.
       steps: 4,
-      cfg: FAST_CFG,
+      // DMD2 is distilled for CFG 1.0; the LCM LoRA still uses FAST_CFG.
+      cfg: 1.0,
       sampler_name: 'lcm',
       scheduler: 'sgm_uniform',
       denoise: 0.55,
@@ -365,12 +374,46 @@ describe('fast (LCM) workflow', () => {
   });
 
   it('keeps cfg 1.5 for the LCM profile', () => {
-    expect((fast['9'] as { inputs: { cfg: number } }).inputs.cfg).toBe(1.5);
+    const lcm = buildWorkflow({ ...base, fastLora: 'lcm-lora-sdxl.safetensors' });
+    expect((lcm['9'] as { inputs: { cfg: number } }).inputs.cfg).toBe(FAST_CFG);
   });
 
   it('accepts a different LoRA name', () => {
-    const dmd = buildWorkflow({ ...base, fastLora: 'dmd2_sdxl_4step_lora_fp16.safetensors' });
-    expect((dmd['12'] as { inputs: { lora_name: string } }).inputs.lora_name).toBe('dmd2_sdxl_4step_lora_fp16.safetensors');
+    const lcm = buildWorkflow({ ...base, fastLora: 'lcm-lora-sdxl.safetensors' });
+    expect((lcm['12'] as { inputs: { lora_name: string } }).inputs.lora_name).toBe('lcm-lora-sdxl.safetensors');
+  });
+
+  /**
+   * The default is DMD2 at CFG 1.0, where the sampler skips the negative branch
+   * entirely - so the negative prompt is inert and the room must say so.
+   */
+  it('defaults to the DMD2 profile at cfg 1.0', () => {
+    expect(DEFAULT_FAST_LORA).toBe('dmd2_sdxl_4step_lora_fp16.safetensors');
+    expect(fastProfile(DEFAULT_FAST_LORA)).toMatchObject({ name: 'dmd2', cfg: 1.0 });
+    expect((fast['9'] as { inputs: { cfg: number } }).inputs.cfg).toBe(1.0);
+  });
+
+  it('reports the negative prompt as inactive only at cfg 1.0', () => {
+    expect(negativePromptActive(fastProfile(DEFAULT_FAST_LORA), 5.5)).toBe(false);
+    expect(negativePromptActive(fastProfile('lcm-lora-sdxl.safetensors'), 5.5)).toBe(true);
+    // no fast profile: the quality workflow's own cfg decides
+    expect(negativePromptActive(null, 5.5)).toBe(true);
+    expect(negativePromptActive(null, 1.0)).toBe(false);
+  });
+
+  it('says the fast profile has no negative branch in its capabilities', async () => {
+    const backend = new ComfyUIBackend({ url: 'http://127.0.0.1:8188', checkpoint: 'c.safetensors', fastLora: DEFAULT_FAST_LORA });
+    const caps = await backend.capabilities();
+    expect(caps.negativePromptActive).toEqual({ fast: false, quality: true });
+  });
+
+  it('keeps the negative prompt for both profiles with the LCM LoRA', async () => {
+    const backend = new ComfyUIBackend({
+      url: 'http://127.0.0.1:8188',
+      checkpoint: 'c.safetensors',
+      fastLora: 'lcm-lora-sdxl.safetensors',
+    });
+    expect((await backend.capabilities()).negativePromptActive).toEqual({ fast: true, quality: true });
   });
 });
 
@@ -435,7 +478,7 @@ describe('one backend instance, both profiles', () => {
     expect(prompts).toHaveLength(3);
 
     expect(prompts[0]!['12']).toBeDefined();
-    expect(sampler(prompts[0]!)).toMatchObject({ sampler_name: 'lcm', cfg: FAST_CFG, steps: 4, model: ['12', 0] });
+    expect(sampler(prompts[0]!)).toMatchObject({ sampler_name: 'lcm', cfg: 1.0, steps: 4, model: ['12', 0] });
 
     expect(prompts[1]!['12']).toBeUndefined();
     expect(sampler(prompts[1]!)).toMatchObject({ sampler_name: 'euler_ancestral', cfg: 5.5, steps: 14, model: ['1', 0] });

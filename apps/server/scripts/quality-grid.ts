@@ -18,7 +18,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createCanvas, loadImage, type Canvas } from '@napi-rs/canvas';
 import { DEFAULT_NEGATIVE_PROMPT, renderStrokes, type AIProfileName, type RenderableStroke } from '@brushjam/shared';
-import { createBackend, streamHealth, FAST_CFG } from '../src/ai/backends/index.js';
+import { createBackend, fastProfile, streamHealth, FAST_CFG } from '../src/ai/backends/index.js';
 import { loadConfig } from '../src/config.js';
 import { buildFullMask } from '../src/raster.js';
 
@@ -217,6 +217,9 @@ const outDir = path.join(opts.out, date);
 mkdirSync(outDir, { recursive: true });
 
 const gridSteps = opts.profile === 'fast' ? config.aiFastSteps : config.aiSteps;
+// The same profile selection the workflow builder uses, so the recorded cfg and
+// sampler are the ones that really ran (DMD2 is cfg 1.0, not 1.5).
+const gridProfile = opts.profile === 'fast' ? fastProfile(config.comfyFastLora) : null;
 console.log(`[grid] backend ${backend.name}, profile ${opts.profile}, res ${opts.res}, steps ${gridSteps}, seed ${SEED}`);
 console.log(`[grid] drawings ${opts.drawings.join(',')} x denoise ${opts.denoises.join(',')} -> ${outDir}`);
 
@@ -321,16 +324,16 @@ async function effectiveWorkflow(): Promise<Record<string, unknown>> {
   if (backend.name === 'comfyui' || backend.name === 'runpod') {
     return opts.profile === 'fast'
       ? {
-          mode: 'fast (LCM)',
-          steps: config.aiFastSteps,
-          cfg: FAST_CFG,
+          mode: `fast (${gridProfile?.name ?? 'lcm'})`,
+          steps: gridSteps,
+          cfg: gridProfile?.cfg ?? FAST_CFG,
           lora: config.comfyFastLora,
-          sampler: 'lcm/sgm_uniform',
+          sampler: `${gridProfile?.sampler ?? 'lcm'}/${gridProfile?.scheduler ?? 'sgm_uniform'}`,
           vaeTile: config.aiVaeTile,
         }
       : {
           mode: 'normal',
-          steps: config.aiSteps,
+          steps: gridSteps,
           cfg: config.aiCfg,
           sampler: 'euler_ancestral/normal',
           vaeTile: config.aiVaeTile,

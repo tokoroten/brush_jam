@@ -25,7 +25,12 @@ export class MockBackend implements AIBackend {
 
   async capabilities(): Promise<BackendCapabilities> {
     // The mock stylises rather than samples, so nothing here is a real limit.
-    return { profiles: ['fast', 'quality'], maxResolution: MAX_AI_RESOLUTION, maxDenoise: MAX_DENOISE };
+    return {
+      profiles: ['fast', 'quality'],
+      maxResolution: MAX_AI_RESOLUTION,
+      maxDenoise: MAX_DENOISE,
+      negativePromptActive: { fast: true, quality: true },
+    };
   }
 
   async generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {

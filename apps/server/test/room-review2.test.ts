@@ -489,7 +489,14 @@ describe('AI profile', () => {
     expect(state.aiProfile).toBe('quality');
     expect(out.promptChanged).toBe(true);
     expect(out.broadcast).toEqual([
-      { t: 'ai_settings_changed', denoise: 0.7, negativePrompt: '', aiResolution: 1024, aiProfile: 'quality' },
+      {
+        t: 'ai_settings_changed',
+        denoise: 0.7,
+        negativePrompt: '',
+        aiResolution: 1024,
+        aiProfile: 'quality',
+        negativePromptActive: true,
+      },
     ]);
   });
 
@@ -601,5 +608,98 @@ describe('backend capabilities in a room', () => {
     const state = createRoom('plain');
     expect(state.aiProfiles).toEqual(['fast', 'quality']);
     expect(state.maxDenoise).toBe(MAX_DENOISE);
+  });
+});
+
+/** Review 7 findings 3, 4 and 7. */
+describe('generation limits and counters', () => {
+  const room = (limits = {}): ReturnType<typeof createRoom> =>
+    createRoom('limitroom', 0.7, 1024, 768, true, 'fast', { maxResolution: 1024, ...limits });
+
+  it('starts at the profile size but keeps a higher ceiling', () => {
+    const state = room();
+    expect(state.aiResolution).toBe(768);
+    expect(state.aiResolutionMax).toBe(1024);
+  });
+
+  it('lets the quality profile reach 1024 on a fast-default server', () => {
+    const state = room();
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'quality' });
+    expect(state.aiResolution).toBe(1024);
+  });
+
+  it('refuses an explicit resolution above the ceiling instead of clamping it', () => {
+    const state = room({ maxResolution: 768 });
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 1024 });
+    expect(JSON.stringify(out)).toMatch(/can generate at up to 768/);
+    expect(state.aiResolution).toBe(768);
+  });
+
+  it('still allows a resolution at the ceiling', () => {
+    const state = room();
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 1024 });
+    expect(state.aiResolution).toBe(1024);
+  });
+
+  it('a profile switch still clamps to the ceiling rather than failing', () => {
+    // the switch picks 1024 by default, but this server only allows 768
+    const state = room({ maxResolution: 768 });
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'quality' });
+    expect(state.aiProfile).toBe('quality');
+    expect(state.aiResolution).toBe(768);
+  });
+
+  it('counts accepted AI results separately from the revision', () => {
+    const state = room();
+    const alice = addMember(state, 'Alice').userId;
+    expect(state.aiGeneration).toBe(0);
+    expect(snapshot(state, alice, 'idle', { window: 768, apply: 1024 }).aiGeneration).toBe(0);
+  });
+});
+
+/**
+ * A distilled fast profile runs at CFG 1.0, where the sampler never evaluates
+ * the negative branch. The room reports that per profile so the UI can say so.
+ */
+describe('negative prompt activity', () => {
+  const room = (): ReturnType<typeof createRoom> =>
+    createRoom('negroom', 0.7, 1024, 768, true, 'fast', {
+      profiles: ['fast', 'quality'],
+      maxResolution: 1024,
+      negativePromptActive: { fast: false, quality: true },
+    });
+
+  it('defaults to active when the backend says nothing', () => {
+    const state = createRoom('plainneg');
+    expect(snapshot(state, addMember(state, 'A').userId, 'idle', { window: 1024, apply: 1024 }).negativePromptActive).toBe(
+      true,
+    );
+  });
+
+  it('reports the current profile in the snapshot', () => {
+    const state = room();
+    const alice = addMember(state, 'Alice').userId;
+    expect(snapshot(state, alice, 'idle', { window: 768, apply: 1024 }).negativePromptActive).toBe(false);
+  });
+
+  it('follows a profile switch and says so in the broadcast', () => {
+    const state = room();
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'quality' });
+    expect(JSON.stringify(out)).toContain('"negativePromptActive":true');
+    expect(snapshot(state, alice, 'idle', { window: 1024, apply: 1024 }).negativePromptActive).toBe(true);
+  });
+
+  it('still accepts and stores negative prompt text while it is inert', () => {
+    // The text belongs to the room, not to the profile: switching back to
+    // quality must not have silently lost what someone typed.
+    const state = room();
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', negativePrompt: 'blurry' });
+    expect(state.negativePrompt).toBe('blurry');
   });
 });
