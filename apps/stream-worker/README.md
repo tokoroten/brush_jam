@@ -46,8 +46,10 @@ cache, ~25 s warm).
 `GET /healthz`
 
 ```json
-{ "ok": true, "backend": "diffusers-sdxl-lcm", "model": "waiNSFWIllustrious_v150.safetensors+lcm-lora-sdxl.safetensors",
-  "size": 768, "max_size": 1024, "steps": 4, "guidance": 1.5, "warm": true, "loaded": true, "busy": false, "error": null,
+{ "ok": true, "backend": "diffusers-sdxl-lcm", "model": "waiNSFWIllustrious_v150.safetensors+dmd2_sdxl_4step_lora_fp16.safetensors",
+  "size": 768, "max_size": 1024, "steps": 4, "guidance": 1.0,
+  "lora": "dmd2", "vae": "fp16fix", "negative_prompt_active": false, "max_denoise": 0.9,
+  "warm": true, "loaded": true, "busy": false, "current_request_id": null, "error": null,
   "memory": { "allocated_gb": 5.05, "reserved_gb": 5.32, "max_allocated_gb": 6.59, "device_free_gb": 1.21, "device_total_gb": 8.0 } }
 ```
 
@@ -76,11 +78,13 @@ while unloaded reloads transparently, but pays the ~90 s cold start.
   "seed": 12345,
   "width": 1024, "height": 1024,     // alias: "size" for squares
   "request_id": "optional-caller-id",// for /cancel; generated if omitted
-  "queue": false                     // true = wait for the GPU instead of 409
+  "queue": false,                    // true = wait for the GPU instead of 409
+  "strict_steps": false              // true = 400 instead of running fewer steps
 }
 ```
 
-→ `{ "image_b64": "<PNG base64>", "width": 1024, "height": 1024, "request_id": "…", "timings": { … } }`
+→ `{ "image_b64": "<PNG base64>", "width": 1024, "height": 1024, "request_id": "…",
+     "steps": 4, "timings": { … } }`
 
 The PNG is always **exactly** `width x height`; the worker returns 500 rather
 than a differently-sized image.
@@ -110,9 +114,14 @@ holding the GPU. Cancelling an unknown or already-finished id is not an error.
 
 Notes on the contract:
 
-- `steps` means *steps actually run*. diffusers' img2img would otherwise drop
-  `steps * (1 - denoise)` of them, so the worker passes `ceil(steps/denoise)` to
-  the scheduler.
+- `steps` means *steps actually run*, and the response echoes the effective
+  count rather than the requested one. The worker picks the LCM start timestep
+  from `denoise` directly and runs exactly `steps` from there
+  (`lcm_timesteps_for_strength`), but at low denoise there may not be that many
+  distinct timesteps left: **denoise 0.2 with 20 steps runs 10**. Send
+  `strict_steps: true` to get a `400` naming both numbers instead. Off by
+  default; a clamp is logged at INFO. 4 steps needs only denoise >= 0.08, so the
+  playtest path never approaches this.
 - The mask is applied by compositing the output over the input
   (`out = in*(1-m) + gen*m`), so a black mask returns the drawing untouched.
   This is what keeps the ComfyUI backend's semantics.

@@ -677,6 +677,7 @@ Two further `/healthz` fields are advisory rather than gating:
 
 | field | default | meaning |
 | --- | --- | --- |
+| `vae` | `fp16fix` (`STREAM_VAE`) | which VAE is installed. `stream.ts` already reads this into its quality-grid reports; it is the single largest performance variable (§4.4) and appears nowhere else in the artefacts |
 | `lora` | `dmd2` (`STREAM_LORA`) | which 4-step distillation LoRA is fused. Worth logging, because it changes output character substantially and appears nowhere else |
 | `negative_prompt_active` | `false` (derived: `guidance > 1.0`) | whether `negative_prompt` has any effect. **False by default**, because the shipped `STREAM_GUIDANCE=1.0` turns CFG off. Grey out or annotate the negative-prompt field when this is false; do not infer it from `guidance` yourself |
 | `max_denoise` | `0.9` (`STREAM_MAX_DENOISE`) | highest denoise the worker will honour; requests above it are clamped, not refused. Cap the room's denoise slider to this so the UI cannot offer a value the backend will ignore. Absent means an older worker: fall back to 1.0. |
@@ -701,6 +702,29 @@ issuing its next request — a retry sent while the abandoned job is still runni
 would queue behind it and pay for it twice — with a 15 s deadline after which it
 gives up and sends anyway. If `current_request_id` clears before the GPU is
 actually free, that wait becomes useless.
+
+### 6.4.1 `steps` is a request, not a promise
+
+At low denoise there are fewer distinct timesteps left below the start point
+than the requested step count, so the run is shorter than asked: **denoise 0.2
+with 20 steps runs 10**, because a 50-point distillation schedule has only 10
+entries below timestep 199. The worker used to run 10 and let the caller believe
+it had run 20.
+
+Two things now prevent that:
+
+* **`/generate` responses carry a top-level `steps`** — the count actually run,
+  never the count requested. `timings.steps_requested` and
+  `timings.steps_effective` carry both if you want the difference. A clamp is
+  logged at INFO.
+* **`strict_steps: true`** in the request body turns the clamp into a `400`
+  naming both numbers, for callers that would rather fail than silently get a
+  different sampling than they asked for. It is **off by default**, so the
+  server's existing contract is unchanged.
+
+The server's own defaults (4 steps, denoise 0.5–0.9) are nowhere near this
+boundary — 4 steps needs denoise ≥ 0.08 — so this matters for benchmark scripts
+and for anyone exposing a steps control, not for the playtest path.
 
 ### 6.5 Verified against a real worker
 

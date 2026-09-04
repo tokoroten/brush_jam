@@ -28,6 +28,11 @@ def png_b64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def base_request(size: int = 256) -> dict:
+    """Smallest valid /generate body; callers override the fields they test."""
+    return {"image_b64": png_b64(Image.new("RGB", (size, size), (255, 255, 255))), "size": size}
+
+
 class FakePipeline:
     """Stands in for StreamPipeline: returns a flat colour, records the call."""
 
@@ -130,6 +135,50 @@ def test_healthz_reflects_a_non_default_guidance(monkeypatch):
         body = client.get("/healthz").json()
     assert body["lora"] == "lcm"
     assert body["negative_prompt_active"] is True
+
+
+def test_healthz_publishes_the_vae(client_and_pipe):
+    # stream.ts records body.vae into its quality-grid reports; without this the
+    # only sampling parameter that distinguishes two runs is missing from them.
+    client, _ = client_and_pipe
+    assert client.get("/healthz").json()["vae"] == "fp16fix"
+
+
+def test_response_reports_the_steps_actually_run(client_and_pipe):
+    # denoise 0.2 leaves 10 timesteps on a 50-point schedule, so 20 steps
+    # cannot happen. The response must not claim they did.
+    client, _ = client_and_pipe
+    body = client.post("/generate", json={**base_request(), "denoise": 0.2, "steps": 20}).json()
+    assert body["steps"] == 10
+    assert len(lcm_timesteps_for_strength(20, 0.2)) == 10
+
+
+def test_response_steps_match_the_request_when_they_fit(client_and_pipe):
+    client, _ = client_and_pipe
+    body = client.post("/generate", json={**base_request(), "denoise": 0.8, "steps": 4}).json()
+    assert body["steps"] == 4
+
+
+def test_strict_steps_refuses_an_impossible_combination(client_and_pipe):
+    client, _ = client_and_pipe
+    r = client.post("/generate", json={**base_request(), "denoise": 0.2, "steps": 20, "strict_steps": True})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "10 distinct timesteps" in detail
+    assert "cannot run 20" in detail
+
+
+def test_strict_steps_allows_a_combination_that_fits(client_and_pipe):
+    client, _ = client_and_pipe
+    r = client.post("/generate", json={**base_request(), "denoise": 0.8, "steps": 4, "strict_steps": True})
+    assert r.status_code == 200
+    assert r.json()["steps"] == 4
+
+
+def test_strict_steps_is_off_by_default_so_the_server_contract_is_unchanged(client_and_pipe):
+    client, _ = client_and_pipe
+    r = client.post("/generate", json={**base_request(), "denoise": 0.2, "steps": 20})
+    assert r.status_code == 200
 
 
 def test_generate_returns_png_of_requested_size(client_and_pipe):
@@ -336,3 +385,110 @@ def test_load_is_idempotent(client_and_pipe):
     loads_before = pipe.loads
     assert client.post("/load").json() == {"ok": True, "loaded": True}
     assert pipe.loads == loads_before  # already loaded: no second load
+
+
+class FakeTorch:
+    """Just enough torch for StreamPipeline.generate's bookkeeping."""
+
+    def __init__(self) -> None:
+        self.empty_cache_calls = 0
+        outer = self
+
+        class _Cuda:
+            @staticmethod
+            def synchronize() -> None:
+                pass
+
+            @staticmethod
+            def empty_cache() -> None:
+                outer.empty_cache_calls += 1
+
+        class _Generator:
+            def __init__(self, device: str | None = None) -> None:
+                pass
+
+            def manual_seed(self, seed: int) -> "_Generator":
+                return self
+
+        self.cuda = _Cuda()
+        self.Generator = _Generator
+
+
+def pipeline_that_fails(error: Exception):
+    """A StreamPipeline whose diffusion call raises, with torch faked out."""
+    from stream_worker.pipeline import StreamPipeline
+
+    p = StreamPipeline(Settings())
+    p._torch = FakeTorch()
+    p._embeds = lambda prompt, negative, cfg: (None, None, None, None)  # type: ignore[assignment]
+
+    def boom(**kwargs):
+        raise error
+
+    p.pipe = boom
+    return p
+
+
+def run_generate(p, **overrides):
+    return p.generate(
+        image=Image.new("RGB", (64, 64), (255, 255, 255)),
+        mask=None,
+        prompt="x",
+        negative_prompt="",
+        strength=0.8,
+        steps=4,
+        seed=1,
+        width=64,
+        height=64,
+        **overrides,
+    )
+
+
+def test_allocator_cache_is_returned_when_a_run_is_cancelled():
+    # The cleanup used to sit after the return, so a cancelled run skipped it -
+    # and cancellation is precisely when the next request is about to arrive.
+    # Leaving the allocator holding the activations reintroduces the 2-8x spill.
+    from stream_worker.pipeline import CancelledError as PipelineCancelled
+
+    p = pipeline_that_fails(PipelineCancelled("req-1"))
+    with pytest.raises(PipelineCancelled):
+        run_generate(p)
+    assert p._torch.empty_cache_calls == 1
+
+
+def test_allocator_cache_is_returned_when_a_run_raises():
+    p = pipeline_that_fails(RuntimeError("CUDA out of memory"))
+    with pytest.raises(RuntimeError):
+        run_generate(p)
+    assert p._torch.empty_cache_calls == 1
+
+
+def test_allocator_cleanup_can_be_switched_off():
+    import dataclasses as dc
+
+    from stream_worker.pipeline import StreamPipeline
+
+    p = StreamPipeline(dc.replace(Settings(), empty_cache_each_run=False))
+    p._torch = FakeTorch()
+    p._embeds = lambda prompt, negative, cfg: (None, None, None, None)  # type: ignore[assignment]
+
+    def boom(**kwargs):
+        raise RuntimeError("nope")
+
+    p.pipe = boom
+    with pytest.raises(RuntimeError):
+        run_generate(p)
+    assert p._torch.empty_cache_calls == 0
+
+
+def test_cleanup_failure_does_not_mask_the_real_error():
+    # A driver-level empty_cache failure inside `finally` must not replace the
+    # exception the caller actually needs to see.
+    p = pipeline_that_fails(RuntimeError("the real problem"))
+
+    def explode() -> None:
+        raise RuntimeError("cleanup blew up")
+
+    p._torch.cuda.empty_cache = explode  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="the real problem"):
+        run_generate(p)

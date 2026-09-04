@@ -383,95 +383,117 @@ class StreamPipeline:
                 raise CancelledError(request_id)
 
         t_start = time.perf_counter()
-        base = image.convert("RGB")
-        if base.size != (width, height):
-            base = base.resize((width, height), Image.LANCZOS)
+        try:
+            base = image.convert("RGB")
+            if base.size != (width, height):
+                base = base.resize((width, height), Image.LANCZOS)
 
-        t = time.perf_counter()
-        cfg_on = s.guidance > 1.0
-        prompt_text = (prompt or "").strip() + s.quality_suffix
-        cached = (prompt_text, negative_prompt or "", cfg_on) in self._embed_cache
-        embeds = self._embeds(prompt_text, negative_prompt or "", cfg_on)
-        timings["prompt_ms"] = (time.perf_counter() - t) * 1000.0
-        timings["prompt_cached"] = 1.0 if cached else 0.0
-
-        prompt_embeds, negative_embeds, pooled, negative_pooled = embeds
-        generator = torch.Generator(device=self.device).manual_seed(int(seed) & 0x7FFFFFFF)
-        check_cancel()
-
-        # The only place inside pipe() where we get control back. Raising here
-        # unwinds the pipeline call, so a cancelled job stops at the next step
-        # boundary instead of running to completion on a GPU nobody is waiting
-        # for. Steps are 0.1-1 s, which bounds the cancellation latency.
-        steps_done = [0]
-
-        def on_step_end(_pipe: Any, step: int, _timestep: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
-            steps_done[0] = step + 1
-            check_cancel()
-            return kwargs
-
-        # Strength is expressed as an explicit timestep schedule rather than as
-        # the pipeline's `strength` argument, so that nearby strengths stay
-        # distinct at 4 steps (see lcm_timesteps_for_strength). strength=1.0
-        # tells get_timesteps to use the schedule as given instead of slicing a
-        # prefix off it.
-        schedule = lcm_timesteps_for_strength(steps, strength)
-        timings["t_start"] = float(schedule[0])
-
-        torch.cuda.synchronize()
-        t = time.perf_counter()
-        with _quiet_lcm_custom_timestep_warning():
-            out = self.pipe(
-                callback_on_step_end=on_step_end,
-                image=base,
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=negative_embeds,
-                pooled_prompt_embeds=pooled,
-                negative_pooled_prompt_embeds=negative_pooled,
-                strength=1.0,
-                timesteps=schedule,
-                num_inference_steps=len(schedule),
-                guidance_scale=s.guidance,
-                generator=generator,
-                output_type="pil",
-            )
-        torch.cuda.synchronize()
-        timings["diffusion_ms"] = (time.perf_counter() - t) * 1000.0
-        timings["steps_run"] = float(steps_done[0])
-
-        # Split the diffusion span. vae_* are measured directly by the wrappers
-        # installed at load; unet_ms is the remainder, so it also carries
-        # scheduler and conditioning overhead - it is a bound, not a pure UNet
-        # number.
-        timings["vae_encode_ms"] = round(self._vae_timings.get("vae_encode_ms", 0.0), 2)
-        timings["vae_decode_ms"] = round(self._vae_timings.get("vae_decode_ms", 0.0), 2)
-        timings["unet_ms"] = round(
-            max(0.0, timings["diffusion_ms"] - timings["vae_encode_ms"] - timings["vae_decode_ms"]), 2
-        )
-
-        check_cancel()
-        t = time.perf_counter()
-        composed = composite_through_mask(base, out.images[0], mask)
-        # The contract promises exactly width x height; composite_through_mask
-        # resizes the model output to the base, so this can only fail if `base`
-        # itself was wrong. Assert rather than return a differently-sized PNG
-        # that the server would silently composite at the wrong scale.
-        if composed.size != (width, height):
-            raise RuntimeError(f"internal error: produced {composed.size}, expected {(width, height)}")
-        timings["composite_ms"] = (time.perf_counter() - t) * 1000.0
-
-        # Return the transient blocks to the driver. Without this the caching
-        # allocator ends up reserving ~7.5 GB against 5.05 GB of live tensors on
-        # an 8 GB card, the device reports 0 bytes free, and the next request's
-        # activations spill into shared system memory (see docs/STREAM_WORKER.md
-        # 4.2.1). Costs a few ms; buys the headroom back.
-        if s.empty_cache_each_run:
             t = time.perf_counter()
-            torch.cuda.empty_cache()
-            timings["empty_cache_ms"] = (time.perf_counter() - t) * 1000.0
+            cfg_on = s.guidance > 1.0
+            prompt_text = (prompt or "").strip() + s.quality_suffix
+            cached = (prompt_text, negative_prompt or "", cfg_on) in self._embed_cache
+            embeds = self._embeds(prompt_text, negative_prompt or "", cfg_on)
+            timings["prompt_ms"] = (time.perf_counter() - t) * 1000.0
+            timings["prompt_cached"] = 1.0 if cached else 0.0
 
-        timings["total_ms"] = (time.perf_counter() - t_start) * 1000.0
-        return GenerateResult(image=composed, timings=timings)
+            prompt_embeds, negative_embeds, pooled, negative_pooled = embeds
+            generator = torch.Generator(device=self.device).manual_seed(int(seed) & 0x7FFFFFFF)
+            check_cancel()
+
+            # The only place inside pipe() where we get control back. Raising here
+            # unwinds the pipeline call, so a cancelled job stops at the next step
+            # boundary instead of running to completion on a GPU nobody is waiting
+            # for. Steps are 0.1-1 s, which bounds the cancellation latency.
+            steps_done = [0]
+
+            def on_step_end(_pipe: Any, step: int, _timestep: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+                steps_done[0] = step + 1
+                check_cancel()
+                return kwargs
+
+            # Strength is expressed as an explicit timestep schedule rather than as
+            # the pipeline's `strength` argument, so that nearby strengths stay
+            # distinct at 4 steps (see lcm_timesteps_for_strength). strength=1.0
+            # tells get_timesteps to use the schedule as given instead of slicing a
+            # prefix off it.
+            schedule = lcm_timesteps_for_strength(steps, strength)
+            timings["t_start"] = float(schedule[0])
+            # Low strength leaves fewer distinct timesteps than `steps`, so the
+            # run is shorter than asked. Report both rather than let the caller
+            # believe it got what it requested (see app.py `strict_steps`).
+            timings["steps_requested"] = float(steps)
+            timings["steps_effective"] = float(len(schedule))
+
+            torch.cuda.synchronize()
+            t = time.perf_counter()
+            with _quiet_lcm_custom_timestep_warning():
+                out = self.pipe(
+                    callback_on_step_end=on_step_end,
+                    image=base,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_embeds,
+                    pooled_prompt_embeds=pooled,
+                    negative_pooled_prompt_embeds=negative_pooled,
+                    strength=1.0,
+                    timesteps=schedule,
+                    num_inference_steps=len(schedule),
+                    guidance_scale=s.guidance,
+                    generator=generator,
+                    output_type="pil",
+                )
+            torch.cuda.synchronize()
+            timings["diffusion_ms"] = (time.perf_counter() - t) * 1000.0
+            timings["steps_run"] = float(steps_done[0])
+
+            # Split the diffusion span. vae_* are measured directly by the wrappers
+            # installed at load; unet_ms is the remainder, so it also carries
+            # scheduler and conditioning overhead - it is a bound, not a pure UNet
+            # number.
+            timings["vae_encode_ms"] = round(self._vae_timings.get("vae_encode_ms", 0.0), 2)
+            timings["vae_decode_ms"] = round(self._vae_timings.get("vae_decode_ms", 0.0), 2)
+            timings["unet_ms"] = round(
+                max(0.0, timings["diffusion_ms"] - timings["vae_encode_ms"] - timings["vae_decode_ms"]), 2
+            )
+
+            check_cancel()
+            t = time.perf_counter()
+            composed = composite_through_mask(base, out.images[0], mask)
+            # The contract promises exactly width x height; composite_through_mask
+            # resizes the model output to the base, so this can only fail if `base`
+            # itself was wrong. Assert rather than return a differently-sized PNG
+            # that the server would silently composite at the wrong scale.
+            if composed.size != (width, height):
+                raise RuntimeError(f"internal error: produced {composed.size}, expected {(width, height)}")
+            timings["composite_ms"] = (time.perf_counter() - t) * 1000.0
+
+            timings["total_ms"] = (time.perf_counter() - t_start) * 1000.0
+            return GenerateResult(image=composed, timings=timings)
+        finally:
+            # Must run on every exit path, not just success. A cancelled or
+            # failed run has already allocated the same activations, so skipping
+            # this leaves the allocator holding them and reintroduces the spill
+            # into shared memory that cost 2-8x (docs/STREAM_WORKER.md 4.3) -
+            # and cancellation is exactly when the next request is imminent.
+            self._release_allocator_cache(timings)
+
+    def _release_allocator_cache(self, timings: dict[str, float]) -> None:
+        """Return the run's transient blocks to the driver.
+
+        Without this the caching allocator ends up reserving ~7.5 GB against
+        5.05 GB of live tensors on an 8 GB card, the device reports 0 bytes
+        free, and the next request's activations spill into shared system
+        memory (docs/STREAM_WORKER.md 4.3). Costs ~10 ms; buys the headroom
+        back. Never raises: it runs in a `finally`, and masking the real
+        exception with a cleanup failure would be worse than a full cache.
+        """
+        if not self.settings.empty_cache_each_run or self._torch is None:
+            return
+        try:
+            t = time.perf_counter()
+            self._torch.cuda.empty_cache()
+            timings["empty_cache_ms"] = (time.perf_counter() - t) * 1000.0
+        except Exception:  # pragma: no cover - driver-level failure
+            log.warning("empty_cache failed", exc_info=True)
 
     def unload(self) -> None:
         """Release the model and its VRAM so another process can have the GPU.

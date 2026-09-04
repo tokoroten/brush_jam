@@ -25,7 +25,14 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from .config import Settings
-from .pipeline import CancelledError, StreamPipeline, decode_png_b64, encode_png_b64, round_size
+from .pipeline import (
+    CancelledError,
+    StreamPipeline,
+    decode_png_b64,
+    encode_png_b64,
+    lcm_timesteps_for_strength,
+    round_size,
+)
 
 log = logging.getLogger("stream_worker.app")
 
@@ -49,6 +56,11 @@ class GenerateBody(BaseModel):
     request_id: str | None = None
     # Wait for the GPU instead of being refused with 409 while it is busy.
     queue: bool = False
+    # Refuse, rather than silently run fewer steps, when the requested step
+    # count cannot fit below the denoise start point. Off by default so the
+    # existing server contract is unchanged; the response always reports the
+    # effective count either way.
+    strict_steps: bool = False
 
     def resolved_strength(self, default: float = 0.55) -> float:
         value = self.strength if self.strength is not None else self.denoise
@@ -60,6 +72,9 @@ class GenerateResponse(BaseModel):
     width: int
     height: int
     request_id: str
+    # Steps actually run, which can be fewer than requested at low denoise -
+    # never the requested number, so a caller that logs this is logging truth.
+    steps: int
     timings: dict[str, float] = Field(default_factory=dict)
 
 
@@ -115,6 +130,7 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
             "steps": s.default_steps,
             "guidance": s.guidance,
             "lora": s.lora,
+            "vae": s.vae,
             "negative_prompt_active": s.negative_prompt_active(),
             "max_denoise": s.max_denoise,
             "warm": warm,
@@ -199,6 +215,27 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
         # the ceiling so the server can cap its slider to the same number.
         strength = min(s.max_denoise, max(0.05, body.resolved_strength()))
 
+        # How many steps this denoise can actually accommodate. The schedule
+        # function is pure, so this is exact and costs nothing - no GPU, and it
+        # works in dry-run too.
+        effective_steps = len(lcm_timesteps_for_strength(steps, strength))
+        if body.strict_steps and effective_steps < steps:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"denoise {strength:g} leaves only {effective_steps} distinct timesteps, "
+                    f"cannot run {steps}; lower steps, raise denoise, or drop strict_steps"
+                ),
+            )
+        if effective_steps < steps:
+            log.info(
+                "steps clamped: requested %d, running %d at denoise %.3g (%s)",
+                steps,
+                effective_steps,
+                strength,
+                body.request_id or "-",
+            )
+
         request_id = body.request_id or uuid.uuid4().hex
 
         if pipe is None:
@@ -209,6 +246,7 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
                 width=width,
                 height=height,
                 request_id=request_id,
+                steps=effective_steps,
                 timings={"wait_ms": 0.0, "total_ms": 0.0, "dry_run": 1.0},
             )
 
@@ -279,8 +317,15 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
                 status_code=500,
                 detail=f"internal error: produced {result.image.size}, expected {(width, height)}",
             )
+        # The pipeline is the authority on what it ran; effective_steps is the
+        # same pure calculation, so they agree, but prefer the measured one.
         return GenerateResponse(
-            image_b64=image_b64, width=width, height=height, request_id=request_id, timings=timings
+            image_b64=image_b64,
+            width=width,
+            height=height,
+            request_id=request_id,
+            steps=int(timings.get("steps_effective", effective_steps)),
+            timings=timings,
         )
 
     return app
