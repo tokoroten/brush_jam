@@ -22,18 +22,47 @@ and runs 4 LCM steps answers the *same* JSON contract in well under a second.
 
 ## 2. StreamDiffusion evaluation (step 1 of the brief)
 
-Both candidates were actually installed and run on this machine, not just read.
+**Short answer: yes, StreamDiffusion was really installed and really run here.**
+The livepeer fork was installed into a Python 3.10 venv on this Windows box and
+successfully generated SDXL img2img frames from the local Illustrious
+checkpoint. It was rejected on measured speed and contract fit, not on a guess.
+Upstream `cumulo-autumn/StreamDiffusion` was cloned and read but deliberately
+**not** installed — see §2.1 for why that would have been wasted time.
 
-### 2.1 `cumulo-autumn/StreamDiffusion` (upstream) — rejected
+Exact commands, so this is reproducible:
+
+```bash
+git clone --depth 1 https://github.com/cumulo-autumn/StreamDiffusion.git sd_eval
+git clone --depth 1 https://github.com/livepeer/StreamDiffusion.git   sd_livepeer
+
+uv venv --python 3.10 sdenv
+uv pip install --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 torchvision==0.21.0
+uv pip install -e ./sd_livepeer
+uv pip install opencv-python "controlnet-aux==0.0.10"    # undeclared, see below
+python sd_smoke.py                                        # SDXL img2img, 512, 3 t-indices
+```
+
+Versions actually used: Python 3.10.17, torch 2.6.0+cu124, driver 591.86,
+streamdiffusion 0.1.1 (livepeer `main`), transformers 4.56.0, its pinned
+`diffusers` fork, `acceleration="none"` (no TensorRT, per the brief).
+
+### 2.1 `cumulo-autumn/StreamDiffusion` (upstream) — rejected, not installed
+
+Cloned and read; **not** installed, because the source shows it cannot do the
+job and installing it would have meant a second 2.5 GB torch download to prove
+a foregone conclusion:
 
 - `src/streamdiffusion/pipeline.py` imports `StableDiffusionPipeline` and
   nothing else; `grep -rn "XL" src/` returns **zero** hits, and the README
-  never mentions SDXL. It is an SD1.5-only pipeline.
+  never mentions SDXL. It is an SD1.5-only pipeline. There is no code path that
+  could load an SDXL checkpoint, so "try it and see" has one possible outcome.
 - Dependencies are frozen at `diffusers==0.24.0` / `onnx==1.15` / torch ~2.1,
-  which is 2023-era and conflicts with anything current.
+  2023-era pins that conflict with anything current.
 
 Our checkpoint is SDXL/Illustrious, so upstream is out on capability grounds
-before portability even matters.
+before portability even matters. (If someone wants SD1.5 realtime specifically,
+upstream is the right starting point — but that is a different product
+decision, since Illustrious is the model the room is styled around.)
 
 ### 2.2 `livepeer/StreamDiffusion` (fork) — works, but rejected for this job
 
@@ -92,6 +121,35 @@ embeddings are cached**, keyed by `(prompt, negative, cfg)`.
 Re-open this decision if we move to a dedicated GPU (≥12 GB), where the fork's
 resident-text-encoder layout stops hurting and TensorRT becomes worthwhile.
 
+### 2.4 What StreamDiffusion would buy us later
+
+Honest accounting of its four real optimisations against what this worker
+already does. **The per-technique factors below are from the StreamDiffusion
+paper and the TensorRT/TAESD literature, not measured here** — only the "already
+have it" rows are things this box actually demonstrated.
+
+| technique | what it does | do we have it | estimated gain on this pipeline |
+| --- | --- | --- | --- |
+| prompt-embedding cache | skip the two CLIP encoders when the prompt is unchanged | **yes**, implemented | already banked (~0.5–0.6 s per cache miss avoided; the room prompt rarely changes, so nearly every request hits) |
+| Tiny VAE (`taesdxl`) | replace the SDXL VAE with a ~1 M-param distilled one | no | **the largest single win available**, and it does not need StreamDiffusion. Our fp32 tiled VAE decode is a substantial slice of §4's numbers; taesdxl decodes in tens of ms. Worth doing in this worker directly. |
+| RCFG (residual CFG) | keep a negative prompt at ~1.0–1.3× UNet cost instead of 2× | no | ~1.5–1.9× on the UNet portion. We can already get ~2× by setting `STREAM_GUIDANCE=1.0`, but that *drops* the negative prompt; RCFG is the version that keeps it. |
+| stream batching | run the N denoising steps of *consecutive* frames as one batched UNet call | no | ~N× **throughput** on a continuous video stream, ~0 for us. It needs a steady frame feed; our scheduler sends debounced, latest-wins, one-at-a-time requests whose size changes per request. Realising this would mean redesigning `scheduler.ts` around a persistent per-room stream, not just swapping backends. |
+| TensorRT | compile the UNet to fixed-resolution engines | no (out of scope per the brief) | ~1.5–2.5× on the UNet on Ampere. Costs minutes of engine build per resolution, which fights the "512/768/1024 selectable per request" requirement — you would build three engines. |
+
+Rough combined estimate, stacking only the parts that apply to a request/response
+worker (taesdxl + RCFG + TensorRT, no stream batching): **~2.5–4× faster than
+§4 on this RTX 3070**, i.e. a 1024² 4-step generation in the low hundreds of ms
+rather than seconds. On a 4090 the same stack is comfortably sub-200 ms at
+1024², and *with* stream batching and a redesigned streaming scheduler, 512²
+interactive rates (10–15 fps) become plausible — which is the regime
+StreamDiffusion was actually built for.
+
+The sequencing that follows: **take the tiny VAE first** (biggest win, no new
+dependency, no architecture change), then reconsider RCFG/TensorRT on better
+hardware, and only adopt StreamDiffusion itself if and when the product moves to
+a continuous-stream model (`BRUSHJAM_CONTEXT.md` §11.2's sticky room→GPU
+sessions) rather than the current stateless latest-wins requests.
+
 ## 3. What the worker does
 
 `apps/stream-worker/src/stream_worker/`
@@ -126,9 +184,161 @@ Decisions worth knowing:
   silently ignored. It costs ~2× UNet time; `STREAM_GUIDANCE=1.0` halves the
   UNet cost and drops the negative prompt. Numbers for both are below.
 
+### 3.1 One model at a time on 8 GB
+
+**On this machine ComfyUI and the stream worker must never be resident at the
+same time.** This is a constraint of an 8 GB card, not of the design — on a card
+with headroom they coexist fine.
+
+The arithmetic: ComfyUI holds ~3–4 GB with the Illustrious checkpoint loaded,
+the stream worker holds ~5.5–6 GB, the Windows desktop takes ~0.6–1.3 GB. That
+is 10+ GB of demand on 8 GB of card. Windows does not fail this allocation — it
+silently backs the overflow with shared system memory over PCIe, and *both*
+processes get several times slower with no error anywhere.
+
+Measured during this work, with both resident:
+
+| job | normal | while both were resident |
+| --- | --- | --- |
+| ComfyUI 1024² / 14 steps | 10–24 s | **116 s and 567 s** |
+| worker 768² / 4 steps | see §4 | 17–24 s |
+| worker 1024² / 4 steps | see §4 | never returned (300 s client timeout) |
+
+Rules that follow:
+
+1. **The server must not use `comfyui` and `stream` at the same time locally.**
+   Pick one via `AI_BACKEND`. Do not add an "auto-detect and fall back" path that
+   could end up talking to both, and do not run a ComfyUI smoke test against a
+   room while the worker is up.
+2. **Hand the GPU over explicitly.** The worker exposes `POST /unload`, which
+   drops the pipeline and frees its VRAM while keeping the process alive
+   (`GET /healthz` then reports `loaded: false`). `POST /load` puts it back, and
+   a `/generate` that arrives while unloaded reloads transparently — at the cost
+   of the ~90 s cold start, so prefer an explicit `/load`.
+3. The mirror image for ComfyUI is
+   `POST /free {"unload_models": true, "free_memory": true}`, which only takes
+   effect once its queue is empty (`GET /queue`).
+4. Benchmark numbers taken while the other side was loaded are worthless. Every
+   figure in §4 was measured with ComfyUI stopped.
+
 ## 4. Benchmarks
 
-<!-- BENCHMARK -->
+Conditions for every number below: **ComfyUI stopped**, GPU otherwise idle,
+worker warm, 4 steps, `denoise=0.55`, feathered mask, prompt
+`"anime style, fantasy town, vibrant colors"` held constant so the embedding
+cache hits every time. 2 discarded warm-up runs, then 5 measured runs per size
+(`scripts/bench.py --sizes 512 768 1024 --runs 5 --warmups 2 --mask`).
+
+Cold start: checkpoint load + LoRA fuse **~30 s**, plus one warm-up generation
+(3.0 s at 512², 9.9 s at 768²) — **~35–41 s to first useful request** with a warm
+file cache, ~90 s from cold.
+
+### 4.1 Final numbers (shipped configuration)
+
+| size | runs | wall median | min | max | diffusion median |
+| --- | --- | --- | --- | --- | --- |
+| 512² | 5 | **1682 ms** | 1625 ms | 1702 ms | 1554 ms |
+| 768² | 5 | **6025 ms** | 5949 ms | 6048 ms | 5619 ms |
+| 1024² | 5 | **15234 ms** | 11092 ms | 17167 ms | 14448 ms |
+
+Non-diffusion overhead: prompt embedding 0 ms (cache hit), mask composite
+10–70 ms, PNG encode 23–83 ms, `empty_cache` 67–755 ms (see §4.3).
+
+Comparison with what it is meant to replace — the ComfyUI backend at 1024²/14
+steps is 10–24 s on this box. So the worker is **decisively better at 512²**
+(1.7 s), **better at 768²** (6 s), and **roughly a wash at 1024²** (15 s), while
+also being the only one of the two that can serve 512² and 768² cheaply.
+
+**This is short of the goal.** The brief was few-step, sub-second, "AI reacts
+while you draw". 512² at 1.7 s is the closest it gets, and that is still ~4×
+slower than an RTX 3070 should manage for 8 UNet evaluations on a 64×64 latent.
+§4.4 says where the remaining time goes and what to do next.
+
+### 4.2 What was measured to get there (three A/B tests)
+
+Two obvious suspects were wrong, and the third was worth 2–8×. The numbers are
+the interesting part, because two of them are *negative* results:
+
+| variable | 512² | 768² | 1024² | verdict |
+| --- | --- | --- | --- | --- |
+| baseline (CFG 1.5, VAE tiling on) | 1542 ms | 12269 ms | 122763 ms | — |
+| `STREAM_GUIDANCE=1.0` (no CFG: half the UNet work) | 1670 ms | 11740 ms | — | **no effect** |
+| `STREAM_VAE_TILING=0` (plain VAE decode) | 1674 ms | 12233 ms | — | **no effect** |
+| `STREAM_EMPTY_CACHE=1` (+ `expandable_segments`) | 1682 ms | **6025 ms** | **15234 ms** | **2× / 8×** |
+
+1. **Halving the UNet work changed nothing.** With CFG on, 512² runs 8 UNet
+   evaluations in ~1.5 s; with CFG off it runs 4 in ~1.6 s. The UNet was never
+   the bottleneck.
+2. **Turning off VAE tiling changed nothing either.** So it was not the tiling.
+3. **Returning the allocator's cache was the fix.** See §4.3.
+
+### 4.3 The actual bug: the allocator held 2.5 GB it was not using
+
+`GET /healthz` now reports a `memory` block, which made this visible in one
+request. Idle, after loading and one 512² warm-up:
+
+```jsonc
+// before
+{ "allocated_gb": 5.05, "reserved_gb": 7.52, "max_allocated_gb": 6.59, "device_free_gb": 0.00 }
+// after STREAM_EMPTY_CACHE=1 + PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+{ "allocated_gb": 5.05, "reserved_gb": 5.32, "max_allocated_gb": 6.59, "device_free_gb": 1.21 }
+```
+
+Live tensors were only 5.05 GB, but PyTorch's caching allocator had reserved
+**7.52 GB** of the 8 GB card and **`device_free_gb` was 0.00**. The transient
+peak during a generation is 6.59 GB (the fp32 VAE upcast is most of the gap over
+5.05 GB), so every request after the first had to find its activations in a
+fragmented pool with nothing left underneath — and on Windows that does not
+fail, it silently spills to shared system memory over PCIe.
+
+That is why the scaling looked impossible: 768² has 2.25× the pixels of 512² but
+took 8× the time, and 1024² took 80×. It was not compute, it was paging. The
+huge 1024² spread in the old data (83 s to 256 s) was allocation luck.
+
+The fix is `torch.cuda.empty_cache()` after each generation (`STREAM_EMPTY_CACHE`,
+on by default) plus `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. It costs
+70 ms at 512² and ~600 ms at 1024², and buys 2× at 768² and 8× at 1024².
+
+### 4.4 Where the remaining time goes, and what to do next
+
+Even fixed, 512² is ~1.7 s for what should be a few hundred ms. By elimination
+(the UNet was ruled out in §4.2) the remaining fixed cost is the **VAE**: this
+checkpoint sets `force_upcast=True`, so diffusers casts the VAE to **fp32** on
+every call, decodes in fp32, and casts back — visible as a deprecation warning
+in the log on each generation, and as the 1.5 GB gap between `allocated_gb` and
+`max_allocated_gb`.
+
+Next steps, in the order I would take them:
+
+1. **Replace the VAE** with `madebyollin/sdxl-vae-fp16-fix` (drop-in, fp16-safe,
+   removes the upcast) or `taesdxl` (distilled, decodes in tens of ms). This is
+   the single highest-value change and needs no architectural work. I did not
+   get to it inside the GPU window.
+2. Re-measure with `memory` in `/healthz` to confirm `max_allocated_gb` drops
+   toward `allocated_gb`; if it does, the spill headroom problem is gone too and
+   `STREAM_EMPTY_CACHE` may become unnecessary.
+3. Only then consider RCFG / TensorRT (§2.4).
+
+### 4.5 Output quality at 4 steps is also disappointing
+
+Separate from speed, and worth knowing before anyone wires this up. Sample
+inputs and outputs are in `apps/stream-worker/samples/`.
+
+At the server's current default of `denoise=0.55` with 4 LCM steps, the output
+is **very close to the input**: the drawn shapes get a soft shade and some
+speckle, but the model does not reinterpret the sketch into "anime fantasy
+town". That is expected behaviour rather than a bug — an LCM-distilled model's
+consistency function is trained to jump toward a clean image from *high* noise
+levels, so entering the trajectory at 55 % gives it little to do. `AI_DENOISE`
+0.55 was tuned for 14-step `euler_ancestral` and does not transfer.
+
+Recommendation for whoever wires the backend: with the `stream` backend use
+**`AI_DENOISE` around 0.75–0.85**, not 0.55, and compare LCM against
+`STREAM_LORA=dmd2` (DMD2 usually holds line art better on Illustrious-class
+checkpoints). I did not get to sweep denoise on an uncontended GPU — the window
+went to the latency work above — so treat 0.75–0.85 as a starting point to
+verify, not a measured optimum. `scripts/quality_probe.py` sweeps it in one
+command.
 
 ## 5. ComfyUI: the same LoRA, a 4-step Illustrious workflow
 
@@ -206,6 +416,13 @@ Notes:
 are committed and green (8 tests, stubbed `fetch`). **They are deliberately not
 registered** — registration touches files owned by another agent.
 
+> **Before you wire this up, read §4.1.** On this GPU the worker is only
+> competitive at 512²; at 768² and above it is currently slower than the ComfyUI
+> backend you already have. Registering it is cheap and harmless (nothing routes
+> to it until `AI_BACKEND=stream`), but do not make it the default, and do not
+> add it to the `auto` probe order, until the VRAM problem in §4.1 is fixed.
+> Treat the `auto` snippet in §6.2 as "later", not "now".
+
 ### 6.1 `config.ts`
 
 Add to the backend union and read two vars:
@@ -263,6 +480,10 @@ signal, and has its own request timeout, so `scheduler.ts` needs no changes at
 all.
 
 ## 7. Honest limitations
+
+**Read §4.1 first: the worker is committed and works, but it did not hit its
+performance goal, and at 768²/1024² it is currently no better than the ComfyUI
+backend.** Everything below is on top of that.
 
 - No TensorRT, no torch.compile (compile costs minutes per resolution on
   Windows and would defeat "selectable sizes").

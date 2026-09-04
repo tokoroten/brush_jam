@@ -261,8 +261,53 @@ class StreamPipeline:
         t = time.perf_counter()
         composed = composite_through_mask(base, out.images[0], mask)
         timings["composite_ms"] = (time.perf_counter() - t) * 1000.0
+
+        # Return the transient blocks to the driver. Without this the caching
+        # allocator ends up reserving ~7.5 GB against 5.05 GB of live tensors on
+        # an 8 GB card, the device reports 0 bytes free, and the next request's
+        # activations spill into shared system memory (see docs/STREAM_WORKER.md
+        # 4.2.1). Costs a few ms; buys the headroom back.
+        if s.empty_cache_each_run:
+            t = time.perf_counter()
+            torch.cuda.empty_cache()
+            timings["empty_cache_ms"] = (time.perf_counter() - t) * 1000.0
+
         timings["total_ms"] = (time.perf_counter() - t_start) * 1000.0
         return GenerateResult(image=composed, timings=timings)
+
+    def unload(self) -> None:
+        """Release the model and its VRAM so another process can have the GPU.
+
+        On 8 GB this worker and ComfyUI cannot both be resident, so the two hand
+        the card over rather than share it. ``load()`` puts it back.
+        """
+        self.pipe = None
+        self.warm = False
+        self._embed_cache.clear()
+        if self._torch is not None:
+            import gc
+
+            gc.collect()
+            self._torch.cuda.empty_cache()
+            self._torch.cuda.ipc_collect()
+        log.info("unloaded: GPU released")
+
+    def memory(self) -> dict[str, float]:
+        """VRAM accounting, in GB. `allocated` is live tensors, `reserved` is
+        what the caching allocator holds, `free`/`total` come from the driver.
+        The gap between allocated and reserved is fragmentation the process is
+        sitting on and could give back."""
+        if self._torch is None or not self._torch.cuda.is_available():
+            return {}
+        free, total = self._torch.cuda.mem_get_info()
+        gb = 1024.0**3
+        return {
+            "allocated_gb": round(self._torch.cuda.memory_allocated() / gb, 2),
+            "reserved_gb": round(self._torch.cuda.memory_reserved() / gb, 2),
+            "max_allocated_gb": round(self._torch.cuda.max_memory_allocated() / gb, 2),
+            "device_free_gb": round(free / gb, 2),
+            "device_total_gb": round(total / gb, 2),
+        }
 
     def model_name(self) -> str:
         return f"{self.settings.checkpoint.name}+{self.settings.lora_spec()[2]}"

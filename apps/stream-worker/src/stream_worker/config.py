@@ -59,6 +59,9 @@ class Settings:
     # and every embedding we need is cached, so on an 8 GB card that VRAM is
     # better spent on the UNet. Set 0 if you have headroom.
     offload_text_encoders: bool = field(default_factory=lambda: _env_bool("STREAM_OFFLOAD_TEXT_ENCODERS", True))
+    # Hand fragmented blocks back after every generation; on 8 GB the allocator
+    # otherwise reserves ~2.5 GB more than it uses and the next run spills.
+    empty_cache_each_run: bool = field(default_factory=lambda: _env_bool("STREAM_EMPTY_CACHE", True))
     vae_tiling: bool = field(default_factory=lambda: _env_bool("STREAM_VAE_TILING", True))
     embed_cache_size: int = field(default_factory=lambda: _env_int("STREAM_EMBED_CACHE", 16))
     # Debug/CI escape hatch: serve the contract without touching the GPU.

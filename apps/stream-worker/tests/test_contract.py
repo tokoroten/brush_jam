@@ -34,9 +34,19 @@ class FakePipeline:
     def __init__(self) -> None:
         self.warm = True
         self.calls: list[dict] = []
+        self.loads = 0
+        self.unloads = 0
+
+    def __init_extra__(self) -> None:
+        pass
 
     def load(self) -> None:
-        pass
+        self.loads += 1
+        self.warm = True
+
+    def unload(self) -> None:
+        self.unloads += 1
+        self.warm = False
 
     def model_name(self) -> str:
         return "fake-model"
@@ -181,7 +191,33 @@ def test_dry_run_app_echoes_input():
         assert client.get("/healthz").json()["backend"] == "dry-run"
         res = client.post(
             "/generate",
-            json={"image_b64": png_b64(Image.new("RGB", (128, 128), (9, 9, 9))), "prompt": "x", "size": 128},
+            json={"image_b64": png_b64(Image.new("RGB", (256, 256), (9, 9, 9))), "prompt": "x", "size": 256},
         )
         assert res.status_code == 200
         assert decode_png_b64(res.json()["image_b64"]).getpixel((4, 4)) == (9, 9, 9)
+
+
+def test_unload_frees_the_model_and_generate_reloads(client_and_pipe):
+    """The 8 GB handover: /unload releases the GPU, the next call reloads."""
+    client, pipe = client_and_pipe
+    assert client.get("/healthz").json()["loaded"] is True
+
+    assert client.post("/unload").json() == {"ok": True, "loaded": False}
+    assert pipe.unloads == 1
+    assert client.get("/healthz").json()["loaded"] is False
+
+    loads_before = pipe.loads
+    res = client.post(
+        "/generate",
+        json={"image_b64": png_b64(Image.new("RGB", (256, 256), "white")), "prompt": "x", "size": 256},
+    )
+    assert res.status_code == 200
+    assert pipe.loads == loads_before + 1
+    assert client.get("/healthz").json()["loaded"] is True
+
+
+def test_load_is_idempotent(client_and_pipe):
+    client, pipe = client_and_pipe
+    loads_before = pipe.loads
+    assert client.post("/load").json() == {"ok": True, "loaded": True}
+    assert pipe.loads == loads_before  # already loaded: no second load

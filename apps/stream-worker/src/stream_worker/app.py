@@ -16,7 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from PIL import Image
@@ -65,22 +66,26 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
     gpu_lock = asyncio.Lock()
     state: dict[str, Any] = {"loaded": False, "error": None}
 
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if pipe is None:
             log.warning("STREAM_DRY_RUN=1: no model is loaded, /generate echoes its input")
-            return
-        loop = asyncio.get_running_loop()
+        else:
+            loop = asyncio.get_running_loop()
 
-        def _load() -> None:
-            pipe.load()
+            def _load() -> None:
+                pipe.load()
 
-        try:
-            await loop.run_in_executor(None, _load)
-            state["loaded"] = True
-        except Exception as err:  # keep the process up so /healthz can report it
-            state["error"] = f"{type(err).__name__}: {err}"
-            log.exception("model load failed")
+            try:
+                # Off the event loop: loading is ~30 s of blocking file + CUDA work.
+                await loop.run_in_executor(None, _load)
+                state["loaded"] = True
+            except Exception as err:  # keep the process up so /healthz can report it
+                state["error"] = f"{type(err).__name__}: {err}"
+                log.exception("model load failed")
+        yield
+
+    app.router.lifespan_context = lifespan
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
@@ -94,9 +99,46 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
             "steps": s.default_steps,
             "guidance": s.guidance,
             "warm": warm,
+            "loaded": bool(state["loaded"]),
             "busy": gpu_lock.locked(),
             "error": state["error"],
+            "memory": {} if pipe is None or not hasattr(pipe, "memory") else pipe.memory(),
         }
+
+    @app.post("/unload")
+    async def unload() -> dict[str, Any]:
+        """Drop the model and free the VRAM, without exiting the process.
+
+        On an 8 GB card this worker and ComfyUI cannot both be resident, so the
+        two need a way to hand the GPU over. The next /generate reloads (~90 s).
+        """
+        if pipe is None:
+            return {"ok": True, "loaded": False}
+        async with gpu_lock:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, pipe.unload)
+            state["loaded"] = False
+            state["error"] = None
+        return {"ok": True, "loaded": False}
+
+    @app.post("/load")
+    async def load() -> dict[str, Any]:
+        """Reload after /unload (or after a failed startup load)."""
+        if pipe is None:
+            return {"ok": True, "loaded": False}
+        async with gpu_lock:
+            if state["loaded"]:
+                return {"ok": True, "loaded": True}
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(None, pipe.load)
+                state["loaded"] = True
+                state["error"] = None
+            except Exception as err:
+                state["error"] = f"{type(err).__name__}: {err}"
+                log.exception("model load failed")
+                raise HTTPException(status_code=500, detail=state["error"]) from err
+        return {"ok": True, "loaded": True}
 
     @app.post("/generate", response_model=GenerateResponse)
     async def generate(body: GenerateBody) -> GenerateResponse:
@@ -134,6 +176,16 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
         async with gpu_lock:
             wait_ms = (time.perf_counter() - queued_at) * 1000.0
             loop = asyncio.get_running_loop()
+
+            # Reload transparently after an /unload handover.
+            if not state["loaded"]:
+                try:
+                    await loop.run_in_executor(None, pipe.load)
+                    state["loaded"] = True
+                except Exception as err:
+                    state["error"] = f"{type(err).__name__}: {err}"
+                    log.exception("model load failed")
+                    raise HTTPException(status_code=503, detail=state["error"]) from err
 
             def _run() -> Any:
                 return pipe.generate(

@@ -47,8 +47,21 @@ cache, ~25 s warm).
 
 ```json
 { "ok": true, "backend": "diffusers-sdxl-lcm", "model": "waiNSFWIllustrious_v150.safetensors+lcm-lora-sdxl.safetensors",
-  "size": 768, "max_size": 1024, "steps": 4, "guidance": 1.5, "warm": true, "busy": false, "error": null }
+  "size": 768, "max_size": 1024, "steps": 4, "guidance": 1.5, "warm": true, "loaded": true, "busy": false, "error": null,
+  "memory": { "allocated_gb": 5.05, "reserved_gb": 5.32, "max_allocated_gb": 6.59, "device_free_gb": 1.21, "device_total_gb": 8.0 } }
 ```
+
+`memory` is the VRAM accounting: `allocated_gb` is live tensors, `reserved_gb`
+is what PyTorch's caching allocator holds, and `device_free_gb` is what the
+driver has left. If `device_free_gb` reaches 0 the next request will spill into
+shared system memory and get several times slower - see the troubleshooting
+notes below.
+
+`POST /unload` — drop the model and free its VRAM without exiting (the process
+stays up and `/healthz` reports `loaded: false`); `POST /load` puts it back.
+These exist so this worker and ComfyUI can hand the GPU over on a card that
+cannot hold both — see `docs/STREAM_WORKER.md` §3.1. A `/generate` that arrives
+while unloaded reloads transparently, but pays the ~90 s cold start.
 
 `POST /generate`
 
@@ -96,12 +109,14 @@ Notes on the contract:
 | `STREAM_WARMUP_SIZE` | `768` | size of the startup warm-up run; `0` disables |
 | `STREAM_MAX_SIZE` | `1024` | requests above this are rejected with 400 |
 | `STREAM_OFFLOAD_TEXT_ENCODERS` | `1` | park the two CLIP encoders in system RAM between requests (saves ~1.8 GB VRAM) |
-| `STREAM_VAE_TILING` | `1` | tiled/sliced VAE (needed for 1024 on 8 GB) |
+| `STREAM_VAE_TILING` | `1` | tiled/sliced VAE |
+| `STREAM_EMPTY_CACHE` | `1` | return the allocator's cache after every generation. **Leave this on**: without it PyTorch reserves ~7.5 GB against 5.05 GB of live tensors, the card reports 0 bytes free, and 768²/1024² spill to shared memory and get 2–8× slower (`docs/STREAM_WORKER.md` §4.3). |
 | `STREAM_EMBED_CACHE` | `16` | prompt-embedding cache entries |
 | `STREAM_QUALITY_SUFFIX` | `, masterpiece, best quality` | appended to every prompt (matches the ComfyUI backend) |
 | `STREAM_DRY_RUN` | `0` | serve the contract without a GPU (echoes the input); for CI |
 | `STREAM_LOG_LEVEL` | `INFO` | logging level |
 | `HF_TOKEN` | — | only used if the LoRA has to be downloaded |
+| `PYTORCH_CUDA_ALLOC_CONF` | — | set to `expandable_segments:True` on 8 GB cards; it reduces allocator fragmentation and is part of the §4.3 fix |
 
 ## VRAM
 
@@ -113,8 +128,10 @@ Notes on the contract:
 | activations at 1024², 4 steps, CFG on | ~0.6–1.0 GB |
 
 Practical requirement on this box: **~5.5–6.0 GB free VRAM**. ComfyUI holds
-3–4 GB while idle, so free it first (this unloads models but leaves ComfyUI
-running):
+3–4 GB with a checkpoint loaded, so on this 8 GB card the two **cannot both be
+resident**: they thrash instead of failing, and both get several times slower
+(`docs/STREAM_WORKER.md` §3.1). Free ComfyUI first — this unloads its models but
+leaves ComfyUI running, and only takes effect once its queue is empty:
 
 ```bash
 curl -X POST http://127.0.0.1:8188/free -H "content-type: application/json" \
@@ -128,7 +145,19 @@ uv run python scripts/make_sample.py --size 1024
 uv run python scripts/bench.py --sizes 512 768 1024 --runs 5
 ```
 
-Numbers for this machine (RTX 3070 8 GB) are in `docs/STREAM_WORKER.md`.
+Measured on this machine (RTX 3070 8 GB, ComfyUI stopped, warm, 4 steps,
+denoise 0.55, 5 runs each):
+
+| size | wall median |
+| --- | --- |
+| 512² | 1682 ms |
+| 768² | 6025 ms |
+| 1024² | 15234 ms |
+
+Cold start ~35-41 s (load + one warm-up run). Full analysis, including the
+allocator bug that made 768²/1024² 2-8× slower before it was fixed and the
+VAE fp32 upcast that is still costing ~1 s per request, is in
+`docs/STREAM_WORKER.md` §4.
 
 ## Tests
 
@@ -138,10 +167,12 @@ uv run pytest            # pure-python tests, no GPU (uses STREAM_DRY_RUN)
 
 ## Troubleshooting
 
-- **`CUDA out of memory` / everything takes 5+ s.** Something else is holding
-  VRAM. `nvidia-smi` and the ComfyUI `/free` call above. On Windows an
-  allocation that does not fit silently spills into shared system memory and
-  gets ~10× slower rather than failing — slow is the usual symptom, not OOM.
+- **Everything takes several times longer than the table above.** Almost always
+  VRAM, and it shows up as slowness rather than `CUDA out of memory`: on Windows
+  an allocation that does not fit silently spills into shared system memory over
+  PCIe. Check `GET /healthz` → `memory.device_free_gb`; if it is at or near 0,
+  either something else is holding VRAM (`nvidia-smi`, and the ComfyUI `/free`
+  call above) or `STREAM_EMPTY_CACHE` has been turned off.
 - **`checkpoint not found`.** Set `STREAM_CHECKPOINT`.
 - **First request is slow.** The prompt-embedding cache is cold and the text
   encoders have to be paged to the GPU (~0.6 s). Repeat prompts are free.
