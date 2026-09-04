@@ -283,6 +283,21 @@ actually feels: debounce + render + backend + compositing) next to the backend's
 own `latencyMs`, with min/median/max for both. It starts nothing itself, so the
 `/healthz` line tells you which backend was really measured.
 
+### Denoise / quality grid
+
+```
+pnpm --filter @brushjam/server quality-grid                   # 4 drawings x 4 denoise at 768
+AI_BACKEND=mock pnpm --filter @brushjam/server quality-grid   # instant, no GPU
+```
+
+Renders four synthetic drawings (line art, stick figure + blob, line art with a
+noise sky, mostly noise) and sweeps denoise through whatever backend the config
+selects, calling `generate()` directly - no server, no WebSocket, fixed seed,
+full-white mask. Writes `docs/experiments/<date>/` with one PNG per cell, a
+labelled contact sheet `grid.png` and `results.json` with per-cell latency, then
+prints a summary table. Options: `--res`, `--out`, `--drawings`, `--denoise`.
+See [docs/experiments/README.md](docs/experiments/README.md).
+
 ## Measured behaviour
 
 Smoke test on the local box (RTX 3070 8 GB, `AI_WINDOW=1024`, 14 steps,
