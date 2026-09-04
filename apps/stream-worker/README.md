@@ -173,6 +173,10 @@ uv run python scripts/bench.py --sizes 512 768 1024 --runs 5 --mask
 # (nothing else may be listening on the port, and free ComfyUI first)
 uv run python scripts/bench_vae.py
 
+# rehearse that harness without a GPU first - proves the orchestration,
+# the tables and the cleanup before you spend a GPU window on it
+uv run python scripts/bench_vae.py --dry-run --runs 2 --warmups 1
+
 # sweep denoise to pick AI_DENOISE
 uv run python scripts/quality_probe.py 512
 ```

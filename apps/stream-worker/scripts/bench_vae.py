@@ -15,8 +15,10 @@ writes samples/bench_vae.json.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import signal
 import statistics
 import subprocess
 import sys
@@ -24,6 +26,19 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# Every worker this script starts. No path out of here - exception, Ctrl+C,
+# SIGTERM - may leave an orphan holding 5 GB of VRAM.
+_CHILDREN: list[subprocess.Popen] = []
+
+# This console is cp932; a stray non-ASCII character in the summary would raise
+# UnicodeEncodeError *after* all the GPU work is done and throw the results
+# away. Force UTF-8 and degrade rather than crash.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench import NEGATIVE, PROMPT, b64, post  # noqa: E402
@@ -40,7 +55,8 @@ def wait_until_warm(url: str, proc: subprocess.Popen, timeout: float) -> dict:
         try:
             with urllib.request.urlopen(f"{url}/healthz", timeout=5) as res:
                 health = json.loads(res.read().decode("utf-8"))
-            if health.get("warm"):
+            # dry-run never loads a model, so it is ready as soon as it answers.
+            if health.get("warm") or health.get("backend") == "dry-run":
                 return health
             if health.get("error"):
                 raise RuntimeError(f"worker failed to load: {health['error']}")
@@ -51,14 +67,33 @@ def wait_until_warm(url: str, proc: subprocess.Popen, timeout: float) -> dict:
 
 
 def stop(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
-    proc.terminate()
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=30)
+    if proc in _CHILDREN:
+        _CHILDREN.remove(proc)
+
+
+def stop_all() -> None:
+    for proc in list(_CHILDREN):
+        stop(proc)
+
+
+def gpu_used_mib() -> str:
     try:
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=30)
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return out.stdout.strip().splitlines()[0]
+    except Exception:
+        return "unknown"
 
 
 def measure(url: str, size: int, runs: int, warmups: int, steps: int, denoise: float, use_mask: bool) -> dict:
@@ -115,7 +150,30 @@ def main() -> None:
     ap.add_argument("--mask", action="store_true", default=True)
     ap.add_argument("--load-timeout", type=float, default=300.0)
     ap.add_argument("--out", type=Path, default=Path("samples") / "bench_vae.json")
+    ap.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=840.0,
+        help="overall deadline; remaining configurations are skipped rather than overrunning a granted GPU window",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="rehearse the harness with STREAM_DRY_RUN=1: no model, no GPU, meaningless timings",
+    )
     args = ap.parse_args()
+
+    atexit.register(stop_all)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, lambda *_: sys.exit(130))
+        except (ValueError, OSError):
+            pass  # not the main thread, or unsupported here
+
+    started_all = time.perf_counter()
+
+    def remaining() -> float:
+        return args.budget_seconds - (time.perf_counter() - started_all)
 
     try:
         with urllib.request.urlopen(f"{args.url}/healthz", timeout=3):
@@ -128,10 +186,17 @@ def main() -> None:
     memory: dict[str, dict] = {}
     load_seconds: dict[str, float] = {}
 
+    skipped: list[str] = []
     for vae in args.vaes:
+        if remaining() <= 0:
+            skipped.append(vae)
+            print(f"\n=== STREAM_VAE={vae} SKIPPED (out of time budget) ===", flush=True)
+            continue
         env = {**os.environ, "STREAM_VAE": vae, "STREAM_PORT": port, "STREAM_WARMUP_SIZE": str(min(args.sizes))}
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-        print(f"\n=== STREAM_VAE={vae} ===", flush=True)
+        if args.dry_run:
+            env["STREAM_DRY_RUN"] = "1"
+        print(f"\n=== STREAM_VAE={vae} ({remaining():.0f}s of budget left) ===", flush=True)
         started = time.perf_counter()
         proc = subprocess.Popen(
             [sys.executable, "-m", "stream_worker"],
@@ -139,6 +204,7 @@ def main() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        _CHILDREN.append(proc)
         try:
             health = wait_until_warm(args.url, proc, args.load_timeout)
             load_seconds[vae] = round(time.perf_counter() - started, 1)
@@ -146,6 +212,9 @@ def main() -> None:
             print(f"  warm in {load_seconds[vae]}s, memory={memory[vae]}", flush=True)
             rows = []
             for size in args.sizes:
+                if remaining() <= 0:
+                    print(f"  {size}: skipped (out of time budget)", flush=True)
+                    continue
                 row = measure(args.url, size, args.runs, args.warmups, args.steps, args.denoise, args.mask)
                 print(f"  {size}: {row['wall_median_ms']} ms median  {row}", flush=True)
                 rows.append(row)
@@ -158,15 +227,15 @@ def main() -> None:
             time.sleep(3)  # let the driver reclaim the VRAM before the next load
 
     print("\n\n### Wall-clock median, ms\n")
-    header = "| VAE | cold start | " + " | ".join(f"{s}²" for s in args.sizes) + " |"
+    header = "| VAE | cold start | " + " | ".join(f"{s}px" for s in args.sizes) + " |"
     print(header)
     print("| --- |" + " --- |" * (len(args.sizes) + 1))
     for vae in args.vaes:
         cells = []
         for size in args.sizes:
             row = next((r for r in results.get(vae, []) if r["size"] == size), None)
-            cells.append(f"{row['wall_median_ms']} ms" if row else "—")
-        cold = f"{load_seconds[vae]} s" if vae in load_seconds else "—"
+            cells.append(f"{row['wall_median_ms']} ms" if row else "n/a")
+        cold = f"{load_seconds[vae]} s" if vae in load_seconds else "n/a"
         print(f"| `{vae}` | {cold} | " + " | ".join(cells) + " |")
 
     print("\n### Phase breakdown (median ms)\n")
@@ -175,16 +244,41 @@ def main() -> None:
     for vae in args.vaes:
         for row in results.get(vae, []):
             print(
-                f"| `{vae}` | {row['size']}² | {row.get('unet_median_ms', '—')} | "
-                f"{row.get('vae_encode_median_ms', '—')} | {row.get('vae_decode_median_ms', '—')} | "
-                f"{row.get('png_encode_median_ms', '—')} |"
+                f"| `{vae}` | {row['size']}px | {row.get('unet_median_ms', 'n/a')} | "
+                f"{row.get('vae_encode_median_ms', 'n/a')} | {row.get('vae_decode_median_ms', 'n/a')} | "
+                f"{row.get('png_encode_median_ms', 'n/a')} |"
             )
+
+    print("\n### VRAM at idle, per VAE\n")
+    print("| VAE | allocated | reserved | peak | device free |")
+    print("| --- | --- | --- | --- | --- |")
+    for vae in args.vaes:
+        m = memory.get(vae) or {}
+        if not m:
+            continue
+        print(
+            f"| `{vae}` | {m.get('allocated_gb', 'n/a')} GB | {m.get('reserved_gb', 'n/a')} GB | "
+            f"{m.get('max_allocated_gb', 'n/a')} GB | {m.get('device_free_gb', 'n/a')} GB |"
+        )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
-        json.dumps({"results": results, "memory": memory, "load_seconds": load_seconds}, indent=2), encoding="utf-8"
+        json.dumps(
+            {"results": results, "memory": memory, "load_seconds": load_seconds, "skipped": skipped},
+            indent=2,
+        ),
+        encoding="utf-8",
     )
     print(f"\nwrote {args.out}")
+    if skipped:
+        print(f"SKIPPED for time: {', '.join(skipped)}")
+
+    stop_all()
+    time.sleep(3)
+    print(
+        f"\nall workers stopped; GPU now at {gpu_used_mib()} "
+        f"(elapsed {time.perf_counter() - started_all:.0f}s)"
+    )
 
 
 if __name__ == "__main__":
