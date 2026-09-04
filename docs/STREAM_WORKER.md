@@ -549,9 +549,17 @@ streamTimeoutMs: num(env.STREAM_TIMEOUT_MS, 120_000),
 
 Recommended companion settings when `AI_BACKEND=stream`: `AI_STEPS=4`,
 **`AI_DENOISE=0.8`** (not the 0.55 default — at 4 LCM steps 0.55 barely changes
-the drawing, see §4.5), `AI_WINDOW=512` or `768`, and `AI_DEBOUNCE_MS` around
-300. The round trip is 1.7 s at 512² and 6 s at 768², so a very short debounce
-just queues work the GPU cannot absorb.
+the drawing, see §4.5), **`AI_WINDOW=768`** (768 is both twice as fast as 1024
+*and* transforms the drawing more — see
+`docs/experiments/2026-09-05-stream/REPORT.md` §5), and `AI_DEBOUNCE_MS` around
+300. The round trip is 0.76 s at 512², 1.8 s at 768² and 3.5 s at 1024², so a
+very short debounce just queues work the GPU cannot absorb.
+
+**Do not hard-code the top of the denoise range.** Read it from `/healthz`
+(`max_denoise`, §6.4) and clamp the room slider to it. The worker enforces the
+same ceiling server-side, so a request above it is silently clamped rather than
+rejected — the point of publishing the number is that the UI can stop offering a
+value that will not be honoured.
 
 ### 6.2 `backends/index.ts`
 
@@ -648,6 +656,21 @@ records which ones are now load-bearing, so they are not dropped or renamed.*
 | `ok` | `true` | basic liveness |
 | `warm` | `true` | a worker with no model loaded answers `ok` and then echoes the input back; the scheduler cannot tell that from a real result |
 | `max_size` | `>= AI_WINDOW` (or absent/0, which is treated as unknown and accepted) | an undersized worker answers `ok` and then 400s every request, which full mode retries forever |
+
+Two further `/healthz` fields are advisory rather than gating:
+
+| field | default | meaning |
+| --- | --- | --- |
+| `max_denoise` | `0.9` (`STREAM_MAX_DENOISE`) | highest denoise the worker will honour; requests above it are clamped, not refused. Cap the room's denoise slider to this so the UI cannot offer a value the backend will ignore. Absent means an older worker: fall back to 1.0. |
+| `steps` | `4` (`STREAM_STEPS`) | the worker's own step count. The server's `AI_STEPS` is *not* forwarded as sampling truth for this backend, so this is the only place the real number appears |
+
+`max_denoise` exists because the useful ceiling is a property of the backend,
+not of the room: at 4 LCM steps everything above ~0.9 stops reinterpreting the
+drawing and starts replacing it outright. It was set to 0.9 rather than 1.0 for
+that reason, and because the denoise-quantisation bug
+(`docs/experiments/2026-09-05-stream/REPORT.md` §4, fixed in §6) showed that a
+slider offering values the sampler cannot distinguish is worse than a shorter
+slider.
 
 Each rejection is logged with its reason and falls through to ComfyUI. An
 explicit `AI_BACKEND=stream` is always honoured, but the same probe runs and

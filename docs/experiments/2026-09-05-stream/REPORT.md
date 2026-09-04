@@ -181,10 +181,9 @@ exactly the regime where ComfyUI fast makes its dramatic jump (its 0.9 column
 replaces the canvas with a rendered character), so the worker is missing the top
 of the range, not merely a slider notch.
 
-Not fixed in this pass — the fix is to pick the start timestep from the sigma
-schedule directly rather than deriving it from a rounded step count, which
-changes sampling behaviour and needs its own before/after grid. **Do not ship a
-UI slider that offers 0.9 as distinct from 0.8 until this is fixed.**
+**Fixed in a follow-up pass — see section 6**, which also carries the validation
+grid. The rest of this section describes the state of the v1 grids above, which
+are kept as the before side of that comparison.
 
 ---
 
@@ -193,20 +192,121 @@ UI slider that offers 0.9 as distinct from 0.8 until this is fixed.**
 **Backend: `stream`.** Faster than ComfyUI at every size tested with identical
 sampling, and the only one of the two that can hold the model resident.
 
-**VAE: `fp16fix`** (the current default). `taesd` is 1.6x faster and looked
-better than expected, but nobody has inspected a full-resolution taesd output,
-and it is the one setting here that trades correctness for speed. Revisit after
-someone views a 1:1 pair — if it holds up, taesd at 1024 in 2.2 s is the best
-cell in this whole table.
+**VAE: `fp16fix`** (the current default). `taesd` is 1.6x faster and holds up
+better than expected — it has since been inspected at 1:1 (section 7) and is
+*sharper* on line art — but it visibly flattens continuous tone, so it stays an
+option rather than the default.
 
 **Resolution: 768.** This is the substantive finding. 768 is half the latency of
 1024 (1.8 s vs 3.5 s, comfortably inside "responds between strokes") *and*
 transforms the drawing more at the same denoise. 1024 mostly buys resolution the
 playtest does not need.
 
-**Denoise: 0.8**, with the slider capped at 0.8 until section 4 is fixed. 0.5 and
-0.65 are safe but barely change the drawing; 0.9 is currently a lie.
+**Denoise: 0.8** — and 0.9 is now usable too, see section 6. 0.5 and 0.65 are
+safe but barely change the drawing.
 
 **Expect hallucinated text.** Spurious Japanese captions/watermarks appear at
 d>=0.8 in every configuration, including ComfyUI's. It is the checkpoint, not the
 backend.
+
+---
+
+## 6. Follow-up: the quantisation defect is fixed (`fp16fix-768-v2/`)
+
+### The fix
+
+`lcm_timesteps_for_strength()` in `apps/stream-worker/src/stream_worker/pipeline.py`
+replaces `steps_for_strength()`. Instead of inflating the scheduler step count
+and letting diffusers derive a start index from it, the worker now builds the
+LCM distillation schedule (`20*i - 1` for i in 1..50, i.e. 19 … 999), picks the
+start point directly as `round(strength * 50) - 1`, and spreads exactly `steps`
+timesteps evenly from there down to the bottom of the schedule. The list is
+handed to the pipeline as `timesteps=`, with `strength=1.0` so diffusers does
+not slice it a second time.
+
+Starting timesteps are now `0.5 -> 499`, `0.65 -> 639`, `0.8 -> 799`,
+`0.9 -> 899`. Resolution is one distillation step (2%) instead of the ~25% the
+old path gave at 4 steps. All timesteps stay on the distillation grid, and the
+schedule always ends at 19, so the sample is fully denoised however high it
+started.
+
+Ten GPU-free tests in `apps/stream-worker/tests/test_contract.py` cover the
+step count, the four distinct starts, strict descent, the distillation grid,
+monotonicity across 2%..100%, and graceful degradation below 4 available
+timesteps. One test pins the old arithmetic as the documented cause. 31 tests
+pass.
+
+### Validation — `fp16fix-768-v2/` (768, fp16fix, same seed and prompt as v1)
+
+| drawing | d=0.5 | d=0.65 | d=0.8 | d=0.9 |
+| --- | --- | --- | --- | --- |
+| a | 2628* | 1768 | 1726 | 1767 |
+| b | 1814 | 1803 | 1723 | 1771 |
+| c | 1801 | 1816 | 1812 | 1798 |
+| d | 1791 | 1793 | 1819 | 1797 |
+
+median **1798 ms** (v1 was 1818 ms) — the fix costs nothing. * first cell, warming.
+
+**0.8 and 0.9 are now distinct** — mean absolute pixel difference between the
+two columns:
+
+| drawing | a | b | c | d |
+| --- | --- | --- | --- | --- |
+| mean abs diff 0.8 vs 0.9 | 8.7 | 10.9 | 24.0 | 30.9 |
+
+(v1: exactly 0 in all four, byte-identical files.)
+
+**No regression at 0.5 / 0.65 / 0.8.** v1 vs v2, mean absolute pixel difference:
+
+| drawing | d=0.5 | d=0.65 | d=0.8 | d=0.9 |
+| --- | --- | --- | --- | --- |
+| a | 0.73 | 1.88 | 2.01 | 8.68 |
+| b | 0.86 | 1.74 | 1.83 | 11.23 |
+| c | 6.43 | 12.68 | 10.59 | 24.65 |
+| d | 11.94 | 18.67 | 16.23 | 31.46 |
+
+The first three columns move only slightly (the schedule now runs down to
+timestep 19 rather than stopping at 139–199, so outputs are marginally more
+resolved); visually they are the same images — row c at 0.8 is still the rank of
+armoured figures, row a at 0.65 is still the cleaned-up house. The 0.9 column is
+where the change lands, as intended.
+
+**0.9 is now the strongest cell in the grid and it is worth having.** Row a
+becomes a full character illustration; row d resolves the noise into an actual
+lit shopfront with windows and interior depth — architecture, which no previous
+stream-worker cell at any size or VAE produced. This is the regime the worker
+was missing, and it is now the closest the 4-step worker gets to what
+ComfyUI normal-14 does at 0.8.
+
+**Revised denoise recommendation:** 0.8 as the default, **0.9 now usable** and
+worth exposing — it is a genuinely different, much bolder result rather than a
+duplicate. The earlier advice to cap the slider at 0.8 is withdrawn.
+
+---
+
+## 7. taesd inspected at 1:1
+
+Two 512x512 crops from the 1024 outputs, viewed at full resolution, taesd
+against fp16fix on the same drawing and denoise.
+
+**Line art (`a_d0.65`, house and tree on white):** taesd is *better*. Strokes
+are darker and more evenly weighted, corners are clean, the door knob is a crisp
+ring. fp16fix renders the same strokes slightly softer and greyer with a faint
+blur along diagonals. taesd's white ground is a warmer cream; fp16fix's is
+closer to neutral.
+
+**Continuous tone (`c_d0.80`, the reinterpreted noise band):** this is where
+taesd loses, and the loss is real. fp16fix produces swirling forms with smooth
+internal shading and soft transitions between them. taesd produces flat facets
+with hard borders — posterised, mosaic-like, with visible ringing along the
+high-contrast boundary where the band meets the white sky. Hallucinated text in
+the taesd crop carries a soft ghost halo that fp16fix does not have.
+
+**Verdict: taesd is acceptable, not clearly better.** For line-art-dominant
+canvases — which is most of what a Brush Jam room will contain — it is at least
+as good as fp16fix and 1.6x faster. For anything with continuous tone it
+visibly flattens. **Keeping `fp16fix` as the default**, as instructed: the
+failure mode is content-dependent and would show up as "the AI made my shading
+blocky" mid-playtest, and at 768 (the recommended size) fp16fix is already
+1.8 s, so the absolute saving is small. `STREAM_VAE=taesd` stays a supported,
+documented option for anyone who wants 1024 under 2.2 s.

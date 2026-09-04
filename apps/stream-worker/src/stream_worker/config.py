@@ -64,6 +64,11 @@ class Settings:
     max_size: int = field(default_factory=lambda: _env_int("STREAM_MAX_SIZE", 1024))
     default_steps: int = field(default_factory=lambda: _env_int("STREAM_STEPS", 4))
     guidance: float = field(default_factory=lambda: _env_float("STREAM_GUIDANCE", 1.5))
+    # Highest denoise the worker will honour. At 4 LCM steps the top of the
+    # range is where the model stops reinterpreting the drawing and starts
+    # replacing it; the server reads this from /healthz to cap the room slider
+    # rather than hard-coding a number that only makes sense for this backend.
+    max_denoise: float = field(default_factory=lambda: _env_float("STREAM_MAX_DENOISE", 0.9))
     quality_suffix: str = field(
         default_factory=lambda: os.environ.get("STREAM_QUALITY_SUFFIX", ", masterpiece, best quality")
     )

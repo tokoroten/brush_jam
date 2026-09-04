@@ -114,6 +114,7 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
             "max_size": s.max_size,
             "steps": s.default_steps,
             "guidance": s.guidance,
+            "max_denoise": s.max_denoise,
             "warm": warm,
             "loaded": bool(state["loaded"]),
             "busy": gpu_lock.locked(),
@@ -191,7 +192,10 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
             raise HTTPException(status_code=400, detail=str(err)) from err
 
         steps = max(1, min(20, body.steps or s.default_steps))
-        strength = min(1.0, max(0.05, body.resolved_strength()))
+        # Clamped to max_denoise, not to 1.0: above it the model stops
+        # reinterpreting the drawing and starts replacing it. /healthz publishes
+        # the ceiling so the server can cap its slider to the same number.
+        strength = min(s.max_denoise, max(0.05, body.resolved_strength()))
 
         request_id = body.request_id or uuid.uuid4().hex
 

@@ -130,10 +130,11 @@ Notes on the contract:
 | `STREAM_LORA` | `lcm` | `lcm` or `dmd2` (4-step DMD2 fallback) |
 | `STREAM_STEPS` | `4` | default steps |
 | `STREAM_GUIDANCE` | `1.5` | CFG. **`1.0` disables CFG and roughly halves UNet time, but then `negative_prompt` is ignored.** |
+| `STREAM_MAX_DENOISE` | `0.9` | highest denoise honoured; higher requests are clamped, not refused. Published in `/healthz` as `max_denoise` so the server can cap its slider to a value the backend will actually act on. |
 | `STREAM_WARMUP_SIZE` | `768` | size of the startup warm-up run; `0` disables |
 | `STREAM_MAX_SIZE` | `1024` | requests above this are rejected with 400 |
 | `STREAM_OFFLOAD_TEXT_ENCODERS` | `1` | park the two CLIP encoders in system RAM between requests (saves ~1.8 GB VRAM) |
-| `STREAM_VAE` | `fp16fix` | which VAE to run: `fp16fix` (`madebyollin/sdxl-vae-fp16-fix`, same weights rescaled so fp16 does not overflow), `taesd` (`madebyollin/taesdxl`, distilled and much faster, slightly softer), or `checkpoint` (the one baked into the checkpoint, which forces an fp32 upcast on every call). |
+| `STREAM_VAE` | `fp16fix` | which VAE to run: `fp16fix` (`madebyollin/sdxl-vae-fp16-fix`, same weights rescaled so fp16 does not overflow), `taesd` (`madebyollin/taesdxl`, distilled, ~1.6x faster; inspected at 1:1 - crisper on line art, visibly flattens continuous tone, see `docs/experiments/2026-09-05-stream/REPORT.md` section 7), or `checkpoint` (the one baked into the checkpoint, which forces an fp32 upcast on every call). |
 | `STREAM_VAE_TILING` | `1` | tiled/sliced VAE |
 | `STREAM_EMPTY_CACHE` | `1` | return the allocator's cache after every generation. **Leave this on**: without it PyTorch reserves ~7.5 GB against 5.05 GB of live tensors, the card reports 0 bytes free, and 768²/1024² spill to shared memory and get 2–8× slower (`docs/STREAM_WORKER.md` §4.3). |
 | `STREAM_EMBED_CACHE` | `16` | prompt-embedding cache entries |

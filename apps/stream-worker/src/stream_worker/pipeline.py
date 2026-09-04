@@ -22,9 +22,10 @@ import logging
 import math
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import numpy as np
 from PIL import Image
@@ -82,15 +83,89 @@ def composite_through_mask(base: Image.Image, generated: Image.Image, mask: Imag
     return Image.fromarray(np.clip(out + 0.5, 0, 255).astype(np.uint8), mode="RGB")
 
 
+LCM_TRAIN_TIMESTEPS = 1000
+LCM_ORIGINAL_INFERENCE_STEPS = 50
+
+
 def steps_for_strength(steps: int, strength: float) -> int:
     """Scheduler steps needed so that ``steps`` are actually run.
 
-    diffusers' img2img keeps only the last ``num_inference_steps * strength``
-    timesteps, so asking for 4 steps at strength 0.55 would really run 2. In
-    this contract "steps" means denoising steps actually performed.
+    Superseded by :func:`lcm_timesteps_for_strength`; kept because it documents
+    the failure it caused. diffusers' img2img keeps only the last
+    ``int(num_inference_steps * strength)`` timesteps, so asking for 4 steps at
+    strength 0.55 really ran 2. Compensating by inflating the scheduler step
+    count fixed the step count but composed two integer roundings:
+
+        ceil(4 / 0.8) = 5, 5 - int(5 * 0.8) = 1   ->  start at timestep index 1
+        ceil(4 / 0.9) = 5, 5 - int(5 * 0.9) = 1   ->  start at timestep index 1
+
+    so 0.8 and 0.9 produced byte-identical images, and everything above ~0.75
+    collapsed onto one starting point. See
+    docs/experiments/2026-09-05-stream/REPORT.md section 4.
     """
     strength = max(0.05, min(1.0, strength))
     return max(steps, int(math.ceil(steps / strength)))
+
+
+def lcm_timesteps_for_strength(
+    steps: int,
+    strength: float,
+    *,
+    num_train_timesteps: int = LCM_TRAIN_TIMESTEPS,
+    original_inference_steps: int = LCM_ORIGINAL_INFERENCE_STEPS,
+) -> list[int]:
+    """Descending LCM timestep schedule of exactly ``steps`` entries.
+
+    Rather than asking diffusers to derive a start index from a rounded step
+    count, pick the start point on the LCM distillation schedule directly from
+    ``strength`` and then spread ``steps`` timesteps between it and the end.
+
+    The LCM distillation schedule is ``k*i - 1`` for ``i`` in ``1..N`` with
+    ``k = num_train_timesteps // N`` (19, 39, ... 999 for N=50). Choosing only
+    from that set keeps the scheduler on timesteps the model was distilled at.
+
+    Because the start index is ``round(strength * N) - 1``, resolution is
+    ``1/N`` (2% at N=50) instead of the ~25% the old two-rounding path gave at
+    4 steps, so 0.5 / 0.65 / 0.8 / 0.9 land on 499 / 639 / 799 / 899 - four
+    distinct starting points.
+
+    The returned list is passed to the pipeline as ``timesteps=``; the pipeline
+    must then be called with ``strength=1.0`` so it does not slice it again.
+    """
+    steps = max(1, int(steps))
+    strength = max(0.02, min(1.0, float(strength)))
+    n_train = max(1, int(original_inference_steps))
+    k = max(1, num_train_timesteps // n_train)
+    schedule = [k * i - 1 for i in range(1, n_train + 1)]  # ascending
+
+    start_index = int(round(strength * n_train)) - 1
+    start_index = max(0, min(len(schedule) - 1, start_index))
+
+    # Cannot run more distinct timesteps than exist below the start point.
+    count = min(steps, start_index + 1)
+    if count == 1:
+        return [schedule[start_index]]
+    indices = [int(round(start_index * (1.0 - j / (count - 1)))) for j in range(count)]
+    return [schedule[i] for i in indices]
+
+
+@contextmanager
+def _quiet_lcm_custom_timestep_warning() -> Iterator[None]:
+    """Silence one unavoidable, wrong warning from LCMScheduler.set_timesteps.
+
+    The custom-timesteps path warns when ``timesteps[0]`` is not 999 and the
+    ``strength`` it was called with is 1.0. We always pass strength=1.0 - our
+    schedule already encodes the strength - so the warning fires on every
+    request below full strength and says nothing true. Scoped to that one
+    logger for the duration of the call.
+    """
+    lcm_log = logging.getLogger("diffusers.schedulers.scheduling_lcm")
+    previous = lcm_log.level
+    lcm_log.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        lcm_log.setLevel(previous)
 
 
 class CancelledError(Exception):
@@ -335,21 +410,31 @@ class StreamPipeline:
             check_cancel()
             return kwargs
 
+        # Strength is expressed as an explicit timestep schedule rather than as
+        # the pipeline's `strength` argument, so that nearby strengths stay
+        # distinct at 4 steps (see lcm_timesteps_for_strength). strength=1.0
+        # tells get_timesteps to use the schedule as given instead of slicing a
+        # prefix off it.
+        schedule = lcm_timesteps_for_strength(steps, strength)
+        timings["t_start"] = float(schedule[0])
+
         torch.cuda.synchronize()
         t = time.perf_counter()
-        out = self.pipe(
-            callback_on_step_end=on_step_end,
-            image=base,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_embeds,
-            pooled_prompt_embeds=pooled,
-            negative_pooled_prompt_embeds=negative_pooled,
-            strength=float(strength),
-            num_inference_steps=steps_for_strength(steps, strength),
-            guidance_scale=s.guidance,
-            generator=generator,
-            output_type="pil",
-        )
+        with _quiet_lcm_custom_timestep_warning():
+            out = self.pipe(
+                callback_on_step_end=on_step_end,
+                image=base,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_embeds,
+                pooled_prompt_embeds=pooled,
+                negative_pooled_prompt_embeds=negative_pooled,
+                strength=1.0,
+                timesteps=schedule,
+                num_inference_steps=len(schedule),
+                guidance_scale=s.guidance,
+                generator=generator,
+                output_type="pil",
+            )
         torch.cuda.synchronize()
         timings["diffusion_ms"] = (time.perf_counter() - t) * 1000.0
         timings["steps_run"] = float(steps_done[0])

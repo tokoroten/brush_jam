@@ -16,6 +16,7 @@ from stream_worker.pipeline import (
     decode_png_b64,
     encode_png_b64,
     round_size,
+    lcm_timesteps_for_strength,
     steps_for_strength,
 )
 
@@ -172,10 +173,70 @@ def test_round_size_snaps_to_multiple_of_eight():
 
 
 def test_steps_for_strength_keeps_the_requested_step_count():
-    # 4 steps at 0.55 strength would really run 2, so ask the scheduler for 8.
+    # Legacy path, no longer used for sampling. 4 steps at 0.55 strength would
+    # really run 2, so it asked the scheduler for 8.
     assert steps_for_strength(4, 0.55) == 8
     assert steps_for_strength(4, 1.0) == 4
     assert steps_for_strength(6, 0.5) == 12
+
+
+def test_steps_for_strength_is_why_08_and_09_collapsed():
+    # The defect this replaced: both round to the same scheduler step count and
+    # then to the same start index, so 0.8 and 0.9 were byte-identical.
+    assert steps_for_strength(4, 0.8) == steps_for_strength(4, 0.9) == 5
+    assert 5 - int(5 * 0.8) == 5 - int(5 * 0.9) == 1
+
+
+def test_lcm_schedule_runs_exactly_the_requested_steps():
+    for strength in (0.5, 0.65, 0.8, 0.9, 1.0):
+        assert len(lcm_timesteps_for_strength(4, strength)) == 4
+    assert len(lcm_timesteps_for_strength(8, 0.9)) == 8
+    assert len(lcm_timesteps_for_strength(1, 0.8)) == 1
+
+
+def test_lcm_schedule_separates_nearby_strengths():
+    # The whole point of the rewrite: distinct starting timesteps, and so
+    # distinct images, for the four denoise values the grids use.
+    starts = [lcm_timesteps_for_strength(4, d)[0] for d in (0.5, 0.65, 0.8, 0.9)]
+    assert starts == [499, 639, 799, 899]
+    assert len(set(starts)) == 4
+    # Resolution is one distillation step (2% at N=50), not 25%.
+    assert lcm_timesteps_for_strength(4, 0.80)[0] != lcm_timesteps_for_strength(4, 0.84)[0]
+
+
+def test_lcm_schedule_is_strictly_descending_and_ends_at_the_bottom():
+    for strength in (0.4, 0.65, 0.9, 1.0):
+        ts = lcm_timesteps_for_strength(4, strength)
+        assert ts == sorted(ts, reverse=True)
+        assert len(set(ts)) == len(ts)
+        # Always finishes on the last distillation timestep, so the sample is
+        # fully denoised however high up the schedule it started.
+        assert ts[-1] == 19
+
+
+def test_lcm_schedule_stays_on_the_distillation_grid():
+    # Off-grid timesteps are timesteps the LCM LoRA was never distilled at;
+    # diffusers warns about them and quality suffers.
+    grid = {20 * i - 1 for i in range(1, 51)}
+    for strength in (0.3, 0.5, 0.65, 0.8, 0.9, 1.0):
+        assert set(lcm_timesteps_for_strength(4, strength)) <= grid
+
+
+def test_lcm_schedule_start_rises_monotonically_with_strength():
+    previous = -1
+    for i in range(2, 101):
+        start = lcm_timesteps_for_strength(4, i / 100)[0]
+        assert start >= previous
+        previous = start
+    assert lcm_timesteps_for_strength(4, 1.0)[0] == 999
+
+
+def test_lcm_schedule_degrades_gracefully_at_very_low_strength():
+    # Below ~4/50 there are not 4 distinct timesteps left; run fewer rather
+    # than repeat one, which would make the scheduler take zero-length steps.
+    ts = lcm_timesteps_for_strength(4, 0.04)
+    assert len(ts) == len(set(ts)) <= 4
+    assert ts == sorted(ts, reverse=True)
 
 
 def test_soft_mask_blends_proportionally():
