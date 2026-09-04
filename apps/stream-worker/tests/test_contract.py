@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import io
 
 import pytest
@@ -84,6 +85,51 @@ def test_healthz_reports_backend_and_warm(client_and_pipe):
     assert body["model"] == "fake-model"
     assert body["warm"] is True
     assert body["size"] > 0
+
+
+def test_healthz_publishes_the_sampling_settings_the_server_needs(client_and_pipe):
+    # The grid script's results.json records nothing about sampling for this
+    # backend, so /healthz is the only place these appear. The server greys out
+    # its negative-prompt field on negative_prompt_active and caps its denoise
+    # slider on max_denoise; both must survive refactors.
+    client, _ = client_and_pipe
+    body = client.get("/healthz").json()
+    assert body["lora"] == "dmd2"
+    assert body["guidance"] == 1.0
+    assert body["negative_prompt_active"] is False
+    assert body["max_denoise"] == 0.9
+    assert body["steps"] == 4
+
+
+def test_defaults_are_dmd2_at_cfg_one():
+    # Changing either of these changes every room's output, so pin them.
+    s = Settings()
+    assert s.lora == "dmd2"
+    assert s.guidance == 1.0
+    assert s.lora_spec()[2] == "dmd2_sdxl_4step_lora_fp16.safetensors"
+
+
+def test_negative_prompt_is_only_active_above_guidance_one():
+    # CFG is what makes the negative prompt do anything: at 1.0 the pipeline
+    # runs the conditional branch only and the negative embeddings are unused.
+    assert Settings().negative_prompt_active() is False
+    assert replace_guidance(1.0).negative_prompt_active() is False
+    assert replace_guidance(1.5).negative_prompt_active() is True
+    assert replace_guidance(1.01).negative_prompt_active() is True
+
+
+def replace_guidance(value: float) -> Settings:
+    return dataclasses.replace(Settings(), guidance=value)
+
+
+def test_healthz_reflects_a_non_default_guidance(monkeypatch):
+    monkeypatch.setenv("STREAM_GUIDANCE", "1.5")
+    monkeypatch.setenv("STREAM_LORA", "lcm")
+    app = create_app(Settings(), pipeline=FakePipeline())
+    with TestClient(app) as client:
+        body = client.get("/healthz").json()
+    assert body["lora"] == "lcm"
+    assert body["negative_prompt_active"] is True
 
 
 def test_generate_returns_png_of_requested_size(client_and_pipe):

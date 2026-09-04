@@ -56,14 +56,21 @@ class Settings:
     port: int = field(default_factory=lambda: _env_int("STREAM_PORT", 8790))
     checkpoint: Path = field(default_factory=lambda: Path(os.environ.get("STREAM_CHECKPOINT", DEFAULT_CHECKPOINT)))
     lora_dir: Path = field(default_factory=lambda: Path(os.environ.get("STREAM_LORA_DIR", DEFAULT_LORA_DIR)))
-    lora: str = field(default_factory=lambda: os.environ.get("STREAM_LORA", "lcm").lower())
+    # dmd2 over lcm: 1384 ms vs 1798 ms at 768, reinterprets a denoise step
+    # earlier, and being guidance-distilled it costs nothing to run at CFG 1.0.
+    # docs/experiments/2026-09-05-stream/REPORT.md section 8.
+    lora: str = field(default_factory=lambda: os.environ.get("STREAM_LORA", "dmd2").lower())
     # Only used when the LoRA file is missing from lora_dir and must be fetched.
     hf_token: str | None = field(default_factory=lambda: os.environ.get("HF_TOKEN") or None)
 
     warmup_size: int = field(default_factory=lambda: _env_int("STREAM_WARMUP_SIZE", 768))
     max_size: int = field(default_factory=lambda: _env_int("STREAM_MAX_SIZE", 1024))
     default_steps: int = field(default_factory=lambda: _env_int("STREAM_STEPS", 4))
-    guidance: float = field(default_factory=lambda: _env_float("STREAM_GUIDANCE", 1.5))
+    # 1.0 = CFG off, which halves the UNet work (~22% end to end) and, with the
+    # DMD2 LoRA, costs no measurable quality. The price is that negative_prompt
+    # becomes inert; /healthz publishes negative_prompt_active so the UI can say
+    # so rather than offering a field that does nothing.
+    guidance: float = field(default_factory=lambda: _env_float("STREAM_GUIDANCE", 1.0))
     # Highest denoise the worker will honour. At 4 LCM steps the top of the
     # range is where the model stops reinterpreting the drawing and starts
     # replacing it; the server reads this from /healthz to cap the room slider
@@ -93,6 +100,15 @@ class Settings:
 
     def lora_path(self) -> Path:
         return self.lora_dir / self.lora_spec()[2]
+
+    def negative_prompt_active(self) -> bool:
+        """Whether negative_prompt has any effect at the current guidance.
+
+        Classifier-free guidance is what makes the negative prompt do anything:
+        at guidance 1.0 the pipeline runs the conditional branch only, so the
+        negative embeddings are computed and then never used.
+        """
+        return self.guidance > 1.0
 
     def vae_spec(self) -> tuple[str | None, str | None]:
         if self.vae not in VAE_SOURCES:

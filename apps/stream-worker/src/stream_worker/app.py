@@ -114,6 +114,8 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
             "max_size": s.max_size,
             "steps": s.default_steps,
             "guidance": s.guidance,
+            "lora": s.lora,
+            "negative_prompt_active": s.negative_prompt_active(),
             "max_denoise": s.max_denoise,
             "warm": warm,
             "loaded": bool(state["loaded"]),

@@ -555,15 +555,21 @@ the drawing, see §4.5), **`AI_WINDOW=768`** (768 is both twice as fast as 1024
 300. The round trip is 0.76 s at 512², 1.8 s at 768² and 3.5 s at 1024², so a
 very short debounce just queues work the GPU cannot absorb.
 
-**Worker-side defaults to change** (these live in the worker's own env, not in
-`config.ts`): set **`STREAM_LORA=dmd2`** and **`STREAM_GUIDANCE=1.0`**. Measured
-over four 768 grids (`docs/experiments/2026-09-05-stream/REPORT.md` §8), DMD2 is
-1384 ms against LCM's 1798 ms and reinterprets a whole denoise step earlier with
-cleaner objects; DMD2 is guidance-distilled, so dropping CFG costs it nothing,
-whereas the same change makes LCM's line art fade (1.64% surviving ink at
-denoise 0.8 against the input's 2.36%). **Caveat: at CFG 1.0 the negative prompt
-has no effect** — the server may still send one, it is simply inert. If it must
-stay live, use `STREAM_GUIDANCE=1.5` at +27% latency; DMD2 still beats LCM.
+**The worker now defaults to `STREAM_LORA=dmd2` and `STREAM_GUIDANCE=1.0`**, so
+there is nothing to set. Measured over four 768 grids
+(`docs/experiments/2026-09-05-stream/REPORT.md` §8), DMD2 is 1384 ms against
+LCM's 1798 ms and reinterprets a whole denoise step earlier with cleaner
+objects; DMD2 is guidance-distilled, so dropping CFG costs it nothing, whereas
+the same change makes LCM's line art fade (1.64% surviving ink at denoise 0.8
+against the input's 2.36%).
+
+**One thing the server must handle: at CFG 1.0 the negative prompt is inert.**
+The worker still accepts `negative_prompt` and still computes the embeddings; it
+simply never uses them, because classifier-free guidance is what gives a
+negative prompt its effect. Read `negative_prompt_active` from `/healthz` (§6.4)
+and grey out or annotate the room's negative-prompt field accordingly, rather
+than letting a user type into a box that does nothing. To turn it back on, set
+`STREAM_GUIDANCE=1.5` (+27% latency); DMD2 still beats LCM at that setting.
 
 **Do not hard-code the top of the denoise range.** Read it from `/healthz`
 (`max_denoise`, §6.4) and clamp the room slider to it. The worker enforces the
@@ -671,6 +677,8 @@ Two further `/healthz` fields are advisory rather than gating:
 
 | field | default | meaning |
 | --- | --- | --- |
+| `lora` | `dmd2` (`STREAM_LORA`) | which 4-step distillation LoRA is fused. Worth logging, because it changes output character substantially and appears nowhere else |
+| `negative_prompt_active` | `false` (derived: `guidance > 1.0`) | whether `negative_prompt` has any effect. **False by default**, because the shipped `STREAM_GUIDANCE=1.0` turns CFG off. Grey out or annotate the negative-prompt field when this is false; do not infer it from `guidance` yourself |
 | `max_denoise` | `0.9` (`STREAM_MAX_DENOISE`) | highest denoise the worker will honour; requests above it are clamped, not refused. Cap the room's denoise slider to this so the UI cannot offer a value the backend will ignore. Absent means an older worker: fall back to 1.0. |
 | `steps` | `4` (`STREAM_STEPS`) | the worker's own step count. The server's `AI_STEPS` is *not* forwarded as sampling truth for this backend, so this is the only place the real number appears |
 

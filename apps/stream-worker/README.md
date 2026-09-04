@@ -127,9 +127,9 @@ Notes on the contract:
 | `STREAM_PORT` | `8790` | port |
 | `STREAM_CHECKPOINT` | `E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors` | single-file SDXL checkpoint |
 | `STREAM_LORA_DIR` | `E:\ComfyUI\models\loras` | where the LoRA is kept (shared with ComfyUI) |
-| `STREAM_LORA` | `lcm` | `lcm` or `dmd2`. **`dmd2` is the better choice** — 1384 ms vs 1798 ms at 768, reinterprets a denoise step earlier, retains line weight better, and being guidance-distilled it runs at `STREAM_GUIDANCE=1.0` for free (`docs/experiments/2026-09-05-stream/REPORT.md` section 8). Kept as non-default only because changing it changes every room's output. |
+| `STREAM_LORA` | `dmd2` | `dmd2` or `lcm`. DMD2 is 1384 ms vs LCM's 1798 ms at 768, reinterprets a denoise step earlier, and retains line weight better (`docs/experiments/2026-09-05-stream/REPORT.md` section 8). |
 | `STREAM_STEPS` | `4` | default steps |
-| `STREAM_GUIDANCE` | `1.5` | CFG. `1.0` disables it and is worth ~22% end-to-end (the UNet is about half a 768 request), **but then `negative_prompt` is ignored**. Free with `STREAM_LORA=dmd2`; with `lcm` it makes line art fade badly at denoise 0.8+. |
+| `STREAM_GUIDANCE` | `1.0` | CFG. `1.0` means CFG is off: ~22% faster end-to-end (the UNet is about half a 768 request) and free with `dmd2`, which is guidance-distilled. **`negative_prompt` has no effect at 1.0** — `/healthz` reports `negative_prompt_active: false` so the UI can say so. Set `1.5` to turn it back on (+27% latency). With `STREAM_LORA=lcm`, CFG 1.0 also makes line art fade badly at denoise 0.8+. |
 | `STREAM_MAX_DENOISE` | `0.9` | highest denoise honoured; higher requests are clamped, not refused. Published in `/healthz` as `max_denoise` so the server can cap its slider to a value the backend will actually act on. |
 | `STREAM_WARMUP_SIZE` | `768` | size of the startup warm-up run; `0` disables |
 | `STREAM_MAX_SIZE` | `1024` | requests above this are rejected with 400 |
