@@ -133,57 +133,88 @@ export class ComfyUIBackend implements AIBackend {
     const { prompt_id: promptId } = (await queued.json()) as { prompt_id: string };
     if (typeof promptId !== 'string' || promptId.length === 0) throw new Error('ComfyUI returned no prompt_id');
 
-    const out = await this.waitForOutput(promptId, signal);
-    const query = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder ?? '', type: out.type ?? 'output' });
-    const view = await this.fetch(`/view?${query.toString()}`, {}, signal);
-    if (!view.ok) throw new Error(`ComfyUI /view failed: ${view.status}`);
-    return Buffer.from(await view.arrayBuffer());
+    // From here on the job exists on the ComfyUI side: any failure must cancel
+    // it, or the next retry would queue a duplicate expensive generation behind
+    // an orphan that still runs (and blocks every other room on that instance).
+    try {
+      const out = await this.waitForOutput(promptId, signal);
+      const query = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder ?? '', type: out.type ?? 'output' });
+      const view = await this.fetch(`/view?${query.toString()}`, {}, signal);
+      if (!view.ok) throw new Error(`ComfyUI /view failed: ${view.status}`);
+      return Buffer.from(await view.arrayBuffer());
+    } catch (err) {
+      await this.cancelPrompt(promptId);
+      throw err;
+    }
   }
 
   /**
-   * Only interrupt when the job ComfyUI is currently running is ours - a blind
-   * POST /interrupt would kill another room's (or another app's) generation.
+   * Remove one prompt from ComfyUI: interrupt it if it is the running job,
+   * delete it from the queue if it is only waiting. Never a blind POST
+   * /interrupt - that would kill another room's (or another app's) generation.
    */
-  private async interrupt(promptId: string): Promise<never> {
+  private async cancelPrompt(promptId: string): Promise<void> {
     try {
       const res = await fetch(`${this.base}/queue`, { signal: AbortSignal.timeout(5000) });
-      if (res.ok) {
-        const queue = (await res.json()) as { queue_running?: unknown[][] };
-        const running = (queue.queue_running ?? []).some((entry) => entry.some((v) => v === promptId));
-        if (running) await fetch(`${this.base}/interrupt`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return;
+      const queue = (await res.json()) as { queue_running?: unknown[][]; queue_pending?: unknown[][] };
+      const mentions = (entries: unknown[][] | undefined): boolean =>
+        (entries ?? []).some((entry) => Array.isArray(entry) && entry.some((v) => v === promptId));
+
+      if (mentions(queue.queue_running)) {
+        await fetch(`${this.base}/interrupt`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+      } else if (mentions(queue.queue_pending)) {
+        await fetch(`${this.base}/queue`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ delete: [promptId] }),
+          signal: AbortSignal.timeout(5000),
+        });
       }
     } catch {
-      /* best effort: dropping the result is enough for correctness */
+      /* best effort: the result is dropped either way */
     }
-    throw new AbortedError();
   }
 
   private async waitForOutput(promptId: string, signal: AbortSignal): Promise<HistoryImage> {
     const interval = this.opts.pollIntervalMs ?? 250;
     const deadline = Date.now() + (this.opts.timeoutMs ?? 180_000);
+    let lastPollError: string | null = null;
     for (;;) {
-      if (signal.aborted) await this.interrupt(promptId);
-      const res = await this.fetch(`/history/${encodeURIComponent(promptId)}`, {}, signal);
-      if (res.ok) {
-        const history = (await res.json()) as Record<string, { status?: { status_str?: string }; outputs?: Record<string, { images?: HistoryImage[] }> }>;
-        const entry = history[promptId];
-        if (entry) {
-          if (entry.status?.status_str === 'error') throw new Error('ComfyUI reported an execution error');
-          for (const node of Object.values(entry.outputs ?? {})) {
-            const first = node.images?.[0];
-            if (first) return first;
+      // Cleanup happens once, in generate()'s catch, for every failure path.
+      if (signal.aborted) throw new AbortedError();
+      // A single stalled or failed /history poll is transient: the job is still
+      // running on the other side, so keep polling until the overall deadline.
+      try {
+        const res = await this.fetch(`/history/${encodeURIComponent(promptId)}`, {}, signal);
+        if (res.ok) {
+          const history = (await res.json()) as Record<string, { status?: { status_str?: string }; outputs?: Record<string, { images?: HistoryImage[] }> }>;
+          const entry = history[promptId];
+          if (entry) {
+            if (entry.status?.status_str === 'error') throw new Error('ComfyUI reported an execution error');
+            for (const node of Object.values(entry.outputs ?? {})) {
+              const first = node.images?.[0];
+              if (first) return first;
+            }
           }
         }
-      }
-      if (Date.now() > deadline) throw new Error('ComfyUI generation timed out');
-      try {
-        await delay(interval, signal);
       } catch (err) {
-        if (err instanceof AbortedError) await this.interrupt(promptId);
-        throw err;
+        if (err instanceof AbortedError) throw err;
+        if (!isTransient(err)) throw err;
+        lastPollError = err instanceof Error ? err.message : String(err);
       }
+      if (Date.now() > deadline) {
+        throw new Error(lastPollError ? `ComfyUI generation timed out (last poll: ${lastPollError})` : 'ComfyUI generation timed out');
+      }
+      await delay(interval, signal);
     }
   }
+}
+
+/** A timed-out or dropped poll is worth retrying; a protocol error is not. */
+function isTransient(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /timed out|fetch failed|ECONNRESET|socket hang up|network/i.test(message);
 }
 
 /** Cheap reachability probe used to pick the default backend at boot. */

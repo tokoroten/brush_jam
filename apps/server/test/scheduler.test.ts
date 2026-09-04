@@ -279,7 +279,7 @@ describe('AIScheduler', () => {
       s.stop();
     });
 
-    it('drops regions that made no progress rather than regenerating forever', async () => {
+    it('drops a region only after two identical runs made no progress', async () => {
       const { host, applied } = makeHost();
       const backend = new FakeBackend();
       const logs: string[] = [];
@@ -290,11 +290,49 @@ describe('AIScheduler', () => {
       await backend.finish();
       await vi.advanceTimersByTimeAsync(50);
 
-      expect(applied).toHaveLength(1);
+      // first no-op run: the region is given one more chance
+      expect(s.dirtyRegions).toHaveLength(1);
+      expect(logs).toHaveLength(0);
+
+      await backend.finish();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(applied).toHaveLength(2);
       expect(s.dirtyRegions).toHaveLength(0);
       expect(logs.join(' ')).toMatch(/no-progress/);
+
       await vi.advanceTimersByTimeAsync(5000);
-      expect(backend.calls).toHaveLength(1);
+      expect(backend.calls).toHaveLength(2);
+      s.stop();
+    });
+
+    it('never discards a second region that merely overlaps the crop (finding B2)', async () => {
+      const { host, applied } = makeHost();
+      const backend = new FakeBackend();
+      const logs: string[] = [];
+      // AI_WINDOW=2048 with AI_APPLY=128: the crop covers both regions but the
+      // apply rect only covers the selected one.
+      const s = new AIScheduler(host, backend, { ...opts, window: 2048, apply: 128, log: (m) => logs.push(m) });
+      const far = { x: 50, y: 1000, width: 20, height: 20 };
+      const near = { x: 1000, y: 1000, width: 20, height: 20 };
+      s.markDirty([far]);
+      s.markDirty([near]);
+      expect(s.dirtyRegions).toHaveLength(2);
+
+      await vi.advanceTimersByTimeAsync(400);
+      await backend.finish();
+      await vi.advanceTimersByTimeAsync(50);
+
+      // the selected region was repainted; the other one survives untouched
+      expect(applied).toHaveLength(1);
+      expect(s.dirtyRegions).toEqual([far]);
+      expect(logs).toHaveLength(0);
+
+      // ...and it does get its own generation
+      await backend.finish();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(backend.calls).toHaveLength(2);
+      expect(applied).toHaveLength(2);
+      expect(applied[1]!.apply.x).toBeLessThanOrEqual(far.x);
       s.stop();
     });
   });
@@ -316,6 +354,41 @@ describe('AIScheduler', () => {
       expect(backend.calls[1]!.prompt).toBe('watercolor town');
       await backend.finish();
       expect(applied).toHaveLength(2);
+      s.stop();
+    });
+
+    it('re-runs when the prompt changes during a generation (finding B5)', async () => {
+      const { host, applied, prompt } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      prompt.value = 'fantasy town';
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(backend.calls).toHaveLength(1);
+
+      // prompt edited while the first generation is still running
+      prompt.value = 'watercolor town';
+      s.nudge();
+      await backend.finish();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(backend.calls).toHaveLength(2);
+      expect(backend.calls[1]!.prompt).toBe('watercolor town');
+      await backend.finish();
+      expect(applied).toHaveLength(2);
+      expect(s.dirtyRegions).toHaveLength(0);
+      s.stop();
+    });
+
+    it('does not loop when the prompt is unchanged during a generation', async () => {
+      const { host } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(400);
+      await backend.finish();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(backend.calls).toHaveLength(1);
       s.stop();
     });
 

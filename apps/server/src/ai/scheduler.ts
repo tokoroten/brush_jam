@@ -26,6 +26,8 @@ export interface RenderJob {
   render(crop: Rect, size: number): Promise<Buffer>;
 }
 
+const rectKey = (r: Rect): string => `${r.x},${r.y},${r.width},${r.height}`;
+
 export interface SchedulerHost {
   /** MUST capture room state synchronously - no awaits before the copy. */
   beginJob(): RenderJob;
@@ -68,6 +70,10 @@ export class AIScheduler {
   private snapshotDirty = new Set<Rect>();
   /** The last area the AI actually repainted, re-used when the prompt changes. */
   private lastAppliedRect: Rect | null = null;
+  /** Bumped on every prompt change so an in-flight run can notice it is stale. */
+  private promptEpoch = 0;
+  /** crop+region signature of the last run that repainted none of its region. */
+  private lastNoProgress: string | null = null;
 
   constructor(
     private readonly host: SchedulerHost,
@@ -97,6 +103,9 @@ export class AIScheduler {
    */
   nudge(): void {
     if (this.stopped) return;
+    // Bumped even while a run is in flight: that run captured the old prompt and
+    // must be re-done, otherwise the new prompt is silently dropped.
+    this.promptEpoch += 1;
     if (this.dirty.length === 0) {
       if (!this.lastAppliedRect) return;
       this.dirty = [this.lastAppliedRect];
@@ -158,6 +167,7 @@ export class AIScheduler {
 
     const job = this.host.beginJob();
     const forRevision = job.revision;
+    const promptEpoch = this.promptEpoch;
     this.inFlight = true;
     this.pending = false;
     this.controller = new AbortController();
@@ -195,7 +205,12 @@ export class AIScheduler {
         this.lastAppliedRect = apply;
         const latencyMs = Date.now() - startedAt;
         this.host.emit({ t: 'ai_result', rect: applied.rect, url: applied.url, aiRevision: forRevision, crop, apply, latencyMs });
-        this.consumeDirty(apply, crop);
+        this.consumeDirty(apply, crop, region);
+        if (promptEpoch !== this.promptEpoch) {
+          // The prompt changed while this was generating: redo the same area so
+          // the visible result matches what people actually typed.
+          this.dirty = mergeDirtyAll(this.dirty, [apply]);
+        }
         this.setState('idle', undefined, latencyMs);
       }
       this.afterRun(0);
@@ -228,37 +243,42 @@ export class AIScheduler {
   /**
    * Drop the parts of each dirty region the AI actually repainted. Regions that
    * appeared *during* the request are kept whole - the result predates them.
-   * If a run made no progress at all, the regions inside the crop are dropped
-   * anyway: repeating an identical generation forever would burn GPU budget.
+   *
+   * Only the region this run was selected for can be judged "stuck", and only
+   * when the identical crop+region pair already failed to make progress once
+   * before. Other regions that merely overlap the crop are still owed their own
+   * generation: with a small AI_APPLY inside a large AI_WINDOW that is the
+   * normal case, and discarding them would silently lose people's drawing.
    */
-  private consumeDirty(apply: Rect, crop: Rect): void {
+  private consumeDirty(apply: Rect, crop: Rect, selected: Rect): void {
+    const signature = `${rectKey(crop)}|${rectKey(selected)}`;
+    const repeated = this.lastNoProgress === signature;
     const next: Rect[] = [];
-    let stuck = 0;
+    let selectedStuck = false;
+
     for (const r of this.dirty) {
       if (!this.snapshotDirty.has(r)) {
         next.push(r);
         continue;
       }
       const parts = subtractRect(r, apply).filter((p) => p.width >= 1 && p.height >= 1);
-      if (area(parts) >= area([r]) && overlaps(r, crop)) {
-        // The run repainted none of this region, so running it again would pick
-        // the same crop forever. Drop it instead of burning GPU budget.
-        stuck += 1;
-        continue;
+      if (r === selected && area(parts) >= area([r])) {
+        selectedStuck = true;
+        if (repeated) continue; // second identical no-op run: give up on it
       }
       next.push(...parts);
     }
+
     this.dirty = next;
     this.snapshotDirty.clear();
-    if (stuck > 0) {
+    this.lastNoProgress = selectedStuck && !repeated ? signature : null;
+    if (selectedStuck && repeated) {
       (this.opts.log ?? console.warn)(
-        `[ai] no-progress guard: dropped ${stuck} dirty region(s) inside crop ${crop.x},${crop.y}`,
+        `[ai] no-progress guard: dropped dirty region ${rectKey(selected)} after two identical runs in crop ${rectKey(crop)}`,
       );
     }
   }
 }
 
 const area = (rects: readonly Rect[]): number => rects.reduce((sum, r) => sum + r.width * r.height, 0);
-const overlaps = (a: Rect, b: Rect): boolean =>
-  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 const defaultSeed = (): number => Math.floor(Math.random() * 2 ** 31);

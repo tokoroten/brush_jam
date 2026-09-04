@@ -19,14 +19,19 @@ interface Recorded { url: string; init?: RequestInit }
 interface StubOptions {
   /** What /queue reports as currently running. */
   running?: string[];
+  /** What /queue reports as waiting. */
+  pending?: string[];
   /** Paths that never resolve, to exercise the request timeouts. */
   hang?: string[];
+  /** How many /history polls fail before the stub starts answering. */
+  historyFailures?: number;
 }
 
 function stubFetch(historyPages: unknown[], options: StubOptions = {}): { calls: Recorded[]; bodies: unknown[] } {
   const calls: Recorded[] = [];
   const bodies: unknown[] = [];
   let historyIndex = 0;
+  let historyFailures = options.historyFailures ?? 0;
   vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
     calls.push({ url: String(input), init });
     const path = new URL(String(input)).pathname;
@@ -36,7 +41,14 @@ function stubFetch(historyPages: unknown[], options: StubOptions = {}): { calls:
       });
     }
     if (path === '/queue') {
-      return new Response(JSON.stringify({ queue_running: (options.running ?? []).map((id) => [0, id]) }), { status: 200 });
+      if (init?.method === 'POST') return new Response('{}', { status: 200 });
+      return new Response(
+        JSON.stringify({
+          queue_running: (options.running ?? []).map((id) => [0, id]),
+          queue_pending: (options.pending ?? []).map((id) => [0, id]),
+        }),
+        { status: 200 },
+      );
     }
     if (path === '/interrupt') return new Response('{}', { status: 200 });
     if (String(input).includes('/upload/image')) {
@@ -50,6 +62,10 @@ function stubFetch(historyPages: unknown[], options: StubOptions = {}): { calls:
       return new Response(JSON.stringify({ prompt_id: 'pid-1' }), { status: 200 });
     }
     if (String(input).includes('/history/')) {
+      if (historyFailures > 0) {
+        historyFailures -= 1;
+        throw Object.assign(new Error('fetch failed'), { name: 'TypeError' });
+      }
       const page = historyPages[Math.min(historyIndex, historyPages.length - 1)];
       historyIndex += 1;
       return new Response(JSON.stringify(page), { status: 200 });
@@ -164,7 +180,7 @@ describe('ComfyUIBackend', () => {
     expect(calls.some((c) => c.url.endsWith('/interrupt'))).toBe(false);
   });
 
-  it.each(['/upload/image', '/prompt', '/history', '/view'])('times out a stalled %s instead of wedging', async (path) => {
+  it.each(['/upload/image', '/prompt', '/view'])('times out a stalled %s instead of wedging', async (path) => {
     stubFetch([{ 'pid-1': { outputs: { '11': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } }], { hang: [path] });
     const backend = new ComfyUIBackend({
       url: 'http://127.0.0.1:8188',
@@ -173,6 +189,22 @@ describe('ComfyUIBackend', () => {
       requestTimeoutMs: 30,
     });
     await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/timed out/);
+  });
+
+  it('keeps polling a stalled /history until the generation deadline (finding B3)', async () => {
+    const { calls } = stubFetch([{ 'pid-1': { outputs: { '11': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } }], {
+      hang: ['/history'],
+    });
+    const backend = new ComfyUIBackend({
+      url: 'http://127.0.0.1:8188',
+      checkpoint: 'c.safetensors',
+      pollIntervalMs: 1,
+      requestTimeoutMs: 20,
+      timeoutMs: 120,
+    });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/timed out/);
+    // retried rather than failing on the first stall
+    expect(calls.filter((c) => new URL(c.url).pathname.startsWith('/history/')).length).toBeGreaterThan(1);
   });
 
   it('rejects a response without a prompt_id', async () => {
