@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { addMember, applyClientMessage, createRoom, snapshot, strokesForCrop, type RoomState } from '../src/room.js';
+import {
+  addMember,
+  applyClientMessage,
+  captureRenderSnapshot,
+  createRoom,
+  joinMember,
+  qualifyStrokeId,
+  removeMember,
+  snapshot,
+  strokesForCrop,
+  type RoomState,
+} from '../src/room.js';
 
 function room(): { state: RoomState; alice: string; bob: string; layerId: string } {
   const state = createRoom('testroom');
@@ -35,6 +46,7 @@ describe('room reducer', () => {
     expect(state.strokes[0]!.points).toHaveLength(3);
     expect(state.humanRevision).toBe(1);
     expect(state.strokes[0]!.userId).toBe(alice);
+    expect(state.strokes[0]!.id).toBe(qualifyStrokeId(alice, 's1'));
   });
 
   it('reports a dirty rect covering the stroke', () => {
@@ -51,6 +63,7 @@ describe('room reducer', () => {
     applyClientMessage(state, alice, { t: 'stroke_start', stroke: { id: 'a', layerId, tool: 'pen', color: '#000000', width: 4, points: [{ x: 1, y: 1 }] } });
     const res = applyClientMessage(state, bob, { t: 'stroke_chunk', strokeId: 'a', points: [{ x: 9, y: 9 }] });
     expect(res.relay).toHaveLength(0);
+    expect(state.pending.size).toBe(1);
   });
 
   it('rejects strokes on a locked or missing layer', () => {
@@ -58,12 +71,13 @@ describe('room reducer', () => {
     state.layers[0]!.locked = true;
     const res = applyClientMessage(state, alice, { t: 'stroke_start', stroke: { id: 'a', layerId, tool: 'pen', color: '#000000', width: 4, points: [] } });
     expect(res.relay).toHaveLength(0);
+    expect(res.toSender?.[0]).toMatchObject({ t: 'error' });
     expect(state.pending.size).toBe(0);
   });
 
-  it('sanitises tool, color and width', () => {
+  it('sanitises color and width', () => {
     const { state, alice, layerId } = room();
-    applyClientMessage(state, alice, { t: 'stroke_start', stroke: { id: 'a', layerId, tool: 'crayon' as never, color: 'red', width: 9999, points: [{ x: 0, y: 0 }] } });
+    applyClientMessage(state, alice, { t: 'stroke_start', stroke: { id: 'a', layerId, tool: 'pen', color: 'red', width: 9999, points: [{ x: 0, y: 0 }] } });
     applyClientMessage(state, alice, { t: 'stroke_end', strokeId: 'a', points: [] });
     const s = state.strokes[0]!;
     expect(s.tool).toBe('pen');
@@ -77,11 +91,11 @@ describe('room reducer', () => {
     draw(state, bob, layerId, '101');
     draw(state, alice, layerId, '102');
     const res = applyClientMessage(state, alice, { t: 'undo' });
-    expect(res.broadcast[0]).toMatchObject({ t: 'undo_applied', strokeId: '102' });
-    expect([...state.undone]).toEqual(['102']);
+    expect(res.broadcast[0]).toMatchObject({ t: 'undo_applied', strokeId: qualifyStrokeId(alice, '102') });
+    expect([...state.undone]).toEqual([qualifyStrokeId(alice, '102')]);
     expect(state.humanRevision).toBe(4);
     const second = applyClientMessage(state, alice, { t: 'undo' });
-    expect(second.broadcast[0]).toMatchObject({ strokeId: '100' });
+    expect(second.broadcast[0]).toMatchObject({ strokeId: qualifyStrokeId(alice, '100') });
   });
 
   it('is a no-op when a user has nothing to undo', () => {
@@ -149,7 +163,7 @@ describe('room reducer', () => {
     draw(state, alice, layerId, 'near', 100, 100);
     draw(state, alice, layerId, 'far', 3000, 3000);
     const picked = strokesForCrop(state, { x: 0, y: 0, width: 512, height: 512 });
-    expect(picked.map((s) => s.id)).toEqual(['near']);
+    expect(picked.map((s) => s.id)).toEqual([qualifyStrokeId(alice, 'near')]);
   });
 
   it('excludes undone strokes from crop selection', () => {
@@ -163,8 +177,8 @@ describe('room reducer', () => {
     const { state, alice, layerId } = room();
     draw(state, alice, layerId, 'a');
     applyClientMessage(state, alice, { t: 'undo' });
-    const snap = snapshot(state, alice, 'idle');
-    expect(snap).toMatchObject({ roomId: 'testroom', youUserId: alice, undone: ['a'], humanRevision: 2 });
+    const snap = snapshot(state, alice, 'idle', { window: 1024, apply: 768 });
+    expect(snap).toMatchObject({ roomId: 'testroom', youUserId: alice, undone: [qualifyStrokeId(alice, 'a')], humanRevision: 2, aiWindow: 1024, aiApply: 768 });
     expect(snap.strokes).toHaveLength(1);
     expect(snap.members).toHaveLength(2);
   });

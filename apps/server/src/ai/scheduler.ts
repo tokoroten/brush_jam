@@ -1,7 +1,7 @@
 import {
   CANVAS_SIZE,
   DEFAULT_NEGATIVE_PROMPT,
-  applyRect,
+  applyRectFor,
   chooseCrop,
   mergeDirtyAll,
   shouldAcceptResult,
@@ -19,13 +19,19 @@ export interface MaskHandle {
   empty: boolean;
 }
 
+/** An immutable render job captured synchronously from the room. */
+export interface RenderJob {
+  revision: number;
+  prompt: string;
+  render(crop: Rect, size: number): Promise<Buffer>;
+}
+
 export interface SchedulerHost {
-  getPrompt(): string;
+  /** MUST capture room state synchronously - no awaits before the copy. */
+  beginJob(): RenderJob;
   getRevision(): number;
-  renderInput(crop: Rect, size: number): Promise<Buffer>;
-  buildMask(dirty: Rect[], crop: Rect, size: number, applySize: number): MaskHandle;
-  /** Composite the patch and publish it; returns the URL clients should fetch. */
-  applyResult(patch: Buffer, crop: Rect, mask: unknown, forRevision: number): Promise<{ rect: Rect; url: string }>;
+  buildMask(dirty: Rect[], crop: Rect, size: number, apply: Rect): MaskHandle;
+  applyResult(patch: Buffer, crop: Rect, apply: Rect, mask: unknown, forRevision: number): Promise<{ rect: Rect; url: string }>;
   emit(msg: ServerMessage): void;
 }
 
@@ -37,8 +43,11 @@ export interface SchedulerOptions {
   debounceMs: number;
   canvasSize?: number;
   errorBackoffMs?: number;
+  /** Hard cap on a single generation before it is abandoned. */
+  watchdogMs?: number;
   tag?: string;
   seed?: () => number;
+  log?: (message: string) => void;
 }
 
 /**
@@ -57,6 +66,8 @@ export class AIScheduler {
   private stateValue: AIState = 'idle';
   /** Regions that were already dirty when the in-flight request was built. */
   private snapshotDirty = new Set<Rect>();
+  /** The last area the AI actually repainted, re-used when the prompt changes. */
+  private lastAppliedRect: Rect | null = null;
 
   constructor(
     private readonly host: SchedulerHost,
@@ -79,9 +90,17 @@ export class AIScheduler {
     this.schedule(this.opts.debounceMs);
   }
 
-  /** Prompt changes re-run the last dirty area without adding new geometry. */
+  /**
+   * Prompt changes re-run the AI. If nothing is dirty (the usual case - the last
+   * generation consumed its region), the last applied area is re-dirtied so the
+   * new prompt still produces a visible result.
+   */
   nudge(): void {
-    if (this.stopped || this.dirty.length === 0) return;
+    if (this.stopped) return;
+    if (this.dirty.length === 0) {
+      if (!this.lastAppliedRect) return;
+      this.dirty = [this.lastAppliedRect];
+    }
     this.setState('queued');
     this.schedule(this.opts.debounceMs);
   }
@@ -126,7 +145,10 @@ export class AIScheduler {
     }
     const region = this.dirty[this.dirty.length - 1]!;
     const crop = chooseCrop(region, this.opts.window, this.opts.canvasSize ?? CANVAS_SIZE);
-    const mask = this.host.buildMask([...this.dirty], crop, this.opts.window, this.opts.apply);
+    // Centred on the region, not on the crop: a region against a canvas edge must
+    // still fall inside the repainted area or it would never be consumed.
+    const apply = applyRectFor(crop, this.opts.apply, region);
+    const mask = this.host.buildMask([...this.dirty], crop, this.opts.window, apply);
     if (mask.empty) {
       this.dirty = this.dirty.filter((r) => r !== region);
       this.setState('idle');
@@ -134,19 +156,25 @@ export class AIScheduler {
       return;
     }
 
-    const forRevision = this.host.getRevision();
+    const job = this.host.beginJob();
+    const forRevision = job.revision;
     this.inFlight = true;
     this.pending = false;
     this.controller = new AbortController();
     this.snapshotDirty = new Set(this.dirty);
     this.setState('generating');
     const startedAt = Date.now();
+    let timedOut = false;
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      this.controller?.abort();
+    }, this.opts.watchdogMs ?? 180_000);
 
     try {
-      const imagePng = await this.host.renderInput(crop, this.opts.window);
+      const imagePng = await job.render(crop, this.opts.window);
       const patch = await this.backend.generate(
         {
-          prompt: this.host.getPrompt(),
+          prompt: job.prompt,
           negativePrompt: DEFAULT_NEGATIVE_PROMPT,
           imagePng,
           maskPng: mask.png,
@@ -162,22 +190,31 @@ export class AIScheduler {
       if (!shouldAcceptResult(forRevision, this.lastAccepted)) {
         this.setState('idle');
       } else {
-        const applied = await this.host.applyResult(patch, crop, mask.alpha, forRevision);
+        const applied = await this.host.applyResult(patch, crop, apply, mask.alpha, forRevision);
         this.lastAccepted = forRevision;
+        this.lastAppliedRect = apply;
         const latencyMs = Date.now() - startedAt;
-        this.host.emit({ t: 'ai_result', rect: applied.rect, url: applied.url, aiRevision: forRevision, crop, latencyMs });
-        this.consumeDirty(crop);
+        this.host.emit({ t: 'ai_result', rect: applied.rect, url: applied.url, aiRevision: forRevision, crop, apply, latencyMs });
+        this.consumeDirty(apply, crop);
         this.setState('idle', undefined, latencyMs);
       }
       this.afterRun(0);
     } catch (err) {
-      if (err instanceof AbortedError || this.stopped) {
+      if (this.stopped) {
         this.inFlight = false;
         this.controller = null;
         return;
       }
-      this.setState('error', err instanceof Error ? err.message : String(err));
+      if (err instanceof AbortedError && !timedOut) {
+        this.inFlight = false;
+        this.controller = null;
+        return;
+      }
+      const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
+      this.setState('error', message);
       this.afterRun(this.opts.errorBackoffMs ?? 2000);
+    } finally {
+      clearTimeout(watchdog);
     }
   }
 
@@ -191,22 +228,37 @@ export class AIScheduler {
   /**
    * Drop the parts of each dirty region the AI actually repainted. Regions that
    * appeared *during* the request are kept whole - the result predates them.
+   * If a run made no progress at all, the regions inside the crop are dropped
+   * anyway: repeating an identical generation forever would burn GPU budget.
    */
-  private consumeDirty(crop: Rect): void {
-    const applied = applyRect(crop, this.opts.apply);
+  private consumeDirty(apply: Rect, crop: Rect): void {
     const next: Rect[] = [];
+    let stuck = 0;
     for (const r of this.dirty) {
       if (!this.snapshotDirty.has(r)) {
         next.push(r);
         continue;
       }
-      for (const part of subtractRect(r, applied)) {
-        if (part.width >= 1 && part.height >= 1) next.push(part);
+      const parts = subtractRect(r, apply).filter((p) => p.width >= 1 && p.height >= 1);
+      if (area(parts) >= area([r]) && overlaps(r, crop)) {
+        // The run repainted none of this region, so running it again would pick
+        // the same crop forever. Drop it instead of burning GPU budget.
+        stuck += 1;
+        continue;
       }
+      next.push(...parts);
     }
     this.dirty = next;
     this.snapshotDirty.clear();
+    if (stuck > 0) {
+      (this.opts.log ?? console.warn)(
+        `[ai] no-progress guard: dropped ${stuck} dirty region(s) inside crop ${crop.x},${crop.y}`,
+      );
+    }
   }
 }
 
+const area = (rects: readonly Rect[]): number => rects.reduce((sum, r) => sum + r.width * r.height, 0);
+const overlaps = (a: Rect, b: Rect): boolean =>
+  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 const defaultSeed = (): number => Math.floor(Math.random() * 2 ** 31);

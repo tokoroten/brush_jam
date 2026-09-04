@@ -2,7 +2,7 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './ai/backends/index.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import { createBrushJamServer } from './server.js';
 
 // Optional repo-root .env (RunPod credentials etc). Never logged.
@@ -15,12 +15,19 @@ if (existsSync(envFile)) {
   }
 }
 
-const config = loadConfig();
+let config: Config;
+try {
+  config = loadConfig();
+} catch (err) {
+  console.error(`[brushjam] ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+
 const backend = await createBackend(config);
 const { server, close } = createBrushJamServer(config, backend);
 
-server.listen(config.port, () => {
-  console.log(`[brushjam] server on http://127.0.0.1:${config.port}`);
+server.listen(config.port, config.host, () => {
+  console.log(`[brushjam] server on http://${config.host}:${config.port} (set HOST=0.0.0.0 to expose on the LAN)`);
   console.log(`[brushjam] ai window ${config.aiWindow} / apply ${config.aiApply} / steps ${config.aiSteps} / denoise ${config.aiDenoise}`);
 });
 

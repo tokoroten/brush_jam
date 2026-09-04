@@ -25,8 +25,9 @@ class Client {
   readonly received: ServerMessage[] = [];
   private constructor(readonly socket: WebSocket) {}
 
-  static async connect(roomId: string, name: string): Promise<Client> {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/rooms/${roomId}?name=${name}`);
+  static async connect(roomId: string, name: string, token?: string): Promise<Client> {
+    const query = `name=${name}${token ? `&token=${token}` : ''}`;
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/rooms/${roomId}?${query}`);
     const client = new Client(socket);
     socket.on('message', (data) => client.received.push(JSON.parse(data.toString()) as ServerMessage));
     await new Promise((resolve, reject) => {
@@ -85,6 +86,9 @@ describe('websocket room', () => {
     const snap = await alice.waitFor('snapshot');
     expect(snap.snapshot.layers).toHaveLength(1);
     expect(snap.snapshot.canvasSize).toBe(4096);
+    // finding 17: the client must be told the configured sizes
+    expect(snap.snapshot.aiWindow).toBe(1024);
+    expect(snap.snapshot.aiApply).toBe(768);
 
     alice.clear();
     const bob = await Client.connect('roomone', 'Bob');
@@ -103,8 +107,9 @@ describe('websocket room', () => {
     await stroke(alice, layerId, 'a1', 100);
     const start = await bob.waitFor('stroke_start');
     expect(start.userId).toBe(alice.userId);
-    expect(await bob.waitFor('stroke_chunk')).toMatchObject({ strokeId: 'a1' });
+    expect(await bob.waitFor('stroke_chunk')).toMatchObject({ strokeId: `${alice.userId}:a1` });
     const committed = await bob.waitFor('stroke_committed');
+    expect(committed.stroke.id).toBe(`${alice.userId}:a1`);
     expect(committed.stroke.points).toHaveLength(3);
     expect(committed.humanRevision).toBe(1);
     expect(bob.received.filter((m) => m.t === 'stroke_committed')).toHaveLength(1);
@@ -130,7 +135,7 @@ describe('websocket room', () => {
 
     alice.send({ t: 'undo' });
     const undone = await bob.waitFor('undo_applied');
-    expect(undone.strokeId).toBe('a102');
+    expect(undone.strokeId).toBe(`${alice.userId}:a102`);
 
     alice.close();
     bob.close();

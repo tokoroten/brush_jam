@@ -34,9 +34,13 @@ export interface RoomState {
   members: Map<string, Member>;
   memberSeq: number;
   /** In-progress strokes, keyed by stroke id. */
-  pending: Map<string, { userId: string; init: StrokeInit; points: Point[] }>;
+  pending: Map<string, { userId: string; init: StrokeInit; points: Point[]; startedAt: number }>;
   images: Map<string, RoomImage>;
+  /** Reconnect tokens -> the member identity they own. */
+  sessions: Map<string, Member>;
   createdAt: number;
+  /** Wall-clock time the room last had a member connected. */
+  lastActiveAt: number;
 }
 
 export interface ApplyResult {
@@ -46,11 +50,21 @@ export interface ApplyResult {
   relay: ServerMessage[];
   /** World-space rects that changed and should be reconsidered by the AI. */
   dirty: Rect[];
+  /** Messages for the sender only (validation feedback). */
+  toSender?: ServerMessage[];
   /** True when the room prompt changed and the AI should re-run. */
   promptChanged?: boolean;
 }
 
 const empty = (): ApplyResult => ({ broadcast: [], relay: [], dirty: [] });
+const refuse = (message: string): ApplyResult => ({ broadcast: [], relay: [], dirty: [], toSender: [{ t: 'error', message }] });
+
+/** Stroke ids are namespaced by author so two clients cannot collide. */
+export const qualifyStrokeId = (userId: string, rawId: string): string => `${userId}:${rawId}`;
+
+/** Hard caps on a single in-progress stroke (a client could otherwise stream forever). */
+export const MAX_STROKE_POINTS = 50_000;
+export const MAX_STROKE_MS = 60_000;
 
 export function createRoom(id: string): RoomState {
   return {
@@ -67,8 +81,31 @@ export function createRoom(id: string): RoomState {
     memberSeq: 0,
     pending: new Map(),
     images: new Map(),
+    sessions: new Map(),
     createdAt: Date.now(),
+    lastActiveAt: Date.now(),
   };
+}
+
+const MAX_SESSIONS = 64;
+
+/**
+ * Join, resuming a previous identity when the client presents a reconnect token
+ * whose member is not currently connected. Without this, a dropped Wi-Fi
+ * connection would give the same person a new userId and lose their undo stack.
+ */
+export function joinMember(room: RoomState, name: string, token?: string): Member {
+  if (token) {
+    const prior = room.sessions.get(token);
+    if (prior && !room.members.has(prior.userId)) {
+      room.members.set(prior.userId, prior);
+      room.lastActiveAt = Date.now();
+      return prior;
+    }
+  }
+  const member = addMember(room, name);
+  if (token && room.sessions.size < MAX_SESSIONS) room.sessions.set(token, member);
+  return member;
 }
 
 export function addMember(room: RoomState, name: string): Member {
@@ -79,15 +116,40 @@ export function addMember(room: RoomState, name: string): Member {
   };
   room.memberSeq += 1;
   room.members.set(member.userId, member);
+  room.lastActiveAt = Date.now();
   return member;
 }
 
-export function removeMember(room: RoomState, userId: string): void {
+/** Drops a member and cancels any stroke they were still drawing. */
+export function removeMember(room: RoomState, userId: string): ServerMessage[] {
   room.members.delete(userId);
-  for (const [strokeId, p] of room.pending) if (p.userId === userId) room.pending.delete(strokeId);
+  room.lastActiveAt = Date.now();
+  const cancels: ServerMessage[] = [];
+  for (const [strokeId, p] of room.pending) {
+    if (p.userId !== userId) continue;
+    room.pending.delete(strokeId);
+    cancels.push({ t: 'stroke_cancel', userId, strokeId, reason: 'author left' });
+  }
+  return cancels;
 }
 
-export function snapshot(room: RoomState, youUserId: string, aiState: RoomSnapshot['aiState']): RoomSnapshot {
+/** Cancels every pending stroke on a layer (used when the layer disappears). */
+function cancelPendingOnLayer(room: RoomState, layerId: string): ServerMessage[] {
+  const cancels: ServerMessage[] = [];
+  for (const [strokeId, p] of room.pending) {
+    if (p.init.layerId !== layerId) continue;
+    room.pending.delete(strokeId);
+    cancels.push({ t: 'stroke_cancel', userId: p.userId, strokeId, reason: 'layer removed' });
+  }
+  return cancels;
+}
+
+export function snapshot(
+  room: RoomState,
+  youUserId: string,
+  aiState: RoomSnapshot['aiState'],
+  ai: { window: number; apply: number },
+): RoomSnapshot {
   return {
     roomId: room.id,
     youUserId,
@@ -95,6 +157,8 @@ export function snapshot(room: RoomState, youUserId: string, aiState: RoomSnapsh
     humanRevision: room.humanRevision,
     aiRevision: room.aiRevision,
     canvasSize: CANVAS_SIZE,
+    aiWindow: ai.window,
+    aiApply: ai.apply,
     members: [...room.members.values()],
     layers: sortedLayers(room),
     strokes: room.strokes,
@@ -148,41 +212,57 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
 
     case 'stroke_start': {
       const init = msg.stroke;
-      if (!init || typeof init.id !== 'string') return empty();
       const layer = findLayer(room, init.layerId);
-      if (!layer || layer.kind !== 'draw' || layer.locked) {
-        return empty();
-      }
+      if (!layer || layer.kind !== 'draw' || layer.locked) return refuse('cannot draw on that layer');
+      const id = qualifyStrokeId(userId, init.id);
+      if (room.pending.has(id) || room.strokes.some((s2) => s2.id === id)) return refuse('duplicate stroke id');
       const clean: StrokeInit = {
-        id: init.id.slice(0, 40),
+        id,
         layerId: layer.id,
-        tool: init.tool === 'eraser' ? 'eraser' : 'pen',
+        tool: init.tool,
         color: isHexColor(init.color) ? init.color : '#000000',
-        width: clamp(finite(init.width) ? init.width : 8, 1, 128),
+        width: clamp(init.width, 1, 128),
         points: sanitizePoints(init.points),
       };
-      room.pending.set(clean.id, { userId, init: clean, points: [...clean.points] });
+      room.pending.set(id, { userId, init: clean, points: [...clean.points], startedAt: Date.now() });
       return { broadcast: [], relay: [{ t: 'stroke_start', userId, stroke: clean }], dirty: [] };
     }
 
     case 'stroke_chunk': {
-      const p = room.pending.get(msg.strokeId);
-      if (!p || p.userId !== userId) return empty();
+      const id = qualifyStrokeId(userId, msg.strokeId);
+      const p = room.pending.get(id);
+      if (!p) return empty();
       const points = sanitizePoints(msg.points);
+      if (p.points.length + points.length > MAX_STROKE_POINTS || Date.now() - p.startedAt > MAX_STROKE_MS) {
+        room.pending.delete(id);
+        return {
+          broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'stroke too long' }],
+          relay: [],
+          dirty: [],
+          toSender: [{ t: 'error', message: 'stroke exceeded the point or time limit' }],
+        };
+      }
       p.points.push(...points);
-      return { broadcast: [], relay: [{ t: 'stroke_chunk', userId, strokeId: msg.strokeId, points }], dirty: [] };
+      return { broadcast: [], relay: [{ t: 'stroke_chunk', userId, strokeId: id, points }], dirty: [] };
     }
 
     case 'stroke_end': {
-      const p = room.pending.get(msg.strokeId);
-      if (!p || p.userId !== userId) return empty();
-      room.pending.delete(msg.strokeId);
+      const id = qualifyStrokeId(userId, msg.strokeId);
+      const p = room.pending.get(id);
+      if (!p) return empty();
+      room.pending.delete(id);
+      const layer = findLayer(room, p.init.layerId);
+      if (!layer || layer.kind !== 'draw') {
+        return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'layer removed' }], relay: [], dirty: [] };
+      }
       const tail = sanitizePoints(msg.points);
       p.points.push(...tail);
-      if (p.points.length === 0) return empty();
+      if (p.points.length === 0 || p.points.length > MAX_STROKE_POINTS) {
+        return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'empty or oversized stroke' }], relay: [], dirty: [] };
+      }
       room.humanRevision += 1;
       const stroke: Stroke = {
-        id: p.init.id,
+        id,
         userId,
         layerId: p.init.layerId,
         tool: p.init.tool,
@@ -195,7 +275,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       room.strokes.push(stroke);
       return {
         broadcast: [{ t: 'stroke_committed', stroke, humanRevision: room.humanRevision }],
-        relay: [{ t: 'stroke_end', userId, strokeId: stroke.id, points: tail }],
+        relay: [{ t: 'stroke_end', userId, strokeId: id, points: tail }],
         dirty: [stroke.bbox],
       };
     }
@@ -218,31 +298,28 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
 
     case 'clear_layer': {
       const layer = findLayer(room, msg.layerId);
-      if (!layer) return empty();
-      const removed = room.strokes.filter((s) => s.layerId === layer.id);
-      if (removed.length === 0 && layer.kind === 'draw') {
-        room.humanRevision += 1;
-        return { broadcast: [{ t: 'clear_applied', layerId: layer.id, humanRevision: room.humanRevision }], relay: [], dirty: [] };
-      }
-      room.strokes = room.strokes.filter((s) => s.layerId !== layer.id);
-      for (const s of removed) room.undone.delete(s.id);
+      if (!layer) return refuse('unknown layer');
+      const removed = room.strokes.filter((s2) => s2.layerId === layer.id);
+      // union of what was actually *visible*, computed before `undone` is mutated
+      const visible = removed.filter((s2) => !room.undone.has(s2.id)).map((s2) => s2.bbox);
+      const u = unionRects(visible);
+      room.strokes = room.strokes.filter((s2) => s2.layerId !== layer.id);
+      for (const s2 of removed) room.undone.delete(s2.id);
+      const cancels = cancelPendingOnLayer(room, layer.id);
       room.humanRevision += 1;
-      const u = unionRects(removed.filter((s) => !room.undone.has(s.id)).map((s) => s.bbox));
       return {
-        broadcast: [{ t: 'clear_applied', layerId: layer.id, humanRevision: room.humanRevision }],
+        broadcast: [{ t: 'clear_applied', layerId: layer.id, humanRevision: room.humanRevision }, ...cancels],
         relay: [],
         dirty: u ? [u] : [],
       };
     }
 
     case 'layer_create': {
-      if (room.layers.length >= MAX_LAYERS) {
-        return empty();
-      }
-      const kind = msg.layer.kind === 'reference' ? 'reference' : 'draw';
+      if (room.layers.length >= MAX_LAYERS) return refuse('layer limit reached');
+      const kind = msg.layer.kind;
       const maxOrder = room.layers.reduce((m, l) => Math.max(m, l.order), -1);
       const image = kind === 'reference' && msg.layer.imageId ? room.images.get(msg.layer.imageId) : undefined;
-      if (kind === 'reference' && !image) return empty();
+      if (kind === 'reference' && !image) return refuse('unknown imageId');
       const layer: Layer = {
         id: shortId(6),
         name: (typeof msg.layer.name === 'string' && msg.layer.name.slice(0, 32)) || (kind === 'reference' ? 'Reference' : `Layer ${room.layers.length + 1}`),
@@ -272,9 +349,10 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
 
     case 'layer_update': {
       const layer = findLayer(room, msg.id);
-      if (!layer) return empty();
+      if (!layer) return refuse('unknown layer');
+      const wasIncludedInAI = layer.includeInAI;
       const before = layerDirty(room, layer);
-      const patch = msg.patch ?? {};
+      const patch = msg.patch;
       if (typeof patch.name === 'string') layer.name = patch.name.slice(0, 32);
       if (typeof patch.visible === 'boolean') layer.visible = patch.visible;
       if (typeof patch.locked === 'boolean') layer.locked = patch.locked;
@@ -287,32 +365,37 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       }
       room.humanRevision += 1;
       const after = layerDirty(room, layer);
+      // Turning "AI input" off still has to repaint where the layer used to be.
+      const affectsAI = wasIncludedInAI || layer.includeInAI;
       return {
         broadcast: [{ t: 'layer_updated', layer, humanRevision: room.humanRevision }],
         relay: [],
-        dirty: layer.includeInAI || layer.kind === 'draw' ? [...before, ...after] : [],
+        dirty: affectsAI ? [...before, ...after] : [],
       };
     }
 
     case 'layer_delete': {
       const layer = findLayer(room, msg.id);
-      if (!layer) return empty();
-      if (layer.kind === 'draw' && room.layers.filter((l) => l.kind === 'draw').length <= 1) return empty();
+      if (!layer) return refuse('unknown layer');
+      if (layer.kind === 'draw' && room.layers.filter((l) => l.kind === 'draw').length <= 1) {
+        return refuse('cannot delete the last draw layer');
+      }
       const dirty = layerDirty(room, layer);
+      const cancels = cancelPendingOnLayer(room, layer.id);
       room.layers = room.layers.filter((l) => l.id !== layer.id);
-      room.strokes = room.strokes.filter((s) => s.layerId !== layer.id);
+      for (const s2 of room.strokes) if (s2.layerId === layer.id) room.undone.delete(s2.id);
+      room.strokes = room.strokes.filter((s2) => s2.layerId !== layer.id);
       room.humanRevision += 1;
       return {
-        broadcast: [{ t: 'layer_deleted', id: layer.id, humanRevision: room.humanRevision }],
+        broadcast: [{ t: 'layer_deleted', id: layer.id, humanRevision: room.humanRevision }, ...cancels],
         relay: [],
         dirty: layer.includeInAI ? dirty : [],
       };
     }
 
     case 'layer_reorder': {
-      if (!Array.isArray(msg.ids)) return empty();
       const known = msg.ids.filter((id) => findLayer(room, id));
-      if (known.length !== room.layers.length) return empty();
+      if (known.length !== room.layers.length) return refuse('layer_reorder must list every layer exactly once');
       known.forEach((id, index) => { findLayer(room, id)!.order = index; });
       room.humanRevision += 1;
       const dirty = room.layers.filter((l) => l.includeInAI).flatMap((l) => layerDirty(room, l));
@@ -325,7 +408,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
     }
 
     case 'set_prompt': {
-      const prompt = typeof msg.prompt === 'string' ? msg.prompt.slice(0, 800) : '';
+      const prompt = msg.prompt.slice(0, 800);
       if (prompt === room.prompt) return empty();
       room.prompt = prompt;
       return { broadcast: [{ t: 'prompt_changed', prompt }], relay: [], dirty: [], promptChanged: true };
@@ -336,11 +419,39 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
   }
 }
 
+/**
+ * An immutable view of everything a render needs, captured synchronously so an
+ * AI request cannot mix state from two different revisions while it awaits.
+ */
+export interface RenderSnapshot {
+  revision: number;
+  prompt: string;
+  layers: Layer[];
+  strokes: Stroke[];
+  undone: ReadonlySet<string>;
+  images: Map<string, RoomImage>;
+}
+
+export function captureRenderSnapshot(room: RoomState): RenderSnapshot {
+  return {
+    revision: room.humanRevision,
+    prompt: room.prompt,
+    layers: sortedLayers(room).map((l) => ({ ...l })),
+    strokes: [...room.strokes],
+    undone: new Set(room.undone),
+    images: new Map(room.images),
+  };
+}
+
 /** Strokes intersecting a crop, in log order, skipping undone ones. */
-export function strokesForCrop(room: RoomState, crop: Rect, layerId?: string): Stroke[] {
-  return room.strokes.filter(
+export function strokesForCrop(
+  source: { strokes: readonly Stroke[]; undone: ReadonlySet<string> },
+  crop: Rect,
+  layerId?: string,
+): Stroke[] {
+  return source.strokes.filter(
     (s) =>
-      !room.undone.has(s.id) &&
+      !source.undone.has(s.id) &&
       (layerId === undefined || s.layerId === layerId) &&
       s.bbox.x < crop.x + crop.width &&
       crop.x < s.bbox.x + s.bbox.width &&

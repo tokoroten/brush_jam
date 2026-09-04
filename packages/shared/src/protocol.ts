@@ -52,6 +52,9 @@ export interface RoomSnapshot {
   humanRevision: number;
   aiRevision: number;
   canvasSize: number;
+  /** Configured AI window / apply sizes, so the client never hard-codes them. */
+  aiWindow: number;
+  aiApply: number;
   members: Member[];
   layers: Layer[];
   strokes: Stroke[];
@@ -90,6 +93,7 @@ export type ServerMessage =
   | { t: 'stroke_chunk'; userId: string; strokeId: string; points: Point[] }
   | { t: 'stroke_end'; userId: string; strokeId: string; points: Point[] }
   | { t: 'stroke_committed'; stroke: Stroke; humanRevision: number }
+  | { t: 'stroke_cancel'; userId: string; strokeId: string; reason: string }
   | { t: 'undo_applied'; strokeId: string; layerId: string; humanRevision: number }
   | { t: 'clear_applied'; layerId: string; humanRevision: number }
   | { t: 'layer_created'; layer: Layer; humanRevision: number }
@@ -98,5 +102,5 @@ export type ServerMessage =
   | { t: 'layers_reordered'; layers: Layer[]; humanRevision: number }
   | { t: 'prompt_changed'; prompt: string }
   | { t: 'ai_status'; state: AIState; forRevision: number; message?: string; latencyMs?: number }
-  | { t: 'ai_result'; rect: Rect; url: string; aiRevision: number; crop: Rect; latencyMs: number }
+  | { t: 'ai_result'; rect: Rect; url: string; aiRevision: number; crop: Rect; apply: Rect; latencyMs: number }
   | { t: 'error'; message: string };

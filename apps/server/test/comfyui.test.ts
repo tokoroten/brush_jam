@@ -16,12 +16,29 @@ const req: GenerateRequest = {
 
 interface Recorded { url: string; init?: RequestInit }
 
-function stubFetch(historyPages: unknown[]): { calls: Recorded[]; bodies: unknown[] } {
+interface StubOptions {
+  /** What /queue reports as currently running. */
+  running?: string[];
+  /** Paths that never resolve, to exercise the request timeouts. */
+  hang?: string[];
+}
+
+function stubFetch(historyPages: unknown[], options: StubOptions = {}): { calls: Recorded[]; bodies: unknown[] } {
   const calls: Recorded[] = [];
   const bodies: unknown[] = [];
   let historyIndex = 0;
   vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
     calls.push({ url: String(input), init });
+    const path = new URL(String(input)).pathname;
+    if (options.hang?.some((h) => path.startsWith(h))) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' })), { once: true });
+      });
+    }
+    if (path === '/queue') {
+      return new Response(JSON.stringify({ queue_running: (options.running ?? []).map((id) => [0, id]) }), { status: 200 });
+    }
+    if (path === '/interrupt') return new Response('{}', { status: 200 });
     if (String(input).includes('/upload/image')) {
       const form = init!.body as FormData;
       const file = form.get('image') as File;
@@ -126,14 +143,47 @@ describe('ComfyUIBackend', () => {
     await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/execution error/);
   });
 
-  it('aborts and interrupts when the signal fires', async () => {
-    const { calls } = stubFetch([{}]);
+  it('interrupts only when our prompt is the one running', async () => {
+    const { calls } = stubFetch([{}], { running: ['pid-1'] });
     const backend = new ComfyUIBackend({ url: 'http://127.0.0.1:8188', checkpoint: 'c.safetensors', pollIntervalMs: 5 });
     const controller = new AbortController();
     const promise = backend.generate(req, controller.signal);
     setTimeout(() => controller.abort(), 10);
     await expect(promise).rejects.toThrow(/aborted/);
     expect(calls.some((c) => c.url.endsWith('/interrupt'))).toBe(true);
+  });
+
+  it('does not interrupt somebody else running job (finding 7)', async () => {
+    const { calls } = stubFetch([{}], { running: ['someone-elses-prompt'] });
+    const backend = new ComfyUIBackend({ url: 'http://127.0.0.1:8188', checkpoint: 'c.safetensors', pollIntervalMs: 5 });
+    const controller = new AbortController();
+    const promise = backend.generate(req, controller.signal);
+    setTimeout(() => controller.abort(), 10);
+    await expect(promise).rejects.toThrow(/aborted/);
+    expect(calls.some((c) => c.url.endsWith('/queue'))).toBe(true);
+    expect(calls.some((c) => c.url.endsWith('/interrupt'))).toBe(false);
+  });
+
+  it.each(['/upload/image', '/prompt', '/history', '/view'])('times out a stalled %s instead of wedging', async (path) => {
+    stubFetch([{ 'pid-1': { outputs: { '11': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } }], { hang: [path] });
+    const backend = new ComfyUIBackend({
+      url: 'http://127.0.0.1:8188',
+      checkpoint: 'c.safetensors',
+      pollIntervalMs: 1,
+      requestTimeoutMs: 30,
+    });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/timed out/);
+  });
+
+  it('rejects a response without a prompt_id', async () => {
+    vi.stubGlobal('fetch', async (input: string) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/upload/image') return new Response(JSON.stringify({ name: 'x.png', subfolder: '', type: 'input' }), { status: 200 });
+      if (path === '/prompt') return new Response(JSON.stringify({}), { status: 200 });
+      return new Response('{}', { status: 200 });
+    });
+    const backend = new ComfyUIBackend({ url: 'http://127.0.0.1:8188', checkpoint: 'c.safetensors' });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/prompt_id/);
   });
 
   it('probes reachability without throwing', async () => {

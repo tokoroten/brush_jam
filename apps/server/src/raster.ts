@@ -1,8 +1,13 @@
 import { createCanvas, loadImage, type Canvas, type Image, type SKRSContext2D } from '@napi-rs/canvas';
 import { CANVAS_SIZE, planMask, renderStrokes, type MaskPlan, type Rect } from '@brushjam/shared';
-import { sortedLayers, strokesForCrop, type RoomState } from './room.js';
+import { strokesForCrop, type RenderSnapshot } from './room.js';
 
 const imageCache = new Map<string, Image>();
+
+/** Drop decoded images for a room that went away, so the cache cannot grow forever. */
+export function forgetImages(ids: Iterable<string>): void {
+  for (const id of ids) imageCache.delete(id);
+}
 
 async function decode(id: string, bytes: Buffer): Promise<Image> {
   const hit = imageCache.get(id);
@@ -14,39 +19,44 @@ async function decode(id: string, bytes: Buffer): Promise<Image> {
 
 /**
  * Render the AI input for a crop: white background (SDXL needs an opaque input),
- * then every visible AI-input layer in order. Uses the shared stroke renderer so
- * the pixels match what people see in the browser.
+ * then every visible AI-input layer in order. Each draw layer is rasterised into
+ * its own transparent canvas first and composited with the layer opacity, which
+ * is exactly what the browser does - otherwise an eraser would cut through the
+ * white background and lower layers, and overlapping strokes on a translucent
+ * layer would accumulate opacity instead of the layer being faded once.
  */
-export async function renderCropInput(room: RoomState, crop: Rect, size: number): Promise<Buffer> {
+export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size: number): Promise<Buffer> {
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, size, size);
   const scale = size / crop.width;
-  ctx.save();
-  ctx.scale(scale, scale);
-  for (const layer of sortedLayers(room)) {
-    if (!layer.visible || layer.opacity <= 0) continue;
-    if (!layer.includeInAI) continue;
-    ctx.save();
-    ctx.globalAlpha = layer.opacity;
+
+  for (const layer of snapshot.layers) {
+    if (!layer.visible || layer.opacity <= 0 || !layer.includeInAI) continue;
+
+    const layerCanvas = createCanvas(size, size);
+    const lctx = layerCanvas.getContext('2d');
+    lctx.scale(scale, scale);
     if (layer.kind === 'reference' && layer.imageId) {
-      const stored = room.images.get(layer.imageId);
-      if (stored) {
-        const img = await decode(stored.id, stored.bytes);
-        const s = layer.scale ?? 1;
-        ctx.drawImage(img, (layer.x ?? 0) - crop.x, (layer.y ?? 0) - crop.y, stored.width * s, stored.height * s);
-      }
+      const stored = snapshot.images.get(layer.imageId);
+      if (!stored) continue;
+      const img = await decode(stored.id, stored.bytes);
+      const s = layer.scale ?? 1;
+      lctx.drawImage(img, (layer.x ?? 0) - crop.x, (layer.y ?? 0) - crop.y, stored.width * s, stored.height * s);
     } else {
-      renderStrokes(ctx as unknown as never, strokesForCrop(room, crop, layer.id), {
-        undone: room.undone,
+      renderStrokes(lctx as unknown as never, strokesForCrop(snapshot, crop, layer.id), {
+        undone: snapshot.undone,
         offsetX: crop.x,
         offsetY: crop.y,
       });
     }
+
+    ctx.save();
+    ctx.globalAlpha = layer.opacity;
+    ctx.drawImage(layerCanvas, 0, 0);
     ctx.restore();
   }
-  ctx.restore();
   return canvas.toBuffer('image/png');
 }
 
@@ -75,8 +85,8 @@ function paintSoftShapes(ctx: SKRSContext2D, plan: MaskPlan, scale: number, size
  * Dirty stroke bboxes -> dilated, feathered soft mask, multiplied by a softened
  * rectangle limited to the central apply area (context window > applied region).
  */
-export function buildMask(dirty: readonly Rect[], crop: Rect, size: number, applySize: number): BuiltMask {
-  const plan = planMask(dirty, crop, applySize);
+export function buildMask(dirty: readonly Rect[], crop: Rect, size: number, apply: Rect): BuiltMask {
+  const plan = planMask(dirty, crop, apply);
   const scale = size / crop.width;
   const alpha = createCanvas(size, size);
   const actx = alpha.getContext('2d');

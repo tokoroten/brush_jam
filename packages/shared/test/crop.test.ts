@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyRect, chooseCrop } from '../src/index.js';
+import { applyRect, applyRectFor, chooseCrop } from '../src/index.js';
 
 describe('chooseCrop', () => {
   it('centers the window on the dirty region', () => {
@@ -35,6 +35,43 @@ describe('chooseCrop squareness', () => {
       expect(c.x).toBeGreaterThanOrEqual(0);
       expect(c.x + c.width).toBeLessThanOrEqual(4096);
       expect(c.y + c.height).toBeLessThanOrEqual(4096);
+    }
+  });
+});
+
+describe('applyRectFor', () => {
+  const crop = { x: 0, y: 0, width: 1024, height: 1024 };
+
+  it('covers a dirty region pinned against the left/top canvas edge', () => {
+    const region = { x: 6, y: 6, width: 28, height: 28 };
+    const apply = applyRectFor(crop, 768, region);
+    expect(apply).toEqual({ x: 0, y: 0, width: 768, height: 768 });
+    expect(region.x).toBeGreaterThanOrEqual(apply.x);
+    expect(region.x + region.width).toBeLessThanOrEqual(apply.x + apply.width);
+  });
+
+  it('covers a dirty region pinned against the right/bottom canvas edge', () => {
+    const edge = { x: 3072, y: 3072, width: 1024, height: 1024 };
+    const region = { x: 4076, y: 4076, width: 14, height: 14 };
+    const apply = applyRectFor(edge, 768, region);
+    expect(apply).toEqual({ x: 3328, y: 3328, width: 768, height: 768 });
+    expect(region.x + region.width).toBeLessThanOrEqual(apply.x + apply.width);
+  });
+
+  it('matches the centered rect for a region in the middle of the crop', () => {
+    const region = { x: 500, y: 500, width: 24, height: 24 };
+    expect(applyRectFor(crop, 768, region)).toEqual(applyRect(crop, 768));
+  });
+
+  it('falls back to the centered rect without a region', () => {
+    expect(applyRectFor(crop, 768)).toEqual(applyRect(crop, 768));
+  });
+
+  it('never leaves the crop', () => {
+    for (const region of [{ x: -500, y: 0, width: 10, height: 10 }, { x: 5000, y: 5000, width: 10, height: 10 }]) {
+      const apply = applyRectFor(crop, 768, region);
+      expect(apply.x).toBeGreaterThanOrEqual(crop.x);
+      expect(apply.x + apply.width).toBeLessThanOrEqual(crop.x + crop.width);
     }
   });
 });

@@ -7,7 +7,10 @@ export interface ComfyOptions {
   checkpoint: string;
   cfg?: number;
   pollIntervalMs?: number;
+  /** Overall deadline for one generation. */
   timeoutMs?: number;
+  /** Deadline for a single HTTP call to ComfyUI. */
+  requestTimeoutMs?: number;
 }
 
 export interface WorkflowInput {
@@ -71,20 +74,38 @@ export class ComfyUIBackend implements AIBackend {
     return this.opts.url.replace(/\/+$/, '');
   }
 
-  private async upload(bytes: Buffer, filename: string): Promise<UploadResult> {
+  /**
+   * Every call to ComfyUI carries both the caller's abort signal and its own
+   * timeout. Without the timeout a stalled socket would leave the scheduler
+   * `inFlight` forever and the room would never generate again.
+   */
+  private async fetch(path: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+    const timeout = AbortSignal.timeout(this.opts.requestTimeoutMs ?? 30_000);
+    try {
+      return await fetch(`${this.base}${path}`, { ...init, signal: AbortSignal.any([signal, timeout]) });
+    } catch (err) {
+      if (signal.aborted) throw new AbortedError();
+      if ((err as { name?: string })?.name === 'TimeoutError' || (err as { name?: string })?.name === 'AbortError') {
+        throw new Error(`ComfyUI request timed out: ${path.split('?')[0]}`);
+      }
+      throw err;
+    }
+  }
+
+  private async upload(bytes: Buffer, filename: string, signal: AbortSignal): Promise<UploadResult> {
     const form = new FormData();
     form.append('image', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), filename);
     form.append('overwrite', 'true');
     form.append('type', 'input');
-    const res = await fetch(`${this.base}/upload/image`, { method: 'POST', body: form });
+    const res = await this.fetch('/upload/image', { method: 'POST', body: form }, signal);
     if (!res.ok) throw new Error(`ComfyUI upload failed: ${res.status} ${await res.text()}`);
     return (await res.json()) as UploadResult;
   }
 
   async generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {
     const stamp = `${req.tag}_${Date.now()}`;
-    const image = await this.upload(req.imagePng, `brushjam_${stamp}_img.png`);
-    const mask = await this.upload(req.maskPng, `brushjam_${stamp}_mask.png`);
+    const image = await this.upload(req.imagePng, `brushjam_${stamp}_img.png`, signal);
+    const mask = await this.upload(req.maskPng, `brushjam_${stamp}_mask.png`, signal);
 
     const workflow = buildWorkflow({
       checkpoint: this.opts.checkpoint,
@@ -99,24 +120,41 @@ export class ComfyUIBackend implements AIBackend {
       filenamePrefix: `brushjam/${req.tag}`,
     });
 
-    const queued = await fetch(`${this.base}/prompt`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt: workflow, client_id: this.clientId }),
-    });
+    const queued = await this.fetch(
+      '/prompt',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow, client_id: this.clientId }),
+      },
+      signal,
+    );
     if (!queued.ok) throw new Error(`ComfyUI /prompt failed: ${queued.status} ${await queued.text()}`);
     const { prompt_id: promptId } = (await queued.json()) as { prompt_id: string };
+    if (typeof promptId !== 'string' || promptId.length === 0) throw new Error('ComfyUI returned no prompt_id');
 
     const out = await this.waitForOutput(promptId, signal);
     const query = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder ?? '', type: out.type ?? 'output' });
-    const view = await fetch(`${this.base}/view?${query.toString()}`);
+    const view = await this.fetch(`/view?${query.toString()}`, {}, signal);
     if (!view.ok) throw new Error(`ComfyUI /view failed: ${view.status}`);
     return Buffer.from(await view.arrayBuffer());
   }
 
-  /** Tell ComfyUI to stop the current job, then bail out. */
-  private async interrupt(): Promise<never> {
-    await fetch(`${this.base}/interrupt`, { method: 'POST' }).catch(() => undefined);
+  /**
+   * Only interrupt when the job ComfyUI is currently running is ours - a blind
+   * POST /interrupt would kill another room's (or another app's) generation.
+   */
+  private async interrupt(promptId: string): Promise<never> {
+    try {
+      const res = await fetch(`${this.base}/queue`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const queue = (await res.json()) as { queue_running?: unknown[][] };
+        const running = (queue.queue_running ?? []).some((entry) => entry.some((v) => v === promptId));
+        if (running) await fetch(`${this.base}/interrupt`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+      }
+    } catch {
+      /* best effort: dropping the result is enough for correctness */
+    }
     throw new AbortedError();
   }
 
@@ -124,8 +162,8 @@ export class ComfyUIBackend implements AIBackend {
     const interval = this.opts.pollIntervalMs ?? 250;
     const deadline = Date.now() + (this.opts.timeoutMs ?? 180_000);
     for (;;) {
-      if (signal.aborted) await this.interrupt();
-      const res = await fetch(`${this.base}/history/${promptId}`);
+      if (signal.aborted) await this.interrupt(promptId);
+      const res = await this.fetch(`/history/${encodeURIComponent(promptId)}`, {}, signal);
       if (res.ok) {
         const history = (await res.json()) as Record<string, { status?: { status_str?: string }; outputs?: Record<string, { images?: HistoryImage[] }> }>;
         const entry = history[promptId];
@@ -141,7 +179,7 @@ export class ComfyUIBackend implements AIBackend {
       try {
         await delay(interval, signal);
       } catch (err) {
-        if (err instanceof AbortedError) await this.interrupt();
+        if (err instanceof AbortedError) await this.interrupt(promptId);
         throw err;
       }
     }

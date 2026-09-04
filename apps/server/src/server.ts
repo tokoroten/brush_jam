@@ -8,7 +8,10 @@ import type { Config } from './config.js';
 import { RoomRegistry } from './runtime.js';
 
 const ROOM_ID = /^[a-z0-9]{4,16}$/;
+const SESSION_TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+/** One frame is never legitimately larger than this (points are batched, not streamed). */
+const MAX_WS_PAYLOAD = 1024 * 1024;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -66,6 +69,7 @@ export interface BrushJamServer {
 
 export function createBrushJamServer(config: Config, backend: AIBackend): BrushJamServer {
   const registry = new RoomRegistry(backend, config);
+  registry.startSweeper();
   const webDist = config.webDist ?? defaultWebDist();
   const hasWeb = existsSync(path.join(webDist, 'index.html'));
 
@@ -90,7 +94,7 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
       const room = registry.get(roomId);
 
       if (req.method === 'GET' && parts[2] === 'ai.png' && parts.length === 3) {
-        if (!room) return json(res, 404, { error: 'room not found' });
+        if (!room || !room.hasAi()) return json(res, 404, { error: 'no AI output yet' });
         return png(res, room.aiPng());
       }
       if (req.method === 'GET' && parts[2] === 'patches' && parts[3]) {
@@ -99,11 +103,15 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
         return png(res, patch, 300);
       }
       if (req.method === 'POST' && parts[2] === 'images' && parts.length === 3) {
-        const target = registry.ensure(roomId);
         const mime = req.headers['content-type'] ?? 'image/png';
+        // Validate before touching the registry: `ensure` would allocate a room.
         if (!/^image\/(png|jpeg|webp)$/.test(mime)) return json(res, 415, { error: 'unsupported image type' });
+        const declaredLength = Number(req.headers['content-length'] ?? 0);
+        if (declaredLength > MAX_IMAGE_BYTES) return json(res, 413, { error: 'image too large' });
         const bytes = await readBody(req, MAX_IMAGE_BYTES);
+        const target = registry.ensure(roomId);
         const stored = await target.addImage(bytes, mime);
+        if ('error' in stored) return json(res, 400, stored);
         return json(res, 200, stored);
       }
       if (req.method === 'GET' && parts[2] === 'images' && parts[3]) {
@@ -136,7 +144,7 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
     json(res, 404, { error: 'not found' });
   }
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -148,7 +156,9 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
     const roomId = match[1]!;
     wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
       const room = registry.ensure(roomId);
-      const userId = room.join(ws, url.searchParams.get('name') ?? '');
+      const rawToken = url.searchParams.get('token') ?? '';
+      const token = SESSION_TOKEN.test(rawToken) ? rawToken : undefined;
+      const userId = room.join(ws, url.searchParams.get('name') ?? '', token);
       ws.on('message', (data) => room.handle(userId, data.toString()));
       ws.on('close', () => room.leave(userId));
       ws.on('error', () => room.leave(userId));

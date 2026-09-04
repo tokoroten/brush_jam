@@ -1,31 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Rect, ServerMessage } from '@brushjam/shared';
 import { AIScheduler, type MaskHandle, type SchedulerHost } from '../src/ai/scheduler.js';
-import type { AIBackend, GenerateRequest } from '../src/ai/backends/index.js';
+import { AbortedError, type AIBackend, type GenerateRequest } from '../src/ai/backends/index.js';
 
 class FakeBackend implements AIBackend {
   readonly name = 'fake';
   readonly calls: GenerateRequest[] = [];
   private resolvers: Array<(v: Buffer) => void> = [];
-  private rejecters: Array<(e: Error) => void> = [];
   failNext = false;
+  /** When true, generate() only settles if the abort signal fires. */
+  hangForever = false;
 
-  generate(req: GenerateRequest): Promise<Buffer> {
+  generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {
     this.calls.push(req);
     if (this.failNext) {
       this.failNext = false;
       return Promise.reject(new Error('gpu on fire'));
     }
     return new Promise<Buffer>((resolve, reject) => {
-      this.resolvers.push(resolve);
-      this.rejecters.push(reject);
+      signal.addEventListener('abort', () => reject(new AbortedError()), { once: true });
+      if (!this.hangForever) this.resolvers.push(resolve);
     });
   }
 
   async finish(): Promise<void> {
-    const resolve = this.resolvers.shift();
-    this.rejecters.shift();
-    resolve?.(Buffer.from('patch'));
+    this.resolvers.shift()?.(Buffer.from('patch'));
     await vi.advanceTimersByTimeAsync(0);
   }
 
@@ -34,31 +33,62 @@ class FakeBackend implements AIBackend {
   }
 }
 
-function makeHost(revision = { value: 10 }): {
+interface Harness {
   host: SchedulerHost;
   emitted: ServerMessage[];
-  applied: Array<{ crop: Rect; forRevision: number }>;
+  applied: Array<{ crop: Rect; apply: Rect; forRevision: number }>;
+  masks: Array<{ crop: Rect; apply: Rect }>;
   revision: { value: number };
+  prompt: { value: string };
   maskEmpty: { value: boolean };
-} {
+  renderedAt: number[];
+  logs: string[];
+}
+
+function makeHost(): Harness {
   const emitted: ServerMessage[] = [];
-  const applied: Array<{ crop: Rect; forRevision: number }> = [];
+  const applied: Array<{ crop: Rect; apply: Rect; forRevision: number }> = [];
+  const masks: Array<{ crop: Rect; apply: Rect }> = [];
+  const revision = { value: 10 };
+  const prompt = { value: 'a prompt' };
   const maskEmpty = { value: false };
+  const renderedAt: number[] = [];
+  const logs: string[] = [];
   const host: SchedulerHost = {
-    getPrompt: () => 'a prompt',
     getRevision: () => revision.value,
-    renderInput: async () => Buffer.from('input'),
-    buildMask: (): MaskHandle => ({ png: Buffer.from('mask'), alpha: {}, empty: maskEmpty.value }),
-    applyResult: async (_patch, crop, _mask, forRevision) => {
-      applied.push({ crop, forRevision });
+    beginJob: () => {
+      const captured = { revision: revision.value, prompt: prompt.value };
+      return {
+        ...captured,
+        render: async () => {
+          renderedAt.push(revision.value);
+          return Buffer.from('input');
+        },
+      };
+    },
+    buildMask: (_dirty, crop, _size, apply): MaskHandle => {
+      masks.push({ crop, apply });
+      return { png: Buffer.from('mask'), alpha: {}, empty: maskEmpty.value };
+    },
+    applyResult: async (_patch, crop, apply, _mask, forRevision) => {
+      applied.push({ crop, apply, forRevision });
       return { rect: crop, url: '/patch.png' };
     },
     emit: (msg) => emitted.push(msg),
   };
-  return { host, emitted, applied, revision, maskEmpty };
+  return { host, emitted, applied, masks, revision, prompt, maskEmpty, renderedAt, logs };
 }
 
-const opts = { window: 1024, apply: 768, steps: 14, denoise: 0.55, debounceMs: 400, canvasSize: 4096, errorBackoffMs: 2000 };
+const opts = {
+  window: 1024,
+  apply: 768,
+  steps: 14,
+  denoise: 0.55,
+  debounceMs: 400,
+  canvasSize: 4096,
+  errorBackoffMs: 2000,
+  watchdogMs: 10_000,
+};
 const R = (x: number, y: number, w = 20, h = 20): Rect => ({ x, y, width: w, height: h });
 
 describe('AIScheduler', () => {
@@ -125,7 +155,6 @@ describe('AIScheduler', () => {
     expect(applied).toHaveLength(1);
     expect(applied[0]!.forRevision).toBe(50);
 
-    // second run is for revision 60; make its result arrive "after" a newer accept
     expect(backend.calls).toHaveLength(2);
     revision.value = 40;
     s.markDirty([R(2000, 2000)]);
@@ -209,5 +238,146 @@ describe('AIScheduler', () => {
     s.stop();
     await vi.advanceTimersByTimeAsync(1000);
     expect(backend.calls).toHaveLength(0);
+  });
+
+  describe('canvas-edge regions (finding 4)', () => {
+    it.each([
+      ['top-left', R(20, 20, 30, 30)],
+      ['bottom-right', R(4046, 4046, 30, 30)],
+      ['left edge only', R(20, 2000, 30, 30)],
+    ])('consumes a %s region instead of looping forever', async (_name, region) => {
+      const { host, applied } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      s.markDirty([region]);
+      await vi.advanceTimersByTimeAsync(400);
+      await backend.finish();
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(applied).toHaveLength(1);
+      const apply = applied[0]!.apply;
+      expect(region.x).toBeGreaterThanOrEqual(apply.x);
+      expect(region.x + region.width).toBeLessThanOrEqual(apply.x + apply.width);
+      expect(s.dirtyRegions).toHaveLength(0);
+      // and no runaway follow-up generation
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(backend.calls).toHaveLength(1);
+      s.stop();
+    });
+
+    it('uses one apply rect for the mask, the result and consumption', async () => {
+      const { host, applied, masks, emitted } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      s.markDirty([R(20, 20, 30, 30)]);
+      await vi.advanceTimersByTimeAsync(400);
+      await backend.finish();
+
+      const result = emitted.find((m) => m.t === 'ai_result') as { apply: Rect } | undefined;
+      expect(masks[0]!.apply).toEqual(applied[0]!.apply);
+      expect(result!.apply).toEqual(applied[0]!.apply);
+      s.stop();
+    });
+
+    it('drops regions that made no progress rather than regenerating forever', async () => {
+      const { host, applied } = makeHost();
+      const backend = new FakeBackend();
+      const logs: string[] = [];
+      // apply size 0 means nothing is ever consumed by subtraction
+      const s = new AIScheduler(host, backend, { ...opts, apply: 0, log: (m) => logs.push(m) });
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(400);
+      await backend.finish();
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(applied).toHaveLength(1);
+      expect(s.dirtyRegions).toHaveLength(0);
+      expect(logs.join(' ')).toMatch(/no-progress/);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(backend.calls).toHaveLength(1);
+      s.stop();
+    });
+  });
+
+  describe('prompt changes (finding 12)', () => {
+    it('re-runs the last applied area when nothing is dirty', async () => {
+      const { host, applied, prompt } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(400);
+      await backend.finish();
+      expect(s.dirtyRegions).toHaveLength(0);
+
+      prompt.value = 'watercolor town';
+      s.nudge();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(backend.calls).toHaveLength(2);
+      expect(backend.calls[1]!.prompt).toBe('watercolor town');
+      await backend.finish();
+      expect(applied).toHaveLength(2);
+      s.stop();
+    });
+
+    it('does nothing on a prompt change before anything has ever been generated', async () => {
+      const { host } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      s.nudge();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(backend.calls).toHaveLength(0);
+      s.stop();
+    });
+  });
+
+  describe('atomic render snapshot (finding 10)', () => {
+    it('tags the result with the revision captured before rendering', async () => {
+      const { host, applied, revision, renderedAt } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      revision.value = 7;
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(renderedAt).toEqual([7]);
+
+      revision.value = 9;
+      await backend.finish();
+      expect(applied[0]!.forRevision).toBe(7);
+      s.stop();
+    });
+
+    it('uses the prompt captured with the job, not a later one', async () => {
+      const { host, prompt } = makeHost();
+      const backend = new FakeBackend();
+      const s = new AIScheduler(host, backend, opts);
+      prompt.value = 'first';
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(400);
+      prompt.value = 'second';
+      expect(backend.calls[0]!.prompt).toBe('first');
+      s.stop();
+    });
+  });
+
+  describe('watchdog (finding 7)', () => {
+    it('abandons a generation that never returns and recovers', async () => {
+      const { host, emitted } = makeHost();
+      const backend = new FakeBackend();
+      backend.hangForever = true;
+      const s = new AIScheduler(host, backend, opts);
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(backend.calls).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(10_100);
+      const error = emitted.find((m) => m.t === 'ai_status' && m.state === 'error') as { message?: string } | undefined;
+      expect(error?.message).toBe('generation timed out');
+
+      // not wedged: the next run still happens after the backoff
+      backend.hangForever = false;
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(backend.calls).toHaveLength(2);
+      s.stop();
+    });
   });
 });
