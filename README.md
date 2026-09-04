@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 97 tests across shared / server / web
+pnpm test         # 227 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -53,6 +53,8 @@ packages/shared/       protocol types + pure logic, no DOM and no Node imports
 
 apps/server/           Node 22 + ws + node:http, in-memory rooms
   src/room.ts            authoritative room reducer (strokes, undo, layers, prompt)
+  src/validate.ts        runtime validation of every client message
+  src/imageInfo.ts       PNG/JPEG/WebP header probe and upload limits
   src/runtime.ts         room runtime: sockets, AI canvas, patch store
   src/server.ts          HTTP routes + WebSocket upgrade + static client
   src/raster.ts          @napi-rs/canvas: AI input, soft mask, AI canvas compositing
@@ -68,6 +70,8 @@ apps/web/              Vite + React 19
   src/roomClient.ts      WebSocket client + all client-side rasters
   src/raster.ts          per-layer offscreen canvases
   src/paste.ts           clipboard downscale / placement helpers
+  src/serialQueue.ts     keeps ordered websocket frames applied in order
+  src/session.ts         per-room reconnect token
 ```
 
 ## How it works
@@ -101,8 +105,13 @@ apps/web/              Vite + React 19
 Read from the process environment; a repo-root `.env` is loaded if present (its
 values are never logged and it stays git-ignored).
 
+Every value is validated at startup and the server refuses to boot with a clear
+message if anything is out of range (`AI_APPLY` must not exceed `AI_WINDOW`, both
+are multiples of 64, denoise is 0..1, and so on).
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `HOST` | `127.0.0.1` | Bind address; set `0.0.0.0` to expose on the LAN |
 | `PORT` | `8787` | Room server port |
 | `AI_BACKEND` | auto | `comfyui`, `mock`, `runpod`, or unset for auto-detect |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | Local ComfyUI |
@@ -113,6 +122,8 @@ values are never logged and it stays git-ignored).
 | `AI_DENOISE` | `0.55` | img2img strength |
 | `AI_CFG` | `5.5` | CFG scale |
 | `AI_DEBOUNCE_MS` | `400` | Quiet time before a generation starts |
+| `AI_WATCHDOG_MS` | `180000` | A generation past this is abandoned, not left in flight |
+| `ROOM_IDLE_MS` | `1800000` | Empty rooms are reclaimed after this long |
 | `RUNPOD_ENDPOINT_ID`, `RUNPOD_API_KEY` | — | Only for `AI_BACKEND=runpod` |
 | `WEB_DIST` | `apps/web/dist` | Static client directory |
 
@@ -145,7 +156,7 @@ endpoint — treat it as untested code.
 
 Smoke test on the local box (RTX 3070 8 GB, `AI_WINDOW=1024`, 14 steps,
 denoise 0.55): first generation ~73 s including checkpoint load, warm generations
-~25–29 s. That is slower than the plan's 8–15 s estimate; the machine had ~3 GB
+~26–31 s. That is slower than the plan's 8–15 s estimate; the machine had ~3 GB
 free RAM during the run, so weight paging is the likely cause. The pipeline is
 correct end to end: stroke → dirty region → crop → mask → ComfyUI → composited
 patch broadcast to clients.
@@ -194,6 +205,18 @@ Judgement calls made while implementing, since the plan left them open:
 11. **Stroke ids avoid `crypto.randomUUID`.** That API only exists in secure
     contexts, and browser testing over a plain-http LAN hostname threw on it, so
     ids come from `crypto.getRandomValues` with a `Math.random` fallback.
+12. **Stroke ids are namespaced by author** (`<userId>:<clientId>`). Two clients
+    choosing the same id would otherwise share an undo entry.
+13. **The apply rect is centred on the dirty region, not on the crop.** With a
+    fixed centred rect, a stroke against a canvas edge was never inside the
+    repainted area, so the scheduler regenerated the same crop forever. A
+    per-region no-progress guard is the backstop.
+14. **Reconnects carry a `sessionStorage` token** so a dropped connection keeps
+    the same server identity and undo stack. It is not authentication: anyone
+    holding the token is that participant, which is the right trade for a
+    local playtest.
+15. **The server binds to `127.0.0.1` by default.** Exposing the room server
+    needs an explicit `HOST=0.0.0.0`, since there is no authentication.
 
 ## Not verified
 

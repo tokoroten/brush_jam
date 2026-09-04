@@ -1,12 +1,11 @@
 import { useEffect, useRef, type JSX } from 'react';
-import { CANVAS_SIZE, applyRect, renderStrokes, worldToScreen, type Camera } from '@brushjam/shared';
+import { CANVAS_SIZE, renderStrokes, worldToScreen, type Camera } from '@brushjam/shared';
 import type { RoomClient } from './roomClient.js';
 
 export interface StageViewProps {
   client: RoomClient;
   camera: Camera;
   kind: 'human' | 'ai';
-  applySize: number;
   onPointerDown?: (e: React.PointerEvent<HTMLCanvasElement>) => void;
   onPointerMove?: (e: React.PointerEvent<HTMLCanvasElement>) => void;
   onPointerUp?: (e: React.PointerEvent<HTMLCanvasElement>) => void;
@@ -18,7 +17,7 @@ const CURSOR_TTL_MS = 4000;
 
 /** One viewport onto the shared world. Human and AI stages share one camera. */
 export function StageView(props: StageViewProps): JSX.Element {
-  const { client, camera, kind, applySize, label } = props;
+  const { client, camera, kind, label } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
@@ -74,13 +73,16 @@ export function StageView(props: StageViewProps): JSX.Element {
       }
 
       if (client.lastCrop) {
-        const inner = applyRect(client.lastCrop, applySize);
         ctx.globalAlpha = 1;
         ctx.lineWidth = Math.max(1, 1 / cam.zoom);
         ctx.strokeStyle = 'rgba(90,160,255,0.55)';
         ctx.strokeRect(client.lastCrop.x, client.lastCrop.y, client.lastCrop.width, client.lastCrop.height);
-        ctx.strokeStyle = 'rgba(90,160,255,0.3)';
-        ctx.strokeRect(inner.x, inner.y, inner.width, inner.height);
+        // The exact authoritative rect the server reported - never a guess.
+        const inner = client.lastApply;
+        if (inner) {
+          ctx.strokeStyle = 'rgba(90,160,255,0.3)';
+          ctx.strokeRect(inner.x, inner.y, inner.width, inner.height);
+        }
       }
       ctx.restore();
 
@@ -107,7 +109,7 @@ export function StageView(props: StageViewProps): JSX.Element {
 
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [client, kind, applySize, label]);
+  }, [client, kind, label]);
 
   return (
     <canvas

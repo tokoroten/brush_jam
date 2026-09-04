@@ -18,13 +18,15 @@ import { RoomClient } from './roomClient.js';
 
 export type Tool = 'pen' | 'eraser' | 'move';
 
-const AI_APPLY_HINT = 768;
 const CURSOR_INTERVAL_MS = 50;
 const CHUNK_INTERVAL_MS = 40;
 
 interface Drag {
   kind: 'stroke' | 'pan' | 'move';
+  /** Raw id sent to the server. */
   strokeId?: string;
+  /** Server-qualified id, which is how the live map and every relay key it. */
+  liveKey?: string;
   layerId?: string;
   lastScreen: { x: number; y: number };
   sentPoints: number;
@@ -119,11 +121,14 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     if (!activeLayer || activeLayer.kind !== 'draw' || activeLayer.locked) return;
 
     const strokeId = newId();
+    // The server namespaces ids by author; mirror that locally so the committed
+    // stroke replaces the live one instead of leaving a duplicate behind.
+    const liveKey = `${client.youUserId}:${strokeId}`;
     const point: Point = { x: world.x, y: world.y, p: e.pressure > 0 ? e.pressure : 1 };
-    const init = { id: strokeId, layerId: activeLayer.id, tool: tool === 'eraser' ? ('eraser' as const) : ('pen' as const), color, width, points: [point] };
-    client.live.set(strokeId, { userId: client.youUserId, init, points: [point] });
-    client.send({ t: 'stroke_start', stroke: init });
-    dragRef.current = { kind: 'stroke', strokeId, lastScreen: screen, sentPoints: 1, lastChunkAt: Date.now() };
+    const init = { id: liveKey, layerId: activeLayer.id, tool: tool === 'eraser' ? ('eraser' as const) : ('pen' as const), color, width, points: [point] };
+    client.live.set(liveKey, { userId: client.youUserId, init, points: [point] });
+    client.send({ t: 'stroke_start', stroke: { ...init, id: strokeId } });
+    dragRef.current = { kind: 'stroke', strokeId, liveKey, lastScreen: screen, sentPoints: 1, lastChunkAt: Date.now() };
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>): void => {
@@ -155,8 +160,8 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       }
       return;
     }
-    if (drag.kind === 'stroke' && drag.strokeId) {
-      const live = client.live.get(drag.strokeId);
+    if (drag.kind === 'stroke' && drag.strokeId && drag.liveKey) {
+      const live = client.live.get(drag.liveKey);
       if (!live) return;
       live.points.push({ x: world.x, y: world.y, p: e.pressure > 0 ? e.pressure : 1 });
       if (now - drag.lastChunkAt > CHUNK_INTERVAL_MS) {
@@ -176,8 +181,8 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       client.send({ t: 'layer_update', id: drag.layerId, patch: { x: drag.origin.x, y: drag.origin.y } });
       return;
     }
-    if (drag.kind !== 'stroke' || !drag.strokeId) return;
-    const live = client.live.get(drag.strokeId);
+    if (drag.kind !== 'stroke' || !drag.strokeId || !drag.liveKey) return;
+    const live = client.live.get(drag.liveKey);
     const points = live ? live.points.slice(drag.sentPoints) : [];
     client.send({ t: 'stroke_end', strokeId: drag.strokeId, points });
   };
@@ -302,7 +307,6 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               client={client}
               camera={camera}
               kind="human"
-              applySize={AI_APPLY_HINT}
               label="Human canvas"
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
@@ -315,7 +319,6 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               client={client}
               camera={camera}
               kind="ai"
-              applySize={AI_APPLY_HINT}
               label="AI canvas"
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}

@@ -10,6 +10,8 @@ import {
   type Stroke,
   type StrokeInit,
 } from '@brushjam/shared';
+import { createSerialQueue, type SerialQueue } from './serialQueue.js';
+import { sessionToken } from './session.js';
 import { createRaster, ctxOf, drawStroke, loadImageElement, redrawLayer } from './raster.js';
 
 export interface LiveStroke {
@@ -48,19 +50,30 @@ export class RoomClient {
   aiMessage = '';
   aiLatencyMs = 0;
   lastCrop: Rect | null = null;
+  /** Exact area the server said was authoritative (never hard-coded here). */
+  lastApply: Rect | null = null;
+  aiWindow = 0;
+  aiApply = 0;
   connected = false;
 
   private socket: WebSocket | null = null;
   private version = 0;
   private listeners = new Set<() => void>();
   private closed = false;
+  /**
+   * WebSocket frames are ordered, so their handlers must be too. Handling them
+   * concurrently let a slow image load apply revision 1 after revision 2.
+   */
+  private readonly enqueue: SerialQueue = createSerialQueue((err) => console.warn('[brushjam] message handler failed', err));
 
   constructor(readonly roomId: string, private readonly name: string) {}
 
   connect(): void {
     if (this.closed) return;
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${protocol}://${location.host}/ws/rooms/${this.roomId}?name=${encodeURIComponent(this.name)}`);
+    const token = sessionToken(this.roomId, typeof sessionStorage === 'undefined' ? undefined : sessionStorage);
+    const query = `name=${encodeURIComponent(this.name)}&token=${encodeURIComponent(token)}`;
+    const socket = new WebSocket(`${protocol}://${location.host}/ws/rooms/${this.roomId}?${query}`);
     this.socket = socket;
     socket.onopen = () => {
       this.connected = true;
@@ -72,7 +85,14 @@ export class RoomClient {
       if (!this.closed) setTimeout(() => this.connect(), 1000);
     };
     socket.onmessage = (event) => {
-      void this.onMessage(JSON.parse(String(event.data)) as ServerMessage);
+      let msg: ServerMessage;
+      try {
+        msg = JSON.parse(String(event.data)) as ServerMessage;
+      } catch {
+        return;
+      }
+      // Chained, and kept alive across failures, so ordering survives errors.
+      this.enqueue(() => this.onMessage(msg));
     };
   }
 
@@ -143,6 +163,10 @@ export class RoomClient {
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;
+        this.aiWindow = s.aiWindow;
+        this.aiApply = s.aiApply;
+        this.live.clear();
+        this.cursors.clear();
         this.layerCanvases.clear();
         for (const layer of s.layers) {
           if (layer.imageId) await this.ensureImage(layer.imageId);
@@ -151,8 +175,17 @@ export class RoomClient {
         await this.loadAiCanvas();
         break;
       }
-      case 'presence':
+      case 'presence': {
         this.members = msg.members;
+        // Drop ghosts: cursors and half-drawn strokes from people who left.
+        const present = new Set(msg.members.map((m) => m.userId));
+        for (const [userId] of this.cursors) if (!present.has(userId)) this.cursors.delete(userId);
+        for (const [id, live] of this.live) if (!present.has(live.userId)) this.live.delete(id);
+        break;
+      }
+
+      case 'stroke_cancel':
+        this.live.delete(msg.strokeId);
         break;
       case 'cursor':
         this.cursors.set(msg.userId, { x: msg.x, y: msg.y, at: Date.now() });
@@ -222,16 +255,20 @@ export class RoomClient {
         if (msg.latencyMs !== undefined) this.aiLatencyMs = msg.latencyMs;
         break;
       case 'ai_result': {
-        this.lastCrop = msg.crop;
-        this.aiRevision = msg.aiRevision;
-        this.aiLatencyMs = msg.latencyMs;
+        // Load first: only advance the AI state once the pixels are really here.
         try {
           const patch = await loadImageElement(msg.url);
           const ctx = ctxOf(this.aiCanvas);
           ctx.clearRect(msg.rect.x, msg.rect.y, msg.rect.width, msg.rect.height);
           ctx.drawImage(patch, msg.rect.x, msg.rect.y, msg.rect.width, msg.rect.height);
+          this.lastCrop = msg.crop;
+          this.lastApply = msg.apply;
+          this.aiRevision = msg.aiRevision;
+          this.aiLatencyMs = msg.latencyMs;
         } catch {
-          /* the next patch will cover it */
+          // A dropped patch would leave a hole, so fall back to the server's
+          // authoritative full raster rather than silently losing the update.
+          await this.loadAiCanvas();
         }
         break;
       }
