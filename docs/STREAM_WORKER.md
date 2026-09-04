@@ -416,12 +416,11 @@ Notes:
 are committed and green (8 tests, stubbed `fetch`). **They are deliberately not
 registered** — registration touches files owned by another agent.
 
-> **Before you wire this up, read §4.1.** On this GPU the worker is only
-> competitive at 512²; at 768² and above it is currently slower than the ComfyUI
-> backend you already have. Registering it is cheap and harmless (nothing routes
-> to it until `AI_BACKEND=stream`), but do not make it the default, and do not
-> add it to the `auto` probe order, until the VRAM problem in §4.1 is fixed.
-> Treat the `auto` snippet in §6.2 as "later", not "now".
+> **Before you wire this up, read §4.** Register it — that is cheap and nothing
+> routes to it until someone asks. But on this card **make it explicit-only:
+> `AI_BACKEND=stream` and nothing else.** Do not put it in the `auto` probe
+> order. §6.2 explains why; an earlier draft of this document suggested the
+> opposite and was wrong.
 
 ### 6.1 `config.ts`
 
@@ -440,8 +439,10 @@ streamTimeoutMs: num(env.STREAM_TIMEOUT_MS, 120_000),
 | `STREAM_TIMEOUT_MS` | `120000` | per-generation deadline |
 
 Recommended companion settings when `AI_BACKEND=stream`: `AI_STEPS=4`,
-`AI_DENOISE=0.55`, and a shorter `AI_DEBOUNCE_MS` (150–250) — the whole point is
-that the round trip is now sub-second.
+**`AI_DENOISE=0.8`** (not the 0.55 default — at 4 LCM steps 0.55 barely changes
+the drawing, see §4.5), `AI_WINDOW=512` or `768`, and `AI_DEBOUNCE_MS` around
+300. The round trip is 1.7 s at 512² and 6 s at 768², so a very short debounce
+just queues work the GPU cannot absorb.
 
 ### 6.2 `backends/index.ts`
 
@@ -457,20 +458,32 @@ if (config.aiBackend === 'stream') {
 }
 ```
 
-Optionally give `auto` a first look at the worker (it is the fastest backend, so
-it should win when it is up):
+**Do not add it to the `auto` probe order.** `streamReachable()` exists, and an
+earlier draft of this section suggested using it that way, but on reflection
+that is the wrong default for two reasons:
 
-```ts
-if (await streamReachable(config.streamUrl)) {
-  log(`[ai] backend: stream at ${config.streamUrl} (auto-detected)`);
-  return new StreamBackend({ url: config.streamUrl, timeoutMs: config.streamTimeoutMs });
-}
-// ...existing comfyReachable check
-```
+1. **It changes output quality silently.** The room's `AI_DENOISE` default of
+   0.55 is tuned for 14-step `euler_ancestral`. Routed to this backend at 4 LCM
+   steps, the same 0.55 produces a near-no-op — the AI panel keeps updating and
+   keeps looking like the drawing (§4.5). A probe that silently reroutes to a
+   backend needing different settings turns a forgotten worker process into
+   "the AI stopped doing anything", which is a horrible thing to debug.
+2. **It is not clearly the faster backend.** It wins at 512² and 768² and is a
+   wash at 1024² (§4.1). "Fastest backend, so it should win when it is up" was
+   an assumption, and the measurements did not support it.
 
-`streamReachable()` returns true only when `/healthz` answers `ok: true`; a
-worker that is still loading its model answers `ok: true, warm: false` and will
-simply block the first request until it is ready.
+Reachability is also the wrong signal here: `/healthz` answering means the
+worker is *holding 5 GB of VRAM*, which on this card means ComfyUI is already
+being starved (§3.1). Which model owns the GPU is a deployment decision someone
+should make deliberately, not something a probe should infer.
+
+So: explicit `AI_BACKEND=stream` only. Revisit auto-detection if the §4.4 VAE
+work lands and the worker becomes decisively faster at every size.
+
+For reference, `streamReachable()` returns true only when `/healthz` answers
+`ok: true`. A worker still loading its model answers `ok: true, warm: false` and
+will block the first request until it is ready — useful for a startup log line
+or a health page, just not for backend selection.
 
 ### 6.3 Nothing else changes
 
