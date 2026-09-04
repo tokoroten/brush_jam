@@ -166,10 +166,12 @@ LoadImage(mask) → ImageToMask ┴→ SetLatentNoiseMask → KSampler → VAEDe
 With `AI_FAST=1` a `LoraLoader` (node 12) is inserted between the checkpoint and
 its consumers - both `CLIPTextEncode` nodes and the `KSampler` read MODEL/CLIP
 from it, while the VAE still comes from the checkpoint - and the sampler switches
-to `lcm` / `sgm_uniform` at cfg 1.5. Steps are `ceil(AI_STEPS / denoise)`, because
-`KSampler` runs `steps * denoise` real steps: 4 steps at denoise 0.55 means
-asking for 8. These values come from `docs/STREAM_WORKER.md` §5; cfg 5.5 burns
-the image out at 4 steps.
+to `lcm` / `sgm_uniform` at cfg 1.5. `AI_STEPS` (4 by default in fast mode) is
+passed straight through: ComfyUI runs exactly that many sampler steps at any
+denoise - it builds the longer schedule and then keeps the last `steps + 1`
+sigmas, so denoise only picks the starting noise level. cfg 5.5 burns the image
+out at 4 steps. `COMFYUI_FAST_LORA=''` disables fast mode entirely (back to the
+14-step normal workflow), rather than leaving a 4-step `euler_ancestral`.
 
 `SetLatentNoiseMask` (rather than `VAEEncodeForInpaint`) keeps the human drawing
 as the img2img base, so the model reinterprets the strokes instead of filling

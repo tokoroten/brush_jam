@@ -322,8 +322,9 @@ describe('fast (LCM) workflow', () => {
 
   it('uses the low-step sampler settings', () => {
     expect((fast['9'] as { inputs: Record<string, unknown> }).inputs).toMatchObject({
-      // ceil(4 / 0.55) = 8, because KSampler runs steps * denoise
-      steps: 8,
+      // ComfyUI runs exactly `steps` sampler steps at any denoise: it builds the
+      // longer schedule and keeps the last steps+1 sigmas. No division.
+      steps: 4,
       cfg: FAST_CFG,
       sampler_name: 'lcm',
       scheduler: 'sgm_uniform',
@@ -331,9 +332,11 @@ describe('fast (LCM) workflow', () => {
     });
   });
 
-  it('asks for exactly the requested steps at denoise 1', () => {
-    const full = buildWorkflow({ ...base, denoise: 1, fastLora: DEFAULT_FAST_LORA });
-    expect((full['9'] as { inputs: { steps: number } }).inputs.steps).toBe(4);
+  it('asks for exactly the requested steps at every denoise', () => {
+    for (const denoise of [0.2, 0.55, 0.8, 1]) {
+      const graph = buildWorkflow({ ...base, denoise, fastLora: DEFAULT_FAST_LORA });
+      expect((graph['9'] as { inputs: { steps: number } }).inputs.steps).toBe(4);
+    }
   });
 
   it('leaves the normal workflow completely alone', () => {

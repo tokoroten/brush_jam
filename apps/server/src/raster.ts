@@ -81,29 +81,32 @@ export async function decodeUpload(bytes: Buffer, expected: { width: number; hei
  * layer would accumulate opacity instead of the layer being faded once.
  */
 export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size: number): Promise<Buffer> {
-  const canvas = createCanvas(size, size);
+  // Always render at the crop's native size first, then resample the finished
+  // image once. Rendering into a pre-scaled context looks equivalent but is
+  // not: the noise pen rasterises through its own untransformed canvas, so it
+  // needs bounds in drawing units, and a scaled context silently dropped every
+  // noise mark outside the top-left size x size corner. One resample at the end
+  // also puts the high-quality filter on the draw that actually resizes.
+  const canvas = createCanvas(crop.width, crop.height);
   const ctx = canvas.getContext('2d');
-  // Only when the crop is actually being resampled: at 1:1 the high-quality
-  // filter is not identity, and client/server parity matters more there.
-  if (size !== crop.width) {
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-  }
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, size, size);
-  const scale = size / crop.width;
+  ctx.fillRect(0, 0, crop.width, crop.height);
 
   for (const layer of snapshot.layers) {
     if (!layer.visible || layer.opacity <= 0 || !layer.includeInAI) continue;
 
-    const layerCanvas = createCanvas(size, size);
+    const layerCanvas = createCanvas(crop.width, crop.height);
     const lctx = layerCanvas.getContext('2d');
-    lctx.scale(scale, scale);
     if (layer.kind === 'reference' && layer.imageId) {
       const stored = snapshot.images.get(layer.imageId);
       if (!stored) continue;
       const img = await decode(stored.id, stored.bytes);
       const s = layer.scale ?? 1;
+      // The reference is resized by this draw, so the filter belongs here.
+      if (s !== 1) {
+        lctx.imageSmoothingEnabled = true;
+        lctx.imageSmoothingQuality = 'high';
+      }
       lctx.drawImage(img, (layer.x ?? 0) - crop.x, (layer.y ?? 0) - crop.y, stored.width * s, stored.height * s);
     } else {
       // A moved draw layer keeps its stroke coordinates and is translated here.
@@ -113,7 +116,7 @@ export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size
         undone: snapshot.undone,
         offsetX: crop.x - dx,
         offsetY: crop.y - dy,
-        bounds: { width: size, height: size },
+        bounds: { width: crop.width, height: crop.height },
         createCanvas: (w, h) => createCanvas(w, h) as never,
       });
     }
@@ -123,7 +126,14 @@ export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size
     ctx.drawImage(layerCanvas, 0, 0);
     ctx.restore();
   }
-  return canvas.toBuffer('image/png');
+
+  if (size === crop.width && size === crop.height) return canvas.toBuffer('image/png');
+  const out = createCanvas(size, size);
+  const octx = out.getContext('2d');
+  octx.imageSmoothingEnabled = true;
+  octx.imageSmoothingQuality = 'high';
+  octx.drawImage(canvas, 0, 0, size, size);
+  return out.toBuffer('image/png');
 }
 
 export interface BuiltMask {

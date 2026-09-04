@@ -71,9 +71,11 @@ export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
         negative: ['3', 0],
         latent_image: ['8', 0],
         seed: i.seed,
-        // KSampler runs `steps * denoise` real steps, so ask for more to get the
-        // 4 the LoRA needs. cfg above ~2 burns the image out at 4 steps.
-        steps: fast ? Math.ceil(i.steps / Math.max(0.05, i.denoise)) : i.steps,
+        // `steps` is the real sampler-step count at any denoise: ComfyUI builds
+        // the longer schedule and then keeps the last steps+1 sigmas, so denoise
+        // only picks the starting noise level (comfy/samplers.py calculate_sigmas).
+        // Dividing by denoise here made "4-step" mode run 8 steps at 0.55.
+        steps: i.steps,
         cfg: fast ? FAST_CFG : i.cfg,
         sampler_name: fast ? 'lcm' : 'euler_ancestral',
         scheduler: fast ? 'sgm_uniform' : 'normal',

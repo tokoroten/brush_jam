@@ -54,7 +54,8 @@ function listenWithRetry(attempt = 1): void {
       console.log(`[brushjam] generation resolution ${config.aiWindow} (${note})`);
     }
     console.log(`[brushjam] ai window ${config.aiWindow} / apply ${config.aiApply} / steps ${config.aiSteps} / denoise ${config.aiDenoise}`);
-    if (config.aiFast) console.log(`[brushjam] fast mode: ${config.comfyFastLora} (4-step LCM sampler)`);
+    if (config.aiFast) console.log(`[brushjam] fast mode: ${config.comfyFastLora} (${config.aiSteps}-step LCM sampler)`);
+    if (config.fastDisabled) console.warn('[brushjam] AI_FAST=1 ignored: COMFYUI_FAST_LORA is empty, using the normal workflow');
   });
 }
 

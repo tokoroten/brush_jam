@@ -19,7 +19,10 @@ export interface Config {
   /** VAE decode tile size; 0 uses a plain (non-tiled) VAEDecode. */
   aiVaeTile: number;
   /** 4-step LCM mode for the ComfyUI backend. */
+  /** Effective fast mode: AI_FAST=1 AND a non-empty LoRA name. */
   aiFast: boolean;
+  /** AI_FAST was asked for but disabled because COMFYUI_FAST_LORA is empty. */
+  fastDisabled: boolean;
   /** LoRA used by fast mode; empty disables it even when AI_FAST=1. */
   comfyFastLora: string;
   aiDebounceMs: number;
@@ -77,6 +80,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     errors.push(`AI_BACKEND must be one of auto, comfyui, mock, runpod, stream (got ${JSON.stringify(env.AI_BACKEND)})`);
   }
 
+  // Fast mode is only fast if there is a LoRA to load. COMFYUI_FAST_LORA=''
+  // documents "no LoRA", so AI_FAST=1 with an empty name must fall all the way
+  // back to the normal workflow - otherwise it kept the 4-step default and ran
+  // euler_ancestral at 4 steps and cfg 5.5, which is neither mode.
+  const fastLora = (env.COMFYUI_FAST_LORA ?? 'lcm-lora-sdxl.safetensors').trim();
+  const fastRequested = flag(env.AI_FAST);
+  const fast = fastRequested && fastLora !== '';
+
   const config: Config = {
     host: env.HOST ?? '127.0.0.1',
     port: num(env, 'PORT', 8787, { min: 1, max: 65535, integer: true }, errors),
@@ -89,12 +100,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     aiMode: modeRaw === 'patch' ? 'patch' : 'full',
     aiWindow: num(env, 'AI_WINDOW', 1024, { min: 256, max: 2048, integer: true, multipleOf: 64 }, errors),
     aiApply: num(env, 'AI_APPLY', 768, { min: 128, max: 2048, integer: true, multipleOf: 64 }, errors),
-    aiSteps: num(env, 'AI_STEPS', flag(env.AI_FAST) ? 4 : 14, { min: 1, max: 150, integer: true }, errors),
+    aiSteps: num(env, 'AI_STEPS', fast ? 4 : 14, { min: 1, max: 150, integer: true }, errors),
     aiDenoise: num(env, 'AI_DENOISE', 0.55, { min: 0, max: 1 }, errors),
     aiCfg: num(env, 'AI_CFG', 5.5, { min: 0, max: 30 }, errors),
     aiVaeTile: num(env, 'AI_VAE_TILE', 512, { min: 0, max: 4096, integer: true }, errors),
-    aiFast: flag(env.AI_FAST),
-    comfyFastLora: env.COMFYUI_FAST_LORA ?? 'lcm-lora-sdxl.safetensors',
+    aiFast: fast,
+    fastDisabled: fastRequested && !fast,
+    comfyFastLora: fastLora,
     aiDebounceMs: num(env, 'AI_DEBOUNCE_MS', 400, { min: 0, max: 600_000, integer: true }, errors),
     aiWatchdogMs: num(env, 'AI_WATCHDOG_MS', 180_000, { min: 1000, max: 3_600_000, integer: true }, errors),
     roomIdleMs: num(env, 'ROOM_IDLE_MS', 30 * 60_000, { min: 10_000, max: 24 * 3_600_000, integer: true }, errors),

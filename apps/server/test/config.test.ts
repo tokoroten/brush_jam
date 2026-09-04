@@ -180,6 +180,24 @@ describe('AI_FAST', () => {
     expect(loadConfig({ AI_FAST: 'true', AI_STEPS: '6' } as NodeJS.ProcessEnv).aiSteps).toBe(6);
   });
 
+  // Review 6 finding 6: an empty LoRA used to leave fast mode "on" with no
+  // LoRA loaded, i.e. euler_ancestral at 4 steps and cfg 5.5 - neither mode.
+  it('falls all the way back to the normal workflow when the LoRA is empty', () => {
+    const c = loadConfig({ AI_FAST: '1', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
+    expect(c.aiFast).toBe(false);
+    expect(c.fastDisabled).toBe(true);
+    expect(c.aiSteps).toBe(14);
+  });
+
+  it('treats a whitespace-only LoRA name as empty', () => {
+    expect(loadConfig({ AI_FAST: '1', COMFYUI_FAST_LORA: '   ' } as NodeJS.ProcessEnv).aiFast).toBe(false);
+  });
+
+  it('does not flag fastDisabled when fast mode was never asked for', () => {
+    expect(loadConfig({ COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv).fastDisabled).toBe(false);
+    expect(loadConfig({ AI_FAST: '1' } as NodeJS.ProcessEnv).fastDisabled).toBe(false);
+  });
+
   it('accepts a custom LoRA name and the usual flag spellings', () => {
     expect(loadConfig({ AI_FAST: 'yes', COMFYUI_FAST_LORA: 'dmd2.safetensors' } as NodeJS.ProcessEnv).comfyFastLora).toBe(
       'dmd2.safetensors',

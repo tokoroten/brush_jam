@@ -93,28 +93,35 @@ describe('layer compositing matches the browser (finding 5)', () => {
     return state;
   }
 
-  /** The browser's compositing path, reimplemented here as the expected result. */
+  /**
+   * The browser's compositing path, reimplemented here as the expected result:
+   * every layer on its own canvas at world scale, composited with the layer
+   * opacity. Like the server it renders natively and resamples once at the end
+   * (review 6 finding 4) - what this test pins is the compositing semantics,
+   * eraser scope and opacity, not the resampling filter.
+   */
   async function browserReference(state: RoomState, size: number): Promise<Buffer> {
-    const out = createCanvas(size, size);
-    const octx = out.getContext('2d');
-    // the server asks for high-quality resampling whenever it rescales
-    octx.imageSmoothingEnabled = true;
-    octx.imageSmoothingQuality = 'high';
-    octx.fillStyle = '#ffffff';
-    octx.fillRect(0, 0, size, size);
-    const scale = size / crop.width;
+    const native = createCanvas(crop.width, crop.height);
+    const nctx = native.getContext('2d');
+    nctx.fillStyle = '#ffffff';
+    nctx.fillRect(0, 0, crop.width, crop.height);
     for (const layer of [...state.layers].sort((a, b) => a.order - b.order)) {
       if (!layer.visible || !layer.includeInAI) continue;
-      const layerCanvas = createCanvas(size, size);
+      const layerCanvas = createCanvas(crop.width, crop.height);
       const lctx = layerCanvas.getContext('2d');
-      lctx.scale(scale, scale);
       const strokes: Stroke[] = state.strokes.filter((s) => s.layerId === layer.id);
       renderStrokes(lctx as unknown as never, strokes, { undone: state.undone, offsetX: crop.x, offsetY: crop.y });
-      octx.save();
-      octx.globalAlpha = layer.opacity;
-      octx.drawImage(layerCanvas, 0, 0);
-      octx.restore();
+      nctx.save();
+      nctx.globalAlpha = layer.opacity;
+      nctx.drawImage(layerCanvas, 0, 0);
+      nctx.restore();
     }
+    if (size === crop.width) return native.toBuffer('image/png');
+    const out = createCanvas(size, size);
+    const octx = out.getContext('2d');
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
+    octx.drawImage(native, 0, 0, size, size);
     return out.toBuffer('image/png');
   }
 
@@ -291,6 +298,52 @@ describe('noise strokes in a crop', () => {
     expect(compared).toBeGreaterThan(1000);
     // edge antialiasing may round differently; the noise body must match
     expect(mismatched / compared).toBeLessThan(0.05);
+  });
+});
+
+/**
+ * Regression (review 6 finding 4): rendering a 1024 crop at 512 used to scale
+ * the layer context and hand the noise pen bounds in unscaled units, so every
+ * noise mark outside the top-left 512x512 of the *world* was thrown away.
+ */
+describe('downsampled crops keep noise in every quadrant', () => {
+  const quadrants: [string, number, number][] = [
+    ['top-left', 200, 200],
+    ['top-right', 800, 200],
+    ['bottom-left', 200, 800],
+    ['bottom-right', 800, 800],
+  ];
+
+  async function renderQuadrantNoise(cx: number, cy: number, size: number): Promise<Buffer> {
+    const state = createRoom('downsample-room', undefined, 1024);
+    const userId = addMember(state, 'Alice').userId;
+    const layerId = state.layers[0]!.id;
+    applyClientMessage(state, userId, {
+      t: 'stroke_start',
+      stroke: { id: 'q1', layerId, tool: 'noise', color: '#000000', width: 90, points: [{ x: cx - 60, y: cy }] },
+    });
+    applyClientMessage(state, userId, { t: 'stroke_end', strokeId: 'q1', points: [{ x: cx + 60, y: cy }] });
+    return renderCropInput(captureRenderSnapshot(state), { x: 0, y: 0, width: 1024, height: 1024 }, size);
+  }
+
+  for (const [name, cx, cy] of quadrants) {
+    it(`renders noise in the ${name} quadrant at 1024 -> 512`, async () => {
+      const png = await renderQuadrantNoise(cx, cy, 512);
+      // The stroke centre maps to half its world coordinate in the 512 render.
+      const [r, g, b] = await pixelAt(png, 512, Math.round(cx / 2), Math.round(cy / 2));
+      expect([r, g, b].some((c) => c !== 255)).toBe(true);
+    });
+  }
+
+  it('is not just white paper: an empty quadrant stays white', async () => {
+    const png = await renderQuadrantNoise(200, 200, 512);
+    expect(await pixelAt(png, 512, 400, 400)).toEqual([255, 255, 255, 255]);
+  });
+
+  it('downsamples rather than crops: the same stroke survives at 256 too', async () => {
+    const png = await renderQuadrantNoise(800, 800, 256);
+    const [r, g, b] = await pixelAt(png, 256, 200, 200);
+    expect([r, g, b].some((c) => c !== 255)).toBe(true);
   });
 });
 
