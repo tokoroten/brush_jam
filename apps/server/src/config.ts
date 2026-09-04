@@ -1,7 +1,10 @@
 export interface Config {
   host: string;
   port: number;
-  aiBackend: 'comfyui' | 'mock' | 'runpod' | 'auto';
+  aiBackend: 'comfyui' | 'mock' | 'runpod' | 'stream' | 'auto';
+  /** Base URL of the model-resident worker in apps/stream-worker. */
+  streamUrl: string;
+  streamTimeoutMs: number;
   comfyUrl: string;
   comfyCheckpoint: string;
   /** World canvas size in px (square). */
@@ -63,15 +66,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!['full', 'patch'].includes(modeRaw)) {
     errors.push(`AI_MODE must be full or patch (got ${JSON.stringify(env.AI_MODE)})`);
   }
-  if (!['auto', 'comfyui', 'mock', 'runpod'].includes(backendRaw)) {
-    errors.push(`AI_BACKEND must be one of auto, comfyui, mock, runpod (got ${JSON.stringify(env.AI_BACKEND)})`);
+  if (!['auto', 'comfyui', 'mock', 'runpod', 'stream'].includes(backendRaw)) {
+    errors.push(`AI_BACKEND must be one of auto, comfyui, mock, runpod, stream (got ${JSON.stringify(env.AI_BACKEND)})`);
   }
 
   const config: Config = {
     host: env.HOST ?? '127.0.0.1',
     port: num(env, 'PORT', 8787, { min: 1, max: 65535, integer: true }, errors),
-    aiBackend: (['comfyui', 'mock', 'runpod'].includes(backendRaw) ? backendRaw : 'auto') as Config['aiBackend'],
+    aiBackend: (['comfyui', 'mock', 'runpod', 'stream'].includes(backendRaw) ? backendRaw : 'auto') as Config['aiBackend'],
     comfyUrl: (env.COMFYUI_URL ?? 'http://127.0.0.1:8188').replace(/\/+$/, ''),
+    streamUrl: (env.STREAM_URL ?? 'http://127.0.0.1:8790').replace(/\/+$/, ''),
+    streamTimeoutMs: num(env, 'STREAM_TIMEOUT_MS', 120_000, { min: 1000, max: 3_600_000, integer: true }, errors),
     comfyCheckpoint: env.COMFYUI_CHECKPOINT ?? 'waiNSFWIllustrious_v150.safetensors',
     canvasSize: num(env, 'CANVAS_SIZE', 1024, { min: 512, max: 4096, integer: true, multipleOf: 64 }, errors),
     aiMode: modeRaw === 'patch' ? 'patch' : 'full',
@@ -125,6 +130,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     new URL(config.comfyUrl);
   } catch {
     errors.push(`COMFYUI_URL is not a valid URL (got ${JSON.stringify(config.comfyUrl)})`);
+  }
+  try {
+    new URL(config.streamUrl);
+  } catch {
+    errors.push(`STREAM_URL is not a valid URL (got ${JSON.stringify(config.streamUrl)})`);
   }
   if (config.aiBackend === 'runpod' && (!config.runpodEndpointId || !config.runpodApiKey)) {
     errors.push('AI_BACKEND=runpod requires RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY');

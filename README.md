@@ -113,7 +113,9 @@ are multiples of 64, denoise is 0..1, and so on).
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Bind address; set `0.0.0.0` to expose on the LAN |
 | `PORT` | `8787` | Room server port |
-| `AI_BACKEND` | auto | `comfyui`, `mock`, `runpod`, or unset for auto-detect |
+| `AI_BACKEND` | auto | `stream`, `comfyui`, `mock`, `runpod`, or unset for auto-detect |
+| `STREAM_URL` | `http://127.0.0.1:8790` | Model-resident worker (`apps/stream-worker`) |
+| `STREAM_TIMEOUT_MS` | `120000` | Per-generation deadline for the stream worker |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | Local ComfyUI |
 | `COMFYUI_CHECKPOINT` | `waiNSFWIllustrious_v150.safetensors` | Must exist in ComfyUI |
 | `CANVAS_SIZE` | `1024` | World canvas size in px (square, multiple of 64, 512-4096) |
@@ -137,6 +139,15 @@ committed strokes per room, 32 uploaded images per room, a 512 MiB budget for
 decoded reference pixels shared process-wide (LRU eviction), a 60 s idle window
 on a pending stroke, and a 2 min grace period before an unreferenced upload is
 swept.
+
+### Backend selection
+
+An explicit `AI_BACKEND` always wins. `auto` (the default) probes in order:
+the stream worker's `/healthz`, then ComfyUI's `/system_stats`, then falls back
+to the mock. Each probe has a 2 s deadline so a dead endpoint cannot delay
+startup, and the chosen backend is logged with the reason. The stream worker is
+preferred because it holds the model in VRAM; note that on this 8 GB card it and
+ComfyUI cannot both be resident (see `docs/STREAM_WORKER.md`).
 
 ## ComfyUI requirements
 
