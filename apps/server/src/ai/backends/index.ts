@@ -2,14 +2,14 @@ import type { Config } from '../../config.js';
 import { ComfyUIBackend, comfyReachable } from './comfyui.js';
 import { MockBackend } from './mock.js';
 import { RunpodBackend } from './runpod.js';
-import { StreamBackend, streamReachable } from './stream.js';
+import { StreamBackend, streamHealth } from './stream.js';
 import type { AIBackend } from './types.js';
 
 export * from './types.js';
 export { buildWorkflow, ComfyUIBackend, comfyReachable, DEFAULT_FAST_LORA, FAST_CFG } from './comfyui.js';
 export { MockBackend } from './mock.js';
 export { RunpodBackend } from './runpod.js';
-export { StreamBackend, streamReachable } from './stream.js';
+export { StreamBackend, streamHealth, streamReachable, pngSize } from './stream.js';
 
 /**
  * Pick a backend. An explicit AI_BACKEND always wins; `auto` prefers the
@@ -48,6 +48,14 @@ export async function createBackend(config: Config, log: (m: string) => void = c
   }
   if (config.aiBackend === 'stream') {
     log(`[ai] backend: stream at ${config.streamUrl} (AI_BACKEND=stream)`);
+    // An explicit choice is honoured either way, but say so now rather than
+    // letting every generation fail with a puzzling 400.
+    const health = await streamHealth(config.streamUrl, PROBE_TIMEOUT_MS);
+    if (!health.ok) log(`[ai] warning: stream worker is not answering (${health.reason ?? 'no answer'})`);
+    else if (!health.warm) log('[ai] warning: stream worker is reachable but not warm; the first request will load the model');
+    else if (health.maxSize > 0 && health.maxSize < config.aiWindow) {
+      log(`[ai] warning: stream worker max_size ${health.maxSize} is below AI_WINDOW ${config.aiWindow}; requests will be refused`);
+    }
     return stream();
   }
   if (config.aiBackend === 'comfyui') {
@@ -55,14 +63,32 @@ export async function createBackend(config: Config, log: (m: string) => void = c
     return comfy();
   }
 
-  if (await streamReachable(config.streamUrl, PROBE_TIMEOUT_MS)) {
-    log(`[ai] backend: stream at ${config.streamUrl} (auto-detected: /healthz answered ok)`);
-    return stream();
+  // The stream worker is NOT auto-selected by default (docs/STREAM_WORKER.md
+  // section 6): it answering /healthz means it is holding ~5 GB of VRAM, which
+  // on an 8 GB card starves ComfyUI, and it needs a different denoise to look
+  // right. Which model owns the GPU is a deployment decision, not something a
+  // reachability probe should infer. AI_STREAM_AUTO=1 opts back in.
+  if (config.streamAuto) {
+    const health = await streamHealth(config.streamUrl, PROBE_TIMEOUT_MS);
+    if (!health.ok) {
+      log(`[ai] skipping stream worker: ${health.reason ?? 'no answer'}`);
+    } else if (!health.warm) {
+      // An unloaded or dry-run worker answers ok and then echoes the input
+      // back, which the scheduler cannot tell from a real result.
+      log(`[ai] skipping stream worker at ${config.streamUrl}: reachable but not warm (no model loaded)`);
+    } else if (health.maxSize > 0 && health.maxSize < config.aiWindow) {
+      // It would 400 every request; full mode would retry that forever.
+      log(`[ai] skipping stream worker at ${config.streamUrl}: max_size ${health.maxSize} < AI_WINDOW ${config.aiWindow}`);
+    } else {
+      log(`[ai] backend: stream at ${config.streamUrl} (auto-detected: warm, max_size ${health.maxSize || 'unreported'})`);
+      return stream();
+    }
   }
   if (await comfyReachable(config.comfyUrl, PROBE_TIMEOUT_MS)) {
-    log(`[ai] backend: comfyui at ${config.comfyUrl} (auto-detected: no stream worker at ${config.streamUrl})`);
+    const why = config.streamAuto ? 'no usable stream worker' : 'stream is explicit-only';
+    log(`[ai] backend: comfyui at ${config.comfyUrl} (auto-detected: ${why})`);
     return comfy();
   }
-  log(`[ai] backend: mock - neither the stream worker (${config.streamUrl}) nor ComfyUI (${config.comfyUrl}) answered`);
+  log(`[ai] backend: mock - ComfyUI (${config.comfyUrl}) did not answer`);
   return new MockBackend();
 }

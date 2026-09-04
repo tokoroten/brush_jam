@@ -16,6 +16,23 @@ export interface StreamOptions {
    * waiting for rather than failing.
    */
   queue?: boolean;
+  /** How long to wait for a cancelled job to actually stop. */
+  settleTimeoutMs?: number;
+}
+
+export interface StreamHealth {
+  ok: boolean;
+  /** The model is loaded and has run at least once. */
+  warm: boolean;
+  /** Largest square the worker will accept, 0 when it does not say. */
+  maxSize: number;
+  /** True while a generation is running. */
+  busy: boolean;
+  backend: string;
+  /** Id of the job currently running, when the worker reports one. */
+  currentRequestId?: string;
+  /** Why the worker is not usable, for the log line. */
+  reason?: string;
 }
 
 interface StreamResponse {
@@ -40,6 +57,14 @@ interface StreamResponse {
 export class StreamBackend implements AIBackend {
   readonly name = 'stream';
 
+  /**
+   * Resolves once a cancelled generation has really stopped. Cancelling only
+   * asks the worker to stop at its next diffusion step, so a retry issued
+   * immediately would queue behind the job we just abandoned and pay for it
+   * twice. Every generate waits for this first.
+   */
+  private settling: Promise<void> | null = null;
+
   constructor(private readonly opts: StreamOptions) {}
 
   private get base(): string {
@@ -47,6 +72,8 @@ export class StreamBackend implements AIBackend {
   }
 
   async generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {
+    if (this.settling) await this.settling;
+    if (signal.aborted) throw new AbortedError();
     const timeout = AbortSignal.timeout(this.opts.timeoutMs ?? 120_000);
     // Dropping the HTTP request does NOT stop the GPU: the worker is already
     // inside a diffusion loop on a background thread and would run to
@@ -76,7 +103,7 @@ export class StreamBackend implements AIBackend {
     } catch (err) {
       // Abandoned or timed out: free the GPU rather than leaving it working on
       // a result nobody will read.
-      void this.cancel(requestId);
+      this.settling = this.cancelAndSettle(requestId);
       if (signal.aborted) throw new AbortedError();
       const name = (err as { name?: string })?.name;
       if (name === 'TimeoutError' || name === 'AbortError') throw new Error('stream worker request timed out');
@@ -97,10 +124,28 @@ export class StreamBackend implements AIBackend {
       if (signal.aborted) throw new AbortedError();
       throw new Error(`stream worker returned invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (typeof body.image_b64 !== 'string' || body.image_b64.length === 0) {
-      throw new Error('stream worker returned no image');
+    return decodeImage(body, req.size);
+  }
+
+  /**
+   * Cancel, then wait for `busy` to clear. Bounded: if the worker never reports
+   * itself idle we give up and let the next request queue, which is bad but not
+   * worse than blocking the room forever.
+   */
+  private async cancelAndSettle(requestId: string): Promise<void> {
+    try {
+      await this.cancel(requestId);
+      const deadline = Date.now() + (this.opts.settleTimeoutMs ?? 15_000);
+      while (Date.now() < deadline) {
+        const health = await this.health();
+        // Not reachable, idle, or already working on someone else's job.
+        if (!health.ok || !health.busy) return;
+        if (health.currentRequestId && health.currentRequestId !== requestId) return;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    } finally {
+      this.settling = null;
     }
-    return Buffer.from(stripDataUrl(body.image_b64), 'base64');
   }
 
   /**
@@ -121,19 +166,85 @@ export class StreamBackend implements AIBackend {
     }
   }
 
-  /** Cheap reachability + warmth probe, mirroring `comfyReachable`. */
-  async healthy(): Promise<boolean> {
+  /**
+   * Structured probe. Reachability alone is not enough to auto-select a worker:
+   * an unloaded or dry-run worker answers `ok` and then echoes the input, and a
+   * worker capped below the configured window answers `ok` and then 400s every
+   * request - both of which reach the scheduler as an endless retry loop.
+   */
+  async health(): Promise<StreamHealth> {
+    const dead = (reason: string): StreamHealth => ({
+      ok: false,
+      warm: false,
+      maxSize: 0,
+      busy: false,
+      backend: '',
+      reason,
+    });
     try {
       const res = await fetch(`${this.base}/healthz`, {
         signal: AbortSignal.timeout(this.opts.probeTimeoutMs ?? 1500),
       });
-      if (!res.ok) return false;
-      const body = (await res.json()) as { ok?: boolean };
-      return body.ok === true;
-    } catch {
-      return false;
+      if (!res.ok) return dead(`/healthz answered ${res.status}`);
+      const body = (await res.json()) as {
+        ok?: boolean;
+        warm?: boolean;
+        max_size?: number;
+        busy?: boolean;
+        backend?: string;
+        current_request_id?: string;
+      };
+      if (body.ok !== true) return dead('/healthz reported not ok');
+      return {
+        ok: true,
+        warm: body.warm === true,
+        maxSize: typeof body.max_size === 'number' ? body.max_size : 0,
+        busy: body.busy === true,
+        backend: typeof body.backend === 'string' ? body.backend : 'stream',
+        currentRequestId: typeof body.current_request_id === 'string' ? body.current_request_id : undefined,
+      };
+    } catch (err) {
+      return dead(err instanceof Error ? err.message : String(err));
     }
   }
+
+  /** Cheap reachability probe, mirroring `comfyReachable`. */
+  async healthy(): Promise<boolean> {
+    return (await this.health()).ok;
+  }
+}
+
+/**
+ * The worker's own output, validated. `Buffer.from(x, 'base64')` silently
+ * accepts nearly anything, so a truncated or wrong-sized image would otherwise
+ * surface much later as a decode failure or as a stretched composite.
+ */
+function decodeImage(body: StreamResponse, size: number): Buffer {
+  if (typeof body.image_b64 !== 'string' || body.image_b64.length === 0) {
+    throw new Error('stream worker returned no image');
+  }
+  const payload = stripDataUrl(body.image_b64).trim();
+  if (payload.length === 0 || !BASE64.test(payload)) {
+    throw new Error('stream worker returned a malformed base64 image');
+  }
+  const bytes = Buffer.from(payload, 'base64');
+  if (bytes.length === 0) throw new Error('stream worker returned an empty image');
+  const dims = pngSize(bytes);
+  if (!dims) throw new Error('stream worker returned something that is not a PNG');
+  if (dims.width !== size || dims.height !== size) {
+    throw new Error(`stream worker returned ${dims.width}x${dims.height}, expected ${size}x${size}`);
+  }
+  return bytes;
+}
+
+const BASE64 = /^[A-Za-z0-9+/\s]+={0,2}$/;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** Width/height straight out of the IHDR chunk; no decode needed. */
+export function pngSize(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(PNG_MAGIC)) return null;
+  if (bytes.subarray(12, 16).toString('latin1') !== 'IHDR') return null;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
 /** The worker adds QUALITY_SUFFIX itself; do not send it twice. */
@@ -146,9 +257,18 @@ function stripDataUrl(value: string): string {
   return comma >= 0 ? value.slice(comma + 1) : value;
 }
 
+/** FastAPI errors are a JSON `detail` field; show that, not the raw envelope. */
 async function safeText(res: Response): Promise<string> {
   try {
-    return (await res.text()).slice(0, 300);
+    const text = (await res.text()).slice(0, 1000);
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === 'string') return parsed.detail.slice(0, 300);
+      if (parsed.detail !== undefined) return JSON.stringify(parsed.detail).slice(0, 300);
+    } catch {
+      /* not JSON: fall through to the raw text */
+    }
+    return text.slice(0, 300);
   } catch {
     return '';
   }
@@ -157,4 +277,9 @@ async function safeText(res: Response): Promise<string> {
 /** Reachability probe used when picking a backend at boot. */
 export async function streamReachable(url: string, timeoutMs = 1500): Promise<boolean> {
   return new StreamBackend({ url, probeTimeoutMs: timeoutMs }).healthy();
+}
+
+/** Full capability probe used by auto-selection and the startup warning. */
+export async function streamHealth(url: string, timeoutMs = 1500): Promise<StreamHealth> {
+  return new StreamBackend({ url, probeTimeoutMs: timeoutMs }).health();
 }

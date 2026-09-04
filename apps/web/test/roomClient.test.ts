@@ -123,6 +123,7 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     negativePrompt: '',
     aiResolution: 1024,
     aiResolutionMax: 1024,
+    aiResolutionAdjustable: true,
     members: [{ userId: 'me', name: 'Me', color: '#fff' }],
     layers: [layer('l1')],
     strokes: [],

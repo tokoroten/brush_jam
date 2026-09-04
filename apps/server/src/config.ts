@@ -5,6 +5,8 @@ export interface Config {
   /** Base URL of the model-resident worker in apps/stream-worker. */
   streamUrl: string;
   streamTimeoutMs: number;
+  /** Let `auto` consider the stream worker at all (off: explicit-only). */
+  streamAuto: boolean;
   comfyUrl: string;
   comfyCheckpoint: string;
   /** World canvas size in px (square). */
@@ -95,6 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     comfyUrl: (env.COMFYUI_URL ?? 'http://127.0.0.1:8188').replace(/\/+$/, ''),
     streamUrl: (env.STREAM_URL ?? 'http://127.0.0.1:8790').replace(/\/+$/, ''),
     streamTimeoutMs: num(env, 'STREAM_TIMEOUT_MS', 120_000, { min: 1000, max: 3_600_000, integer: true }, errors),
+    streamAuto: flag(env.AI_STREAM_AUTO),
     comfyCheckpoint: env.COMFYUI_CHECKPOINT ?? 'waiNSFWIllustrious_v150.safetensors',
     canvasSize: num(env, 'CANVAS_SIZE', 1024, { min: 512, max: 4096, integer: true, multipleOf: 64 }, errors),
     aiMode: modeRaw === 'patch' ? 'patch' : 'full',

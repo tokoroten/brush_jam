@@ -443,3 +443,31 @@ describe('ai resolution setting', () => {
     expect(captureRenderSnapshot(state).aiResolution).toBe(512);
   });
 });
+
+/** Review 6 finding 5: a setting that cannot take effect must not be offered. */
+describe('AI resolution in patch mode', () => {
+  it('refuses a resolution change when the room cannot honour it', () => {
+    const state = createRoom('patchroom', 0.55, 1024, 1024, false);
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', aiResolution: 512 });
+    expect(state.aiResolution).toBe(1024);
+    expect(JSON.stringify(out)).toMatch(/fixed in patch mode/);
+  });
+
+  it('still accepts denoise and the negative prompt there', () => {
+    const state = createRoom('patchroom2', 0.55, 1024, 1024, false);
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.8, negativePrompt: 'no text' });
+    expect(state.denoise).toBe(0.8);
+    expect(state.negativePrompt).toBe('no text');
+  });
+
+  it('tells the client whether the control does anything', () => {
+    const full = createRoom('fullroom', 0.55, 1024, 1024, true);
+    const patch = createRoom('patchroom3', 0.55, 1024, 1024, false);
+    expect(full.aiResolutionAdjustable).toBe(true);
+    expect(patch.aiResolutionAdjustable).toBe(false);
+    const alice = addMember(patch, 'Alice').userId;
+    expect(snapshot(patch, alice, 'idle', { window: 1024, apply: 1024 }).aiResolutionAdjustable).toBe(false);
+  });
+});

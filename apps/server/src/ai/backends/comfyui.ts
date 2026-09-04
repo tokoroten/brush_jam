@@ -48,7 +48,8 @@ export interface WorkflowInput {
  * img2img base, so the model reinterprets the strokes instead of filling holes.
  */
 export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
-  const fast = Boolean(i.fastLora);
+  const profile = fastProfile(i.fastLora);
+  const fast = profile !== null;
   // With the LoRA loaded, MODEL and CLIP come from node 12 instead of the
   // checkpoint. VAE still comes from the checkpoint: LoraLoader has no VAE out.
   const model: [string, number] = fast ? ['12', 0] : ['1', 0];
@@ -76,9 +77,9 @@ export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
         // only picks the starting noise level (comfy/samplers.py calculate_sigmas).
         // Dividing by denoise here made "4-step" mode run 8 steps at 0.55.
         steps: i.steps,
-        cfg: fast ? FAST_CFG : i.cfg,
-        sampler_name: fast ? 'lcm' : 'euler_ancestral',
-        scheduler: fast ? 'sgm_uniform' : 'normal',
+        cfg: profile ? profile.cfg : i.cfg,
+        sampler_name: profile ? profile.sampler : 'euler_ancestral',
+        scheduler: profile ? profile.scheduler : 'normal',
         denoise: i.denoise,
       },
     },
@@ -98,6 +99,26 @@ export function buildWorkflow(i: WorkflowInput): Record<string, unknown> {
 /** LCM wants cfg 1.0-2.0; the normal 5.5 destroys a 4-step result. */
 export const FAST_CFG = 1.5;
 export const DEFAULT_FAST_LORA = 'lcm-lora-sdxl.safetensors';
+
+/**
+ * Few-step LoRAs are not interchangeable: DMD2 is a distilled model that wants
+ * cfg 1.0 (no guidance at all), while LCM wants a little. Forcing 1.5 on DMD2
+ * was quietly wrong, so fast mode is a named profile keyed off the LoRA name.
+ */
+export interface FastProfile {
+  name: string;
+  cfg: number;
+  sampler: string;
+  scheduler: string;
+}
+
+const LCM_PROFILE: FastProfile = { name: 'lcm', cfg: FAST_CFG, sampler: 'lcm', scheduler: 'sgm_uniform' };
+const DMD2_PROFILE: FastProfile = { name: 'dmd2', cfg: 1.0, sampler: 'lcm', scheduler: 'sgm_uniform' };
+
+export function fastProfile(lora: string | undefined): FastProfile | null {
+  if (!lora) return null;
+  return /dmd2/i.test(lora) ? DMD2_PROFILE : LCM_PROFILE;
+}
 
 /** VAEDecodeTiled on ComfyUI 0.28 requires all four size inputs. */
 function decodeNode(tile: number | undefined): Record<string, unknown> {

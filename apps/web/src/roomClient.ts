@@ -84,6 +84,7 @@ export class RoomClient {
   /** Generation size, and the largest this server allows. */
   aiResolution = 1024;
   aiResolutionMax = 1024;
+  aiResolutionAdjustable = true;
   humanRevision = 0;
   aiRevision = 0;
   aiState: AIState = 'idle';
@@ -330,6 +331,7 @@ export class RoomClient {
         this.negativePrompt = s.negativePrompt;
         this.aiResolution = s.aiResolution;
         this.aiResolutionMax = s.aiResolutionMax;
+        this.aiResolutionAdjustable = s.aiResolutionAdjustable;
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;

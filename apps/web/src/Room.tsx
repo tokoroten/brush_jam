@@ -399,6 +399,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               onChange={(e) => setDenoiseDraft(Number(e.target.value))}
             />
           </label>
+          {client.aiResolutionAdjustable ? (
           <label title="generation resolution; the result is scaled to the canvas">
             AI resolution
             <select
@@ -415,6 +416,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               ) : null}
             </select>
           </label>
+          ) : null}
           <input
             className="prompt"
             value={negativeDraft ?? client.negativePrompt}

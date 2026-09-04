@@ -69,6 +69,11 @@ export interface RoomSnapshot {
   aiResolution: number;
   /** Largest resolution this server allows (the configured AI_WINDOW). */
   aiResolutionMax: number;
+  /**
+   * False in patch mode, where the generation size follows the crop window and
+   * the control would be accepted, broadcast and then ignored.
+   */
+  aiResolutionAdjustable: boolean;
   members: Member[];
   layers: Layer[];
   strokes: Stroke[];

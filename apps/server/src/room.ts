@@ -62,6 +62,8 @@ export interface RoomState {
   aiResolution: number;
   /** Ceiling for the above, from the server's AI_WINDOW. */
   aiResolutionMax: number;
+  /** Patch mode generates at the crop window; the room control is inert there. */
+  aiResolutionAdjustable: boolean;
   humanRevision: number;
   aiRevision: number;
   layers: Layer[];
@@ -124,6 +126,7 @@ export function createRoom(
   denoise = DEFAULT_DENOISE,
   canvasSize = CANVAS_SIZE,
   resolution = canvasSize,
+  adjustableResolution = true,
 ): RoomState {
   return {
     id,
@@ -133,6 +136,7 @@ export function createRoom(
     negativePrompt: '',
     aiResolution: clampResolution(resolution, resolution),
     aiResolutionMax: clampResolution(resolution, resolution),
+    aiResolutionAdjustable: adjustableResolution,
     humanRevision: 0,
     aiRevision: 0,
     layers: [
@@ -267,6 +271,7 @@ export function snapshot(
     negativePrompt: room.negativePrompt,
     aiResolution: room.aiResolution,
     aiResolutionMax: room.aiResolutionMax,
+    aiResolutionAdjustable: room.aiResolutionAdjustable,
     members: [...room.members.values()],
     layers: sortedLayers(room),
     strokes: room.strokes,
@@ -570,6 +575,11 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       // everyone sees it, and the AI re-runs without anyone having to draw.
       const denoise = msg.denoise === undefined ? room.denoise : clampDenoise(msg.denoise);
       const negativePrompt = msg.negativePrompt === undefined ? room.negativePrompt : msg.negativePrompt.slice(0, MAX_NEGATIVE_PROMPT);
+      // In patch mode the generation size is the crop window, so accepting a
+      // change here would broadcast a setting that silently does nothing.
+      if (msg.aiResolution !== undefined && !room.aiResolutionAdjustable) {
+        return refuse('the AI resolution is fixed in patch mode');
+      }
       const aiResolution =
         msg.aiResolution === undefined ? room.aiResolution : clampResolution(msg.aiResolution, room.aiResolutionMax);
       if (denoise === room.denoise && negativePrompt === room.negativePrompt && aiResolution === room.aiResolution) return empty();

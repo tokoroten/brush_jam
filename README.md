@@ -123,7 +123,8 @@ are multiples of 64, denoise is 0..1, and so on).
 | `AI_WINDOW` | `CANVAS_SIZE` in full mode, else `1024` | Generation size in px (512-2048, multiple of 64) |
 | `AI_APPLY` | `768` | Central area the result is allowed to change |
 | `AI_STEPS` | `14` (`4` when `AI_FAST=1`) | Sampler steps |
-| `AI_FAST` | `0` | `1` switches ComfyUI to the 4-step LCM workflow |
+| `AI_FAST` | `0` | `1` switches ComfyUI to the 4-step LCM workflow (needs a LoRA) |
+| `AI_STREAM_AUTO` | `0` | `1` lets `AI_BACKEND=auto` consider the stream worker |
 | `COMFYUI_FAST_LORA` | `lcm-lora-sdxl.safetensors` | LoRA used by `AI_FAST` |
 | `AI_DENOISE` | `0.55` | img2img strength; the starting value of each room's slider |
 | `AI_CFG` | `5.5` | CFG scale |
@@ -144,12 +145,24 @@ swept.
 
 ### Backend selection
 
-An explicit `AI_BACKEND` always wins. `auto` (the default) probes in order:
-the stream worker's `/healthz`, then ComfyUI's `/system_stats`, then falls back
-to the mock. Each probe has a 2 s deadline so a dead endpoint cannot delay
-startup, and the chosen backend is logged with the reason. The stream worker is
-preferred because it holds the model in VRAM; note that on this 8 GB card it and
-ComfyUI cannot both be resident (see `docs/STREAM_WORKER.md`).
+An explicit `AI_BACKEND` always wins. `auto` (the default) probes ComfyUI's
+`/system_stats` and otherwise falls back to the mock. Each probe has a 2 s
+deadline so a dead endpoint cannot delay startup, and the chosen backend is
+logged with the reason.
+
+**The stream worker is explicit-only.** `auto` ignores it unless
+`AI_STREAM_AUTO=1`, because its answering `/healthz` only means it is holding
+~5 GB of VRAM - which on this 8 GB card starves ComfyUI - and because it needs
+a different denoise to look right, so silently routing to it would change output
+quality as well as speed. Which model owns the GPU is a deployment decision, not
+something a reachability probe should infer.
+
+When it is opted in, a reachable worker still has to be *usable*: auto requires
+`warm: true` (a worker with no model loaded answers `ok` and then echoes the
+input back) and `max_size >= AI_WINDOW` (a worker capped below the window
+answers `ok` and then 400s every request, which full mode retries forever). Each
+rejection is logged with its reason. An explicit `AI_BACKEND=stream` is always
+honoured, but the same checks run and print a warning.
 
 ## ComfyUI requirements
 
@@ -172,6 +185,11 @@ denoise - it builds the longer schedule and then keeps the last `steps + 1`
 sigmas, so denoise only picks the starting noise level. cfg 5.5 burns the image
 out at 4 steps. `COMFYUI_FAST_LORA=''` disables fast mode entirely (back to the
 14-step normal workflow), rather than leaving a 4-step `euler_ancestral`.
+
+The sampler settings come from a profile keyed off the LoRA name, because
+few-step LoRAs are not interchangeable: a name containing `dmd2` uses cfg 1.0
+(DMD2 is distilled and wants no guidance), anything else uses the LCM profile at
+cfg 1.5.
 
 `SetLatentNoiseMask` (rather than `VAEEncodeForInpaint`) keeps the human drawing
 as the img2img base, so the model reinterprets the strokes instead of filling
@@ -280,10 +298,16 @@ pnpm --filter @brushjam/server latency -- --url http://127.0.0.1:8787 --n 10
 ```
 
 Joins a **running** server as an ordinary client, draws N short strokes one at a
-time, and reports each edit's `stroke_end` -> `ai_result` time (what a person
-actually feels: debounce + render + backend + compositing) next to the backend's
-own `latencyMs`, with min/median/max for both. It starts nothing itself, so the
-`/healthz` line tells you which backend was really measured.
+time, and reports three numbers per edit, min/median/max:
+
+- **stroke_end -> pixels on screen** - the whole wait, including fetching the
+  result PNG, which is what a person actually experiences
+- **stroke_end -> ai_result message** - the same minus that download
+- **server pipeline** - the server's own `latencyMs`, which spans input render
+  + backend + compositing (it is *not* backend-only, despite the name)
+
+It starts nothing itself, so the `/healthz` line tells you which backend was
+really measured.
 
 ### Denoise / quality grid
 

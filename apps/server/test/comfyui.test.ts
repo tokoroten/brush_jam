@@ -351,6 +351,22 @@ describe('fast (LCM) workflow', () => {
     });
   });
 
+  // Review 6 finding 8: DMD2 is distilled and wants no guidance at all; LCM
+  // wants a little. Forcing 1.5 on both was wrong for the documented profile.
+  it('uses the DMD2 profile for a DMD2 LoRA', () => {
+    const graph = buildWorkflow({ ...base, fastLora: 'dmd2_sdxl_4step_lora_fp16.safetensors' });
+    expect((graph['9'] as { inputs: Record<string, unknown> }).inputs).toMatchObject({
+      cfg: 1.0,
+      sampler_name: 'lcm',
+      scheduler: 'sgm_uniform',
+      steps: 4,
+    });
+  });
+
+  it('keeps cfg 1.5 for the LCM profile', () => {
+    expect((fast['9'] as { inputs: { cfg: number } }).inputs.cfg).toBe(1.5);
+  });
+
   it('accepts a different LoRA name', () => {
     const dmd = buildWorkflow({ ...base, fastLora: 'dmd2_sdxl_4step_lora_fp16.safetensors' });
     expect((dmd['12'] as { inputs: { lora_name: string } }).inputs.lora_name).toBe('dmd2_sdxl_4step_lora_fp16.safetensors');

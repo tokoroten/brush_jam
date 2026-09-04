@@ -65,8 +65,13 @@ const socket = new WebSocket(wsUrl);
 
 interface Sample {
   edit: number;
+  /** stroke_end until the PNG is fetched: what a person waits for. */
   totalMs: number;
-  backendMs: number;
+  /** stroke_end until the ai_result message, before the image is fetched. */
+  notifiedMs: number;
+  /** The server's own latencyMs: input render + backend + composite. */
+  pipelineMs: number;
+  bytes: number;
 }
 
 const samples: Sample[] = [];
@@ -126,16 +131,26 @@ socket.on('message', (raw) => {
 
   if (msg.t === 'ai_result' && waiting) {
     waiting = false;
-    const totalMs = Date.now() - sentAt;
-    samples.push({ edit, totalMs, backendMs: msg.latencyMs });
-    console.log(`[latency] edit ${edit}/${opts.count}: ${totalMs} ms (backend ${msg.latencyMs} ms)`);
-    if (samples.length >= opts.count) {
-      clearTimeout(deadline);
-      report();
-      socket.close();
-      return;
-    }
-    drawNext();
+    const notifiedMs = Date.now() - sentAt;
+    // The message is not the picture: a client still has to fetch and decode
+    // the PNG before anything appears, so that download is part of the wait.
+    void fetch(`${base}${msg.url}`)
+      .then(async (r) => (await r.arrayBuffer()).byteLength)
+      .catch(() => 0)
+      .then((bytes) => {
+        const totalMs = Date.now() - sentAt;
+        samples.push({ edit, totalMs, notifiedMs, pipelineMs: msg.latencyMs, bytes });
+        console.log(
+          `[latency] edit ${edit}/${opts.count}: ${totalMs} ms to pixels (notified ${notifiedMs} ms, server pipeline ${msg.latencyMs} ms)`,
+        );
+        if (samples.length >= opts.count) {
+          clearTimeout(deadline);
+          report();
+          socket.close();
+          return;
+        }
+        drawNext();
+      });
   }
 });
 
@@ -153,9 +168,15 @@ function summarise(values: number[]): { min: number; median: number; max: number
 
 function report(): void {
   const total = summarise(samples.map((s) => s.totalMs));
-  const backend = summarise(samples.map((s) => s.backendMs));
+  const notified = summarise(samples.map((s) => s.notifiedMs));
+  const pipeline = summarise(samples.map((s) => s.pipelineMs));
+  const line = (label: string, v: { min: number; median: number; max: number }): string =>
+    `[latency] ${label.padEnd(34)} min ${v.min} ms | median ${v.median} ms | max ${v.max} ms`;
   console.log('');
   console.log(`[latency] backend: ${health.backend ?? 'unknown'}  samples: ${samples.length}`);
-  console.log(`[latency] stroke_end -> ai_result   min ${total.min} ms | median ${total.median} ms | max ${total.max} ms`);
-  console.log(`[latency] backend generate only     min ${backend.min} ms | median ${backend.median} ms | max ${backend.max} ms`);
+  // Named for what they actually measure. `latencyMs` from the server is NOT
+  // backend-only: it starts before the input render and ends after compositing.
+  console.log(line('stroke_end -> pixels on screen', total));
+  console.log(line('stroke_end -> ai_result message', notified));
+  console.log(line('server pipeline (render+gen+composite)', pipeline));
 }

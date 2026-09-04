@@ -52,7 +52,7 @@ export class RoomRuntime {
   private pendingImageBytes = 0;
 
   constructor(roomId: string, backend: AIBackend, private readonly config: Config) {
-    this.state = createRoom(roomId, config.aiDenoise, config.canvasSize, config.aiWindow);
+    this.state = createRoom(roomId, config.aiDenoise, config.canvasSize, config.aiWindow, config.aiMode === 'full');
     this.scheduler = new AIScheduler(
       {
         getRevision: () => this.state.humanRevision,
