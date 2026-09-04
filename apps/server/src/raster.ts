@@ -2,19 +2,74 @@ import { createCanvas, loadImage, type Canvas, type Image, type SKRSContext2D } 
 import { CANVAS_SIZE, planMask, renderStrokes, type MaskPlan, type Rect } from '@brushjam/shared';
 import { strokesForCrop, type RenderSnapshot } from './room.js';
 
-const imageCache = new Map<string, Image>();
+/**
+ * Decoded images are far bigger than the bytes they came from: a 4096x4096 PNG
+ * of one flat colour is a few KiB on the wire and 64 MiB decoded. The cache is
+ * therefore bounded by decoded pixels, not entries, and evicts least-recently
+ * used first. Entries are also dropped explicitly when no layer references the
+ * image any more.
+ */
+const BYTES_PER_PIXEL = 4;
+export const DECODED_PIXEL_BUDGET = (512 * 1024 * 1024) / BYTES_PER_PIXEL;
 
-/** Drop decoded images for a room that went away, so the cache cannot grow forever. */
+interface CacheEntry {
+  image: Image;
+  pixels: number;
+}
+
+const imageCache = new Map<string, CacheEntry>();
+let cachedPixels = 0;
+
+export function decodedCacheStats(): { entries: number; pixels: number } {
+  return { entries: imageCache.size, pixels: cachedPixels };
+}
+
+/** Drop decoded images that are no longer referenced (layer or room removed). */
 export function forgetImages(ids: Iterable<string>): void {
-  for (const id of ids) imageCache.delete(id);
+  for (const id of ids) {
+    const entry = imageCache.get(id);
+    if (!entry) continue;
+    cachedPixels -= entry.pixels;
+    imageCache.delete(id);
+  }
+}
+
+function evictUntilUnderBudget(budget = DECODED_PIXEL_BUDGET): void {
+  for (const [id, entry] of imageCache) {
+    if (cachedPixels <= budget) return;
+    cachedPixels -= entry.pixels;
+    imageCache.delete(id);
+  }
 }
 
 async function decode(id: string, bytes: Buffer): Promise<Image> {
   const hit = imageCache.get(id);
-  if (hit) return hit;
-  const img = await loadImage(bytes);
-  imageCache.set(id, img);
-  return img;
+  if (hit) {
+    // touch: Map preserves insertion order, so re-inserting makes it newest
+    imageCache.delete(id);
+    imageCache.set(id, hit);
+    return hit.image;
+  }
+  const image = await loadImage(bytes);
+  const pixels = image.width * image.height;
+  imageCache.set(id, { image, pixels });
+  cachedPixels += pixels;
+  evictUntilUnderBudget();
+  return image;
+}
+
+/**
+ * Decode an upload once, up front, and confirm it matches the header we already
+ * validated. A file can carry a perfectly good PNG header and no pixel data at
+ * all, which would otherwise fail on every later render instead of at upload.
+ */
+export async function decodeUpload(bytes: Buffer, expected: { width: number; height: number }): Promise<boolean> {
+  try {
+    const image = await loadImage(bytes);
+    return image.width === expected.width && image.height === expected.height;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -155,9 +210,4 @@ export class AICanvas {
   clear(): void {
     this.ctx.clearRect(0, 0, this.size, this.size);
   }
-}
-
-export async function imageSize(bytes: Buffer): Promise<{ width: number; height: number }> {
-  const img = await loadImage(bytes);
-  return { width: img.width, height: img.height };
 }

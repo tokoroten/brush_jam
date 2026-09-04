@@ -85,6 +85,7 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
 
     if (req.method === 'POST' && url.pathname === '/api/rooms') {
       const room = registry.create();
+      if (!room) return json(res, 429, { error: 'the server is holding too many rooms right now' });
       json(res, 200, { roomId: room.state.id });
       return;
     }
@@ -110,6 +111,7 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
         if (declaredLength > MAX_IMAGE_BYTES) return json(res, 413, { error: 'image too large' });
         const bytes = await readBody(req, MAX_IMAGE_BYTES);
         const target = registry.ensure(roomId);
+        if (!target) return json(res, 429, { error: 'the server is holding too many rooms right now' });
         const stored = await target.addImage(bytes, mime);
         if ('error' in stored) return json(res, 400, stored);
         return json(res, 200, stored);
@@ -156,6 +158,10 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
     const roomId = match[1]!;
     wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
       const room = registry.ensure(roomId);
+      if (!room) {
+        ws.close(1013, 'server is holding too many rooms');
+        return;
+      }
       const rawToken = url.searchParams.get('token') ?? '';
       const token = SESSION_TOKEN.test(rawToken) ? rawToken : undefined;
       const userId = room.join(ws, url.searchParams.get('name') ?? '', token);

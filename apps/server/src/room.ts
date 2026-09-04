@@ -21,6 +21,8 @@ export interface RoomImage {
   bytes: Buffer;
   width: number;
   height: number;
+  /** Upload time, so an image can be swept once nothing references it. */
+  createdAt: number;
 }
 
 export interface RoomState {
@@ -34,7 +36,7 @@ export interface RoomState {
   members: Map<string, Member>;
   memberSeq: number;
   /** In-progress strokes, keyed by stroke id. */
-  pending: Map<string, { userId: string; init: StrokeInit; points: Point[]; startedAt: number }>;
+  pending: Map<string, { userId: string; init: StrokeInit; points: Point[]; startedAt: number; lastActivityAt: number }>;
   images: Map<string, RoomImage>;
   /** Reconnect tokens -> the member identity they own. */
   sessions: Map<string, Member>;
@@ -65,6 +67,23 @@ export const qualifyStrokeId = (userId: string, rawId: string): string => `${use
 /** Hard caps on a single in-progress stroke (a client could otherwise stream forever). */
 export const MAX_STROKE_POINTS = 50_000;
 export const MAX_STROKE_MS = 60_000;
+/** A stroke nobody has added points to in this long is abandoned. */
+export const PENDING_STROKE_IDLE_MS = 60_000;
+/** One person cannot have more than this many strokes in progress at once. */
+export const MAX_PENDING_PER_USER = 4;
+/** Upper bound on a room's committed stroke log (snapshots are sent in full). */
+export const MAX_STROKES_PER_ROOM = 20_000;
+
+/** Sender-only refusal that also clears the sender's optimistic preview. */
+const refuseStroke = (userId: string, strokeId: string, message: string): ApplyResult => ({
+  broadcast: [],
+  relay: [],
+  dirty: [],
+  toSender: [
+    { t: 'stroke_cancel', userId, strokeId, reason: message },
+    { t: 'error', message },
+  ],
+});
 
 export function createRoom(id: string): RoomState {
   return {
@@ -97,15 +116,37 @@ const MAX_SESSIONS = 64;
 export function joinMember(room: RoomState, name: string, token?: string): Member {
   if (token) {
     const prior = room.sessions.get(token);
-    if (prior && !room.members.has(prior.userId)) {
+    if (prior) {
+      // Resume unconditionally, even if the old socket still looks connected:
+      // that is usually a dead TCP connection the server has not noticed. The
+      // caller replaces the stale socket. Tokens live in sessionStorage, so two
+      // tabs never share one.
       room.members.set(prior.userId, prior);
       room.lastActiveAt = Date.now();
       return prior;
     }
   }
   const member = addMember(room, name);
-  if (token && room.sessions.size < MAX_SESSIONS) room.sessions.set(token, member);
+  if (token) {
+    if (room.sessions.size >= MAX_SESSIONS) evictOldestDisconnectedSession(room);
+    room.sessions.set(token, member);
+  }
   return member;
+}
+
+/**
+ * Make room in the session table without ever dropping a token belonging to
+ * someone currently in the room (that would silently split their identity).
+ */
+function evictOldestDisconnectedSession(room: RoomState): void {
+  for (const [token, member] of room.sessions) {
+    if (room.members.has(member.userId)) continue;
+    room.sessions.delete(token);
+    return;
+  }
+  // Everyone is connected: drop the oldest entry rather than growing forever.
+  const oldest = room.sessions.keys().next().value as string | undefined;
+  if (oldest !== undefined) room.sessions.delete(oldest);
 }
 
 export function addMember(room: RoomState, name: string): Member {
@@ -129,6 +170,21 @@ export function removeMember(room: RoomState, userId: string): ServerMessage[] {
     if (p.userId !== userId) continue;
     room.pending.delete(strokeId);
     cancels.push({ t: 'stroke_cancel', userId, strokeId, reason: 'author left' });
+  }
+  return cancels;
+}
+
+/**
+ * Abandons strokes nobody has added points to for a while. A client that goes
+ * quiet mid-stroke (crashed tab, sleeping laptop) would otherwise leave a live
+ * stroke drawn on every other screen forever.
+ */
+export function expirePendingStrokes(room: RoomState, now = Date.now(), idleMs = PENDING_STROKE_IDLE_MS): ServerMessage[] {
+  const cancels: ServerMessage[] = [];
+  for (const [strokeId, p] of room.pending) {
+    if (now - p.lastActivityAt <= idleMs && now - p.startedAt <= MAX_STROKE_MS) continue;
+    room.pending.delete(strokeId);
+    cancels.push({ t: 'stroke_cancel', userId: p.userId, strokeId, reason: 'stroke abandoned' });
   }
   return cancels;
 }
@@ -212,10 +268,19 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
 
     case 'stroke_start': {
       const init = msg.stroke;
-      const layer = findLayer(room, init.layerId);
-      if (!layer || layer.kind !== 'draw' || layer.locked) return refuse('cannot draw on that layer');
       const id = qualifyStrokeId(userId, init.id);
-      if (room.pending.has(id) || room.strokes.some((s2) => s2.id === id)) return refuse('duplicate stroke id');
+      // Every refusal echoes a stroke_cancel for this id so the sender drops the
+      // preview it already started drawing locally.
+      const layer = findLayer(room, init.layerId);
+      if (!layer || layer.kind !== 'draw' || layer.locked) return refuseStroke(userId, id, 'cannot draw on that layer');
+      if (room.pending.has(id) || room.strokes.some((s2) => s2.id === id)) return refuseStroke(userId, id, 'duplicate stroke id');
+      let mine = 0;
+      for (const p of room.pending.values()) if (p.userId === userId) mine += 1;
+      if (mine >= MAX_PENDING_PER_USER) return refuseStroke(userId, id, 'too many strokes in progress');
+      if (room.strokes.length >= MAX_STROKES_PER_ROOM) {
+        console.warn(`[room ${room.id}] stroke log full (${room.strokes.length}); refusing new strokes`);
+        return refuseStroke(userId, id, 'this room has reached its stroke limit');
+      }
       const clean: StrokeInit = {
         id,
         layerId: layer.id,
@@ -224,7 +289,8 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         width: clamp(init.width, 1, 128),
         points: sanitizePoints(init.points),
       };
-      room.pending.set(id, { userId, init: clean, points: [...clean.points], startedAt: Date.now() });
+      const now = Date.now();
+      room.pending.set(id, { userId, init: clean, points: [...clean.points], startedAt: now, lastActivityAt: now });
       return { broadcast: [], relay: [{ t: 'stroke_start', userId, stroke: clean }], dirty: [] };
     }
 
@@ -243,6 +309,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         };
       }
       p.points.push(...points);
+      p.lastActivityAt = Date.now();
       return { broadcast: [], relay: [{ t: 'stroke_chunk', userId, strokeId: id, points }], dirty: [] };
     }
 
@@ -254,6 +321,10 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       const layer = findLayer(room, p.init.layerId);
       if (!layer || layer.kind !== 'draw') {
         return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'layer removed' }], relay: [], dirty: [] };
+      }
+      // The layer may have been locked while this stroke was being drawn.
+      if (layer.locked) {
+        return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'layer locked' }], relay: [], dirty: [] };
       }
       const tail = sanitizePoints(msg.points);
       p.points.push(...tail);
@@ -350,23 +421,34 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
     case 'layer_update': {
       const layer = findLayer(room, msg.id);
       if (!layer) return refuse('unknown layer');
+      const patch = msg.patch;
       const wasIncludedInAI = layer.includeInAI;
       const before = layerDirty(room, layer);
-      const patch = msg.patch;
+
+      // `name` and `locked` change nothing about the pixels. Renaming a layer
+      // must not spend a generation.
+      let rendersDifferently = false;
+      const setRender = <K extends keyof Layer>(key: K, value: Layer[K]): void => {
+        if (layer[key] === value) return;
+        layer[key] = value;
+        rendersDifferently = true;
+      };
+
       if (typeof patch.name === 'string') layer.name = patch.name.slice(0, 32);
-      if (typeof patch.visible === 'boolean') layer.visible = patch.visible;
       if (typeof patch.locked === 'boolean') layer.locked = patch.locked;
-      if (finite(patch.opacity)) layer.opacity = clamp(patch.opacity, 0, 1);
-      if (typeof patch.includeInAI === 'boolean' && layer.kind === 'reference') layer.includeInAI = patch.includeInAI;
+      if (typeof patch.visible === 'boolean') setRender('visible', patch.visible);
+      if (finite(patch.opacity)) setRender('opacity', clamp(patch.opacity, 0, 1));
+      if (typeof patch.includeInAI === 'boolean' && layer.kind === 'reference') setRender('includeInAI', patch.includeInAI);
       if (layer.kind === 'reference') {
-        if (finite(patch.x)) layer.x = patch.x;
-        if (finite(patch.y)) layer.y = patch.y;
-        if (finite(patch.scale)) layer.scale = clamp(patch.scale, 0.05, 8);
+        if (finite(patch.x)) setRender('x', patch.x);
+        if (finite(patch.y)) setRender('y', patch.y);
+        if (finite(patch.scale)) setRender('scale', clamp(patch.scale, 0.05, 8));
       }
+
       room.humanRevision += 1;
       const after = layerDirty(room, layer);
       // Turning "AI input" off still has to repaint where the layer used to be.
-      const affectsAI = wasIncludedInAI || layer.includeInAI;
+      const affectsAI = rendersDifferently && (wasIncludedInAI || layer.includeInAI);
       return {
         broadcast: [{ t: 'layer_updated', layer, humanRevision: room.humanRevision }],
         relay: [],

@@ -71,7 +71,9 @@ describe('room reducer', () => {
     state.layers[0]!.locked = true;
     const res = applyClientMessage(state, alice, { t: 'stroke_start', stroke: { id: 'a', layerId, tool: 'pen', color: '#000000', width: 4, points: [] } });
     expect(res.relay).toHaveLength(0);
-    expect(res.toSender?.[0]).toMatchObject({ t: 'error' });
+    // the refusal also clears the sender's optimistic local preview
+    expect(res.toSender?.[0]).toMatchObject({ t: 'stroke_cancel' });
+    expect(res.toSender?.[1]).toMatchObject({ t: 'error' });
     expect(state.pending.size).toBe(0);
   });
 
@@ -142,7 +144,7 @@ describe('room reducer', () => {
 
   it('adds reference layers that are excluded from AI input by default', () => {
     const { state, alice } = room();
-    state.images.set('img1', { id: 'img1', mime: 'image/png', bytes: Buffer.alloc(4), width: 100, height: 80 });
+    state.images.set('img1', { id: 'img1', mime: 'image/png', bytes: Buffer.alloc(4), width: 100, height: 80, createdAt: Date.now() });
     const res = applyClientMessage(state, alice, { t: 'layer_create', layer: { kind: 'reference', imageId: 'img1', x: 10, y: 20 } });
     const layer = (res.broadcast[0] as { layer: { includeInAI: boolean; imageWidth: number } }).layer;
     expect(layer.includeInAI).toBe(false);

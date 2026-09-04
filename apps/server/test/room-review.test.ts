@@ -54,7 +54,8 @@ describe('stroke identity (finding 13)', () => {
       t: 'stroke_start',
       stroke: { id: 'dup', layerId, tool: 'pen', color: '#000000', width: 4, points: [{ x: 1, y: 1 }] },
     });
-    expect(res.toSender?.[0]).toMatchObject({ t: 'error', message: 'duplicate stroke id' });
+    expect(res.toSender?.[0]).toMatchObject({ t: 'stroke_cancel', strokeId: qualifyStrokeId(alice, 'dup') });
+    expect(res.toSender?.[1]).toMatchObject({ t: 'error', message: 'duplicate stroke id' });
     expect(state.pending.size).toBe(0);
   });
 
@@ -65,7 +66,8 @@ describe('stroke identity (finding 13)', () => {
       t: 'stroke_start',
       stroke: { id: 'p', layerId, tool: 'pen', color: '#000000', width: 4, points: [{ x: 1, y: 1 }] },
     });
-    expect(again.toSender?.[0]).toMatchObject({ t: 'error' });
+    expect(again.toSender?.[0]).toMatchObject({ t: 'stroke_cancel' });
+    expect(again.toSender?.[1]).toMatchObject({ t: 'error' });
     expect(state.pending.size).toBe(1);
   });
 });
@@ -141,7 +143,7 @@ describe('clear_layer dirty union (finding 16)', () => {
 describe('reference layer AI input (finding 9)', () => {
   const withReference = (): { state: RoomState; alice: string; refId: string } => {
     const { state, alice } = room();
-    state.images.set('img1', { id: 'img1', mime: 'image/png', bytes: Buffer.alloc(4), width: 200, height: 100 });
+    state.images.set('img1', { id: 'img1', mime: 'image/png', bytes: Buffer.alloc(4), width: 200, height: 100, createdAt: Date.now() });
     const created = applyClientMessage(state, alice, {
       t: 'layer_create',
       layer: { kind: 'reference', imageId: 'img1', x: 500, y: 500 },
@@ -176,10 +178,13 @@ describe('reconnect identity (finding 11)', () => {
     expect(applyClientMessage(state, second.userId, { t: 'undo' }).broadcast[0]).toMatchObject({ t: 'undo_applied' });
   });
 
-  it('mints a fresh identity when the token is still connected', () => {
+  it('rebinds the identity when the token returns while the old socket looks alive', () => {
+    // A dead TCP connection the server has not noticed yet must not fork the
+    // participant into two identities; the caller replaces the stale socket.
     const state = createRoom('resume2');
     const first = joinMember(state, 'Alice', 'token-abc');
-    expect(joinMember(state, 'Alice', 'token-abc').userId).not.toBe(first.userId);
+    expect(joinMember(state, 'Alice', 'token-abc').userId).toBe(first.userId);
+    expect(state.members.size).toBe(1);
   });
 
   it('mints a fresh identity without a token', () => {

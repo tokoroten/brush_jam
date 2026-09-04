@@ -9,18 +9,23 @@ import {
   applyClientMessage,
   captureRenderSnapshot,
   createRoom,
+  expirePendingStrokes,
   joinMember,
   removeMember,
   snapshot,
   type RoomState,
 } from './room.js';
-import { AICanvas, buildMask, forgetImages, renderCropInput } from './raster.js';
+import { AICanvas, buildMask, decodeUpload, forgetImages, renderCropInput } from './raster.js';
 import { validateClientMessage } from './validate.js';
 
 const MAX_PATCHES = 24;
+/** Every live room holds rasters and uploads; this is a hard ceiling. */
+export const MAX_ROOMS = 64;
 /** A slow client is dropped rather than allowed to buffer without limit. */
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 export const MAX_IMAGES_PER_ROOM = 32;
+/** An uploaded image gets this long to become a layer before it is swept. */
+export const IMAGE_GRACE_MS = 2 * 60_000;
 export const MAX_IMAGE_BYTES_PER_ROOM = 64 * 1024 * 1024;
 
 export class RoomRuntime {
@@ -86,6 +91,13 @@ export class RoomRuntime {
     return this.sockets.size;
   }
 
+  /** Abandon strokes that went quiet, and tell everyone to drop the ghost. */
+  expireStrokes(now = Date.now()): number {
+    const cancels = expirePendingStrokes(this.state, now);
+    for (const cancel of cancels) this.broadcast(cancel);
+    return cancels.length;
+  }
+
   /** True when the room has been empty long enough to be reclaimed. */
   isIdle(now: number, idleMs: number): boolean {
     return this.sockets.size === 0 && now - this.state.lastActiveAt > idleMs;
@@ -93,6 +105,17 @@ export class RoomRuntime {
 
   join(socket: WebSocket, name: string, token?: string): string {
     const member = joinMember(this.state, name, token);
+    const previous = this.sockets.get(member.userId);
+    if (previous && previous !== socket) {
+      // Same identity resumed while the old socket still looked alive (a dead
+      // TCP connection the server has not noticed yet): the newest wins.
+      this.sockets.delete(member.userId);
+      try {
+        previous.terminate();
+      } catch {
+        /* already gone */
+      }
+    }
     this.sockets.set(member.userId, socket);
     this.send(member.userId, {
       t: 'snapshot',
@@ -131,6 +154,7 @@ export class RoomRuntime {
       for (const msg of result.broadcast) this.broadcast(msg);
       for (const msg of result.relay) this.relay(userId, msg);
       for (const msg of result.toSender ?? []) this.send(userId, msg);
+      if (validated.msg.t === 'layer_delete' || validated.msg.t === 'layer_create') this.pruneImages();
       if (result.dirty.length > 0) this.scheduler.markDirty(result.dirty);
       if (result.promptChanged) this.scheduler.nudge();
     } catch (err) {
@@ -140,14 +164,38 @@ export class RoomRuntime {
   }
 
   async addImage(bytes: Buffer, mime: string): Promise<{ imageId: string; width: number; height: number } | { error: string }> {
+    // The header check is only a cheap preflight against decompression bombs...
     const check = checkImage(bytes, mime);
     if (!check.ok) return { error: check.error };
     if (this.state.images.size >= MAX_IMAGES_PER_ROOM) return { error: 'this room already holds the maximum number of images' };
     if (this.imageBytes + bytes.length > MAX_IMAGE_BYTES_PER_ROOM) return { error: 'this room has reached its image storage limit' };
+    // ...so decode once here and confirm the file really is what it claims.
+    if (!(await decodeUpload(bytes, check.info))) return { error: 'image could not be decoded' };
     const id = shortId(10);
-    this.state.images.set(id, { id, mime, bytes, width: check.info.width, height: check.info.height });
+    this.state.images.set(id, { id, mime, bytes, width: check.info.width, height: check.info.height, createdAt: Date.now() });
     this.imageBytes += bytes.length;
     return { imageId: id, width: check.info.width, height: check.info.height };
+  }
+
+  /**
+   * Forget images no layer references any more. Kept for a grace period so an
+   * upload that has not been turned into a layer yet is not swept from under
+   * the client that just uploaded it.
+   */
+  pruneImages(now = Date.now(), graceMs = IMAGE_GRACE_MS): number {
+    const referenced = new Set(this.state.layers.map((l) => l.imageId).filter((id): id is string => Boolean(id)));
+    const drop: string[] = [];
+    for (const [id, image] of this.state.images) {
+      if (referenced.has(id)) continue;
+      if (now - image.createdAt < graceMs) continue;
+      drop.push(id);
+    }
+    for (const id of drop) {
+      this.imageBytes -= this.state.images.get(id)?.bytes.length ?? 0;
+      this.state.images.delete(id);
+    }
+    forgetImages(drop);
+    return drop.length;
   }
 
   patch(id: string): Buffer | undefined {
@@ -208,7 +256,7 @@ export class RoomRegistry {
   constructor(private readonly backend: AIBackend, private readonly config: Config) {}
 
   /** Reclaim rooms nobody has been in for a while (each holds a large raster). */
-  startSweeper(intervalMs = 60_000): void {
+  startSweeper(intervalMs = 15_000): void {
     if (this.sweeper) return;
     this.sweeper = setInterval(() => this.sweep(), intervalMs);
     this.sweeper.unref?.();
@@ -217,7 +265,11 @@ export class RoomRegistry {
   sweep(now = Date.now()): number {
     let removed = 0;
     for (const [id, room] of this.rooms) {
-      if (!room.isIdle(now, this.config.roomIdleMs)) continue;
+      if (!room.isIdle(now, this.config.roomIdleMs)) {
+        room.expireStrokes(now);
+        room.pruneImages(now);
+        continue;
+      }
       room.dispose();
       this.rooms.delete(id);
       removed += 1;
@@ -225,7 +277,12 @@ export class RoomRegistry {
     return removed;
   }
 
-  create(): RoomRuntime {
+  get atCapacity(): boolean {
+    return this.rooms.size >= MAX_ROOMS;
+  }
+
+  create(): RoomRuntime | null {
+    if (this.atCapacity && this.sweep() === 0 && this.atCapacity) return null;
     let id = shortId(8);
     while (this.rooms.has(id)) id = shortId(8);
     const room = new RoomRuntime(id, this.backend, this.config);
@@ -238,9 +295,10 @@ export class RoomRegistry {
   }
 
   /** Rooms are created on demand so a shared URL always works. */
-  ensure(id: string): RoomRuntime {
+  ensure(id: string): RoomRuntime | null {
     const existing = this.rooms.get(id);
     if (existing) return existing;
+    if (this.atCapacity && this.sweep() === 0 && this.atCapacity) return null;
     const room = new RoomRuntime(id, this.backend, this.config);
     this.rooms.set(id, room);
     return room;

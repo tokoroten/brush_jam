@@ -1,6 +1,6 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { describe, expect, it } from 'vitest';
-import { checkImage, probeImage } from '../src/imageInfo.js';
+import { checkImage, probeImage, validateStructure } from '../src/imageInfo.js';
 
 function realPng(width: number, height: number): Buffer {
   const canvas = createCanvas(width, height);
@@ -66,5 +66,55 @@ describe('checkImage', () => {
     edge.writeUInt32BE(4096, 16);
     edge.writeUInt32BE(4096, 20);
     expect(checkImage(edge, 'image/png').ok).toBe(true);
+  });
+});
+
+/**
+ * `loadImage` segfaults (exit 139, verified) on a PNG with a valid header and no
+ * image data, so these must be rejected in pure JS before anything decodes.
+ */
+describe('validateStructure', () => {
+  const headerOnlyPng = (): Buffer => {
+    const b = Buffer.alloc(24);
+    b.writeUInt32BE(0x89504e47, 0);
+    b.writeUInt32BE(0x0d0a1a0a, 4);
+    b.write('IHDR', 12, 'ascii');
+    b.writeUInt32BE(8, 16);
+    b.writeUInt32BE(8, 20);
+    return b;
+  };
+
+  it('accepts a complete PNG', () => {
+    expect(validateStructure(realPng(32, 32), 'image/png')).toBeNull();
+  });
+
+  it('rejects a PNG header with no chunks (the crashing case)', () => {
+    expect(validateStructure(headerOnlyPng(), 'image/png')).toMatch(/IEND|image data/);
+    expect(checkImage(headerOnlyPng(), 'image/png').ok).toBe(false);
+  });
+
+  it('rejects a PNG whose IEND chunk is missing', () => {
+    const full = realPng(32, 32);
+    expect(validateStructure(full.subarray(0, full.length - 12), 'image/png')).toMatch(/IEND/);
+  });
+
+  it('rejects a PNG chunk claiming an impossible length', () => {
+    const b = realPng(32, 32);
+    b.writeUInt32BE(0xfffffff0, 8);
+    expect(validateStructure(b, 'image/png')).toBeTruthy();
+  });
+
+  it('accepts a complete JPEG and rejects a truncated one', () => {
+    const jpeg = realJpeg(32, 32);
+    expect(validateStructure(jpeg, 'image/jpeg')).toBeNull();
+    expect(validateStructure(jpeg.subarray(0, jpeg.length - 2), 'image/jpeg')).toMatch(/end-of-image/);
+  });
+
+  it('rejects a WebP whose RIFF payload is truncated', () => {
+    const b = Buffer.alloc(64);
+    b.write('RIFF', 0, 'ascii');
+    b.writeUInt32LE(10_000, 4);
+    b.write('WEBP', 8, 'ascii');
+    expect(validateStructure(b, 'image/webp')).toMatch(/truncated/);
   });
 });
