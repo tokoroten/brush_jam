@@ -294,3 +294,24 @@ describe('superseded sockets', () => {
     bob.close();
   });
 });
+
+/** Moving a draw layer reaches everyone else. */
+describe('draw layer offsets over the wire', () => {
+  it('broadcasts the offset and shows it in a later snapshot', async () => {
+    const alice = await Client.connect('moveroom', 'Alice');
+    const snap = await alice.waitFor('snapshot');
+    const layerId = snap.snapshot.layers[0]!.id;
+    const bob = await Client.connect('moveroom', 'Bob');
+    bob.clear();
+
+    alice.send({ t: 'layer_update', id: layerId, patch: { offsetX: 240, offsetY: -60 } });
+    const updated = await bob.waitFor('layer_updated');
+    expect(updated.layer).toMatchObject({ id: layerId, offsetX: 240, offsetY: -60 });
+
+    const late = await Client.connect('moveroom', 'Carol');
+    expect((await late.waitFor('snapshot')).snapshot.layers[0]).toMatchObject({ offsetX: 240, offsetY: -60 });
+    alice.close();
+    bob.close();
+    late.close();
+  });
+});

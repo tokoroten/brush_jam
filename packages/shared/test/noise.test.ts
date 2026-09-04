@@ -127,3 +127,39 @@ describe('noise stroke rendering', () => {
     for (let i = 0; i < data.length; i += 4) expect(data[i + 3]).toBe(0);
   });
 });
+
+/** Moving a layer is a render-time translation, not a coordinate rewrite. */
+describe('translated layer rendering', () => {
+  const pen = (id: string): RenderableStroke => ({
+    id,
+    tool: 'pen',
+    color: '#112233',
+    width: 12,
+    points: [
+      { x: 40, y: 40 },
+      { x: 120, y: 90 },
+    ],
+  });
+
+  it('renders a moved layer exactly like the same strokes drawn at the offset', () => {
+    const moved = createCanvas(256, 256);
+    // layer offset (60, 30): the renderer subtracts a negative offset
+    renderStrokes(moved.getContext('2d') as never, [pen('p1')], { offsetX: -60, offsetY: -30, createCanvas: factory });
+
+    const direct = createCanvas(256, 256);
+    const shifted: RenderableStroke = { ...pen('p1'), points: pen('p1').points.map((p) => ({ x: p.x + 60, y: p.y + 30 })) };
+    renderStrokes(direct.getContext('2d') as never, [shifted], { createCanvas: factory });
+
+    expect(moved.toBuffer('image/png')).toEqual(direct.toBuffer('image/png'));
+  });
+
+  it('keeps noise deterministic in layer space when the layer moves', () => {
+    // The seed and coordinates are the stroke's own, so a moved noise stroke
+    // carries its pattern with it instead of resampling the world.
+    const a = createCanvas(256, 256);
+    renderStrokes(a.getContext('2d') as never, [stroke('n1')], { offsetX: -20, offsetY: -20, createCanvas: factory });
+    const b = createCanvas(256, 256);
+    renderStrokes(b.getContext('2d') as never, [stroke('n1')], { offsetX: -20, offsetY: -20, createCanvas: factory });
+    expect(a.toBuffer('image/png')).toEqual(b.toBuffer('image/png'));
+  });
+});

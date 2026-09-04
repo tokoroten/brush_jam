@@ -16,7 +16,7 @@ import {
   type Point,
 } from '@brushjam/shared';
 import { LayerPanel } from './LayerPanel.js';
-import { movedPosition, pickReferenceLayer, scaledBy } from './move.js';
+import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, scaledBy } from './move.js';
 import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pastePlacement } from './paste.js';
@@ -175,7 +175,12 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     if (tool === 'move') {
       // Topmost reference under the pointer wins; otherwise the selected one,
       // which is what makes a freshly pasted image draggable straight away.
-      const target = pickReferenceLayer(layers, sizeOf, world, activeLayer?.id ?? null);
+      const target = pickMovableLayer(
+        layers,
+        { sizeOf, strokes: client.strokes, undone: client.undone },
+        world,
+        activeLayer?.id ?? null,
+      );
       if (target) {
         setActiveLayerId(target.id);
         dragRef.current = {
@@ -184,7 +189,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           lastScreen: screen,
           sentPoints: 0,
           lastChunkAt: 0,
-          origin: { x: target.x ?? 0, y: target.y ?? 0 },
+          origin: layerOrigin(target),
         };
       }
       // the move tool never draws, even with nothing to move
@@ -196,7 +201,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     // The server namespaces ids by author; mirror that locally so the committed
     // stroke replaces the live one instead of leaving a duplicate behind.
     const liveKey = `${client.youUserId}:${strokeId}`;
-    const point: Point = { x: world.x, y: world.y, p: e.pressure > 0 ? e.pressure : 1 };
+    // The layer is rendered translated, so points are recorded in layer space
+    // and the line appears exactly under the pointer.
+    const point: Point = { ...layerPoint(world, activeLayer), p: e.pressure > 0 ? e.pressure : 1 };
     const init = { id: liveKey, layerId: activeLayer.id, tool: tool === 'eraser' ? ('eraser' as const) : tool === 'noise' ? ('noise' as const) : ('pen' as const), color, width, points: [point] };
     client.live.set(liveKey, { userId: client.youUserId, init, points: [point] });
     client.send({ t: 'stroke_start', stroke: { ...init, id: strokeId } });
@@ -226,14 +233,16 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       drag.lastScreen = { x: e.clientX, y: e.clientY };
       if (now - drag.lastChunkAt > MOVE_INTERVAL_MS) {
         drag.lastChunkAt = now;
-        client.send({ t: 'layer_update', id: drag.layerId, patch: { x: drag.origin.x, y: drag.origin.y } });
+        const moved = client.findLayer(drag.layerId);
+        if (moved) client.send({ t: 'layer_update', id: drag.layerId, patch: movePatch(moved, drag.origin) });
       }
       return;
     }
     if (drag.kind === 'stroke' && drag.strokeId && drag.liveKey) {
       const live = client.live.get(drag.liveKey);
       if (!live) return;
-      live.points.push({ x: world.x, y: world.y, p: e.pressure > 0 ? e.pressure : 1 });
+      const owner = client.findLayer(live.init.layerId);
+      live.points.push({ ...layerPoint(world, owner), p: e.pressure > 0 ? e.pressure : 1 });
       if (now - drag.lastChunkAt > CHUNK_INTERVAL_MS) {
         drag.lastChunkAt = now;
         const points = live.points.slice(drag.sentPoints);
@@ -248,7 +257,8 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     dragRef.current = null;
     if (!drag) return;
     if (drag.kind === 'move' && drag.layerId && drag.origin) {
-      client.send({ t: 'layer_update', id: drag.layerId, patch: { x: drag.origin.x, y: drag.origin.y } });
+      const moved = client.findLayer(drag.layerId);
+      if (moved) client.send({ t: 'layer_update', id: drag.layerId, patch: movePatch(moved, drag.origin) });
       return;
     }
     if (drag.kind !== 'stroke' || !drag.strokeId || !drag.liveKey) return;

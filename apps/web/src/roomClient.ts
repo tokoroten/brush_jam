@@ -350,7 +350,7 @@ export class RoomClient {
         this.strokes.push(msg.stroke);
         this.humanRevision = msg.humanRevision;
         const layer = this.findLayer(msg.stroke.layerId);
-        if (layer) drawStroke(this.layerCanvas(layer.id), msg.stroke);
+        if (layer) drawStroke(this.layerCanvas(layer.id), msg.stroke, layer);
         break;
       }
       case 'undo_applied': {

@@ -39,16 +39,26 @@ export function redrawLayer(
     }
     return;
   }
+  // A moved draw layer is translated at render time; the log is untouched.
   renderStrokes(
     ctx as unknown as never,
     strokes.filter((s) => s.layerId === layer.id),
-    { undone, createCanvas: (w, h) => scratchCanvas(w, h) as never },
+    {
+      undone,
+      offsetX: -(layer.offsetX ?? 0),
+      offsetY: -(layer.offsetY ?? 0),
+      createCanvas: (w, h) => scratchCanvas(w, h) as never,
+    },
   );
 }
 
 /** Draw a single committed stroke incrementally (the common case). */
-export function drawStroke(canvas: HTMLCanvasElement, stroke: Stroke): void {
-  renderStrokes(ctxOf(canvas) as unknown as never, [stroke], { createCanvas: (w, h) => scratchCanvas(w, h) as never });
+export function drawStroke(canvas: HTMLCanvasElement, stroke: Stroke, layer?: Layer): void {
+  renderStrokes(ctxOf(canvas) as unknown as never, [stroke], {
+    offsetX: -(layer?.offsetX ?? 0),
+    offsetY: -(layer?.offsetY ?? 0),
+    createCanvas: (w, h) => scratchCanvas(w, h) as never,
+  });
 }
 
 export const ASSET_TIMEOUT_MS = 10_000;

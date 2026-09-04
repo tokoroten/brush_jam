@@ -100,10 +100,13 @@ export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size
       const s = layer.scale ?? 1;
       lctx.drawImage(img, (layer.x ?? 0) - crop.x, (layer.y ?? 0) - crop.y, stored.width * s, stored.height * s);
     } else {
-      renderStrokes(lctx as unknown as never, strokesForCrop(snapshot, crop, layer.id), {
+      // A moved draw layer keeps its stroke coordinates and is translated here.
+      const dx = layer.offsetX ?? 0;
+      const dy = layer.offsetY ?? 0;
+      renderStrokes(lctx as unknown as never, strokesForCrop(snapshot, crop, layer.id, { x: dx, y: dy }), {
         undone: snapshot.undone,
-        offsetX: crop.x,
-        offsetY: crop.y,
+        offsetX: crop.x - dx,
+        offsetY: crop.y - dy,
         createCanvas: (w, h) => createCanvas(w, h) as never,
       });
     }

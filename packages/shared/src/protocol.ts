@@ -15,6 +15,12 @@ export interface Layer {
   order: number;
   /** Draw layers are always AI input; reference layers default to false. */
   includeInAI: boolean;
+  /**
+   * Draw layers only: the whole layer is rendered translated by this, while
+   * stroke coordinates stay untouched in the log. Moving a layer is not undoable.
+   */
+  offsetX?: number;
+  offsetY?: number;
   /** reference layers only */
   imageId?: string;
   x?: number;

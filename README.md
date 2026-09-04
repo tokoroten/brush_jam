@@ -200,6 +200,18 @@ replacing each covered pixel's RGB. Live preview while drawing uses the same
 renderer per chunk - the per-frame cost is bounded by the stroke's bbox and was
 not noticeable in the browser.
 
+### Moving layers
+
+The move tool moves reference layers *and* draw layers. A draw layer gets
+`offsetX`/`offsetY`: the stroke log keeps its original coordinates and the whole
+layer is translated at render time, on the client and on the server (including
+the bbox maths that feed patch-mode dirty regions). Drawing on a moved layer
+records points in layer space, so the line still appears under the pointer. The
+hit test picks the topmost unlocked layer under the pointer - a reference by its
+image box, a draw layer by the box of its strokes - and falls back to the
+selected layer. **Moving a layer is not undoable**, exactly like moving a
+reference image.
+
 ### Room-level AI settings
 
 Behind the **advanced** toggle next to the prompt, and shared by everyone in the

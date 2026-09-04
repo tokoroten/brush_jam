@@ -67,7 +67,10 @@ export function StageView(props: StageViewProps): JSX.Element {
         }
         ctx.globalAlpha = 1;
         for (const live of client.live.values()) {
+          const owner = client.findLayer(live.init.layerId);
           renderStrokes(ctx as unknown as never, [{ ...live.init, points: live.points }], {
+            offsetX: -(owner?.offsetX ?? 0),
+            offsetY: -(owner?.offsetY ?? 0),
             createCanvas: (w, h) => scratchCanvas(w, h) as never,
           });
         }

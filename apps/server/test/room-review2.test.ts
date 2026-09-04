@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE } from '@brushjam/shared';
+import { CANVAS_SIZE, MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE } from '@brushjam/shared';
 import {
   captureRenderSnapshot,
   snapshot,
@@ -291,5 +291,70 @@ describe('ai settings', () => {
   it('defaults denoise to the configured value', () => {
     expect(createRoom('cfg', 0.4).denoise).toBe(0.4);
     expect(createRoom('cfg2').negativePrompt).toBe('');
+  });
+});
+
+/** Draw layers can be moved: the offset is render-time only. */
+describe('draw layer offsets', () => {
+  function withStroke(): { state: RoomState; alice: string; layerId: string } {
+    const { state, alice, layerId } = room();
+    begin(state, alice, layerId, 's');
+    applyClientMessage(state, alice, { t: 'stroke_end', strokeId: 's', points: [{ x: 90, y: 90 }] });
+    return { state, alice, layerId };
+  }
+
+  it('stores the offset and leaves stroke coordinates alone', () => {
+    const { state, alice, layerId } = withStroke();
+    const before = JSON.stringify(state.strokes[0]!.points);
+    const out = applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetX: 120, offsetY: -40 } });
+    expect(state.layers[0]).toMatchObject({ offsetX: 120, offsetY: -40 });
+    expect(JSON.stringify(state.strokes[0]!.points)).toBe(before);
+    // both the old and the new position have to be regenerated
+    expect(out.dirty.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('clamps the offset to +/- 2 canvases', () => {
+    const { state, alice, layerId } = withStroke();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetX: 999999, offsetY: -999999 } });
+    expect(state.layers[0]!.offsetX).toBe(2 * CANVAS_SIZE);
+    expect(state.layers[0]!.offsetY).toBe(-2 * CANVAS_SIZE);
+  });
+
+  it('ignores an offset on a reference layer', () => {
+    const { state, alice } = withStroke();
+    state.layers.push({
+      id: 'refl',
+      name: 'ref',
+      kind: 'reference',
+      visible: true,
+      locked: false,
+      opacity: 1,
+      order: 5,
+      includeInAI: false,
+      imageId: 'img',
+      x: 0,
+      y: 0,
+    });
+    applyClientMessage(state, alice, { t: 'layer_update', id: 'refl', patch: { offsetX: 50 } });
+    expect(state.layers.find((l) => l.id === 'refl')?.offsetX).toBeUndefined();
+  });
+
+  it('reports dirty regions and undo in world space', () => {
+    const { state, alice, layerId } = withStroke();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetX: 200, offsetY: 100 } });
+    const bbox = state.strokes[0]!.bbox;
+    const undo = applyClientMessage(state, alice, { t: 'undo' });
+    expect(undo.dirty[0]).toMatchObject({ x: bbox.x + 200, y: bbox.y + 100 });
+  });
+
+  it('accepts points outside the canvas on a moved layer', () => {
+    const { state, alice, layerId } = withStroke();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetX: 2000 } });
+    const out = applyClientMessage(state, alice, {
+      t: 'stroke_start',
+      stroke: { id: 'far', layerId, tool: 'pen', color: '#000000', width: 4, points: [{ x: -800, y: 10 }] },
+    });
+    expect(out.relay).toHaveLength(1);
+    expect((out.relay[0] as { stroke: { points: Array<{ x: number }> } }).stroke.points[0]!.x).toBe(-800);
   });
 });

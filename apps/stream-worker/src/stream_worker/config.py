@@ -1,0 +1,73 @@
+"""Environment-driven configuration for the stream worker."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+DEFAULT_CHECKPOINT = r"E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors"
+DEFAULT_LORA_DIR = r"E:\ComfyUI\models\loras"
+
+# Both are 4-step SDXL distillation LoRAs. LCM is the default; DMD2 is the
+# fallback documented in docs/STREAM_WORKER.md.
+LORA_REPOS = {
+    "lcm": ("latent-consistency/lcm-lora-sdxl", "pytorch_lora_weights.safetensors", "lcm-lora-sdxl.safetensors"),
+    "dmd2": ("tianweiy/DMD2", "dmd2_sdxl_4step_lora_fp16.safetensors", "dmd2_sdxl_4step_lora_fp16.safetensors"),
+}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return float(raw)
+
+
+@dataclass(frozen=True)
+class Settings:
+    host: str = field(default_factory=lambda: os.environ.get("STREAM_HOST", "127.0.0.1"))
+    port: int = field(default_factory=lambda: _env_int("STREAM_PORT", 8790))
+    checkpoint: Path = field(default_factory=lambda: Path(os.environ.get("STREAM_CHECKPOINT", DEFAULT_CHECKPOINT)))
+    lora_dir: Path = field(default_factory=lambda: Path(os.environ.get("STREAM_LORA_DIR", DEFAULT_LORA_DIR)))
+    lora: str = field(default_factory=lambda: os.environ.get("STREAM_LORA", "lcm").lower())
+    # Only used when the LoRA file is missing from lora_dir and must be fetched.
+    hf_token: str | None = field(default_factory=lambda: os.environ.get("HF_TOKEN") or None)
+
+    warmup_size: int = field(default_factory=lambda: _env_int("STREAM_WARMUP_SIZE", 768))
+    max_size: int = field(default_factory=lambda: _env_int("STREAM_MAX_SIZE", 1024))
+    default_steps: int = field(default_factory=lambda: _env_int("STREAM_STEPS", 4))
+    guidance: float = field(default_factory=lambda: _env_float("STREAM_GUIDANCE", 1.5))
+    quality_suffix: str = field(
+        default_factory=lambda: os.environ.get("STREAM_QUALITY_SUFFIX", ", masterpiece, best quality")
+    )
+    # Text encoders live on the CPU between requests: they are ~1.8 GB in fp16
+    # and every embedding we need is cached, so on an 8 GB card that VRAM is
+    # better spent on the UNet. Set 0 if you have headroom.
+    offload_text_encoders: bool = field(default_factory=lambda: _env_bool("STREAM_OFFLOAD_TEXT_ENCODERS", True))
+    vae_tiling: bool = field(default_factory=lambda: _env_bool("STREAM_VAE_TILING", True))
+    embed_cache_size: int = field(default_factory=lambda: _env_int("STREAM_EMBED_CACHE", 16))
+    # Debug/CI escape hatch: serve the contract without touching the GPU.
+    dry_run: bool = field(default_factory=lambda: _env_bool("STREAM_DRY_RUN", False))
+
+    def lora_spec(self) -> tuple[str, str, str]:
+        if self.lora not in LORA_REPOS:
+            raise ValueError(f"STREAM_LORA must be one of {sorted(LORA_REPOS)}, got {self.lora!r}")
+        return LORA_REPOS[self.lora]
+
+    def lora_path(self) -> Path:
+        return self.lora_dir / self.lora_spec()[2]

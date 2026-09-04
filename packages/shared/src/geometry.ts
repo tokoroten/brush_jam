@@ -10,6 +10,11 @@ export function rectCenter(r: Rect): { x: number; y: number } {
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 }
 
+/** Same rect moved by (dx, dy). */
+export function translateRect(rect: Rect, dx: number, dy: number): Rect {
+  return { x: rect.x + dx, y: rect.y + dy, width: rect.width, height: rect.height };
+}
+
 export function expandRect(r: Rect, by: number): Rect {
   return { x: r.x - by, y: r.y - by, width: r.width + by * 2, height: r.height + by * 2 };
 }

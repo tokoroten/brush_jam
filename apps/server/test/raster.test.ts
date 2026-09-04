@@ -290,3 +290,63 @@ describe('noise strokes in a crop', () => {
     expect(mismatched / compared).toBeLessThan(0.05);
   });
 });
+
+/** A moved draw layer renders translated on the server too. */
+describe('crop rendering with a layer offset', () => {
+  it('matches a client-style render of the same moved layer', async () => {
+    const state = createRoom('offset-room');
+    const userId = addMember(state, 'Alice').userId;
+    const layerId = state.layers[0]!.id;
+    applyClientMessage(state, userId, {
+      t: 'stroke_start',
+      stroke: { id: 'o1', layerId, tool: 'pen', color: '#204080', width: 24, points: [{ x: 100, y: 120 }] },
+    });
+    applyClientMessage(state, userId, { t: 'stroke_end', strokeId: 'o1', points: [{ x: 260, y: 200 }] });
+    applyClientMessage(state, userId, { t: 'layer_update', id: layerId, patch: { offsetX: 300, offsetY: 150 } });
+
+    const snap = captureRenderSnapshot(state);
+    const cropRect = { x: 256, y: 256, width: 512, height: 512 };
+    const rendered = await loadImage(await renderCropInput(snap, cropRect, 512));
+    const server = createCanvas(512, 512);
+    server.getContext('2d').drawImage(rendered, 0, 0);
+    const serverData = server.getContext('2d').getImageData(0, 0, 512, 512).data;
+
+    const client = createCanvas(1024, 1024);
+    const cctx = client.getContext('2d');
+    cctx.fillStyle = '#ffffff';
+    cctx.fillRect(0, 0, 1024, 1024);
+    renderStrokes(cctx as never, state.strokes, { offsetX: -300, offsetY: -150, createCanvas: (w, h) => createCanvas(w, h) as never });
+    const clientData = cctx.getImageData(256, 256, 512, 512).data;
+
+    let painted = 0;
+    let mismatched = 0;
+    for (let i = 0; i < serverData.length; i += 4) {
+      if (clientData[i] === 255 && clientData[i + 1] === 255 && clientData[i + 2] === 255) continue;
+      painted += 1;
+      if (Math.abs(serverData[i] - clientData[i]!) > 2 || Math.abs(serverData[i + 2]! - clientData[i + 2]!) > 2) mismatched += 1;
+    }
+    expect(painted).toBeGreaterThan(1000);
+    expect(mismatched / painted).toBeLessThan(0.02);
+  });
+
+  it('renders nothing when the offset moved the strokes out of the crop', async () => {
+    const state = createRoom('offset-room2');
+    const userId = addMember(state, 'Alice').userId;
+    const layerId = state.layers[0]!.id;
+    applyClientMessage(state, userId, {
+      t: 'stroke_start',
+      stroke: { id: 'o1', layerId, tool: 'pen', color: '#000000', width: 20, points: [{ x: 100, y: 100 }] },
+    });
+    applyClientMessage(state, userId, { t: 'stroke_end', strokeId: 'o1', points: [{ x: 200, y: 200 }] });
+    applyClientMessage(state, userId, { t: 'layer_update', id: layerId, patch: { offsetX: 1500, offsetY: 1500 } });
+
+    const png = await renderCropInput(captureRenderSnapshot(state), { x: 0, y: 0, width: 512, height: 512 }, 256);
+    const img = await loadImage(png);
+    const canvas = createCanvas(256, 256);
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    const data = canvas.getContext('2d').getImageData(0, 0, 256, 256).data;
+    let painted = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i] !== 255 || data[i + 1] !== 255 || data[i + 2] !== 255) painted += 1;
+    expect(painted).toBe(0);
+  });
+});

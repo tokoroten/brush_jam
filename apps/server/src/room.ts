@@ -1,6 +1,7 @@
 import {
   CANVAS_SIZE,
   DENOISE_STEP,
+  translateRect,
   MAX_DENOISE,
   MAX_LAYERS,
   MAX_NEGATIVE_PROMPT,
@@ -262,7 +263,9 @@ function sanitizePoints(raw: unknown): Point[] {
     if (!p || typeof p !== 'object') continue;
     const { x, y, p: pressure } = p as Point;
     if (!finite(x) || !finite(y)) continue;
-    const point: Point = { x: clamp(x, -1024, CANVAS_SIZE + 1024), y: clamp(y, -1024, CANVAS_SIZE + 1024) };
+    // A moved draw layer records points in *layer* space, so a legitimate point
+    // can sit well outside the canvas: allow -canvasSize .. 2 * canvasSize.
+    const point: Point = { x: clamp(x, -CANVAS_SIZE, 2 * CANVAS_SIZE), y: clamp(y, -CANVAS_SIZE, 2 * CANVAS_SIZE) };
     if (finite(pressure)) point.p = clamp(pressure, 0, 1);
     out.push(point);
   }
@@ -273,6 +276,12 @@ const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.m
 const isHexColor = (s: unknown): s is string => typeof s === 'string' && /^#[0-9a-fA-F]{6}$/.test(s);
 
 /** Rects touched by a layer's strokes - used when visibility/order/opacity changes. */
+/** A committed stroke's box in world space (its layer may have been moved). */
+function worldBBox(room: RoomState, stroke: Stroke): Rect {
+  const layer = findLayer(room, stroke.layerId);
+  return translateRect(stroke.bbox, layer?.offsetX ?? 0, layer?.offsetY ?? 0);
+}
+
 function layerDirty(room: RoomState, layer: Layer): Rect[] {
   if (layer.kind === 'reference') {
     const w = (layer.imageWidth ?? 0) * (layer.scale ?? 1);
@@ -280,7 +289,9 @@ function layerDirty(room: RoomState, layer: Layer): Rect[] {
     if (w <= 0 || h <= 0) return [];
     return [{ x: layer.x ?? 0, y: layer.y ?? 0, width: w, height: h }];
   }
-  const boxes = room.strokes.filter((s) => s.layerId === layer.id && !room.undone.has(s.id)).map((s) => s.bbox);
+  const boxes = room.strokes
+    .filter((s) => s.layerId === layer.id && !room.undone.has(s.id))
+    .map((s) => translateRect(s.bbox, layer.offsetX ?? 0, layer.offsetY ?? 0));
   const u = unionRects(boxes);
   return u ? [u] : [];
 }
@@ -373,7 +384,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       return {
         broadcast: [{ t: 'stroke_committed', stroke, humanRevision: room.humanRevision }],
         relay: [{ t: 'stroke_end', userId, strokeId: id, points: tail }],
-        dirty: [stroke.bbox],
+        dirty: [translateRect(stroke.bbox, layer.offsetX ?? 0, layer.offsetY ?? 0)],
       };
     }
 
@@ -389,7 +400,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       return {
         broadcast: [{ t: 'undo_applied', strokeId: target.id, layerId: target.layerId, humanRevision: room.humanRevision }],
         relay: [],
-        dirty: [target.bbox],
+        dirty: [worldBBox(room, target)],
       };
     }
 
@@ -398,7 +409,9 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (!layer) return refuse('unknown layer');
       const removed = room.strokes.filter((s2) => s2.layerId === layer.id);
       // union of what was actually *visible*, computed before `undone` is mutated
-      const visible = removed.filter((s2) => !room.undone.has(s2.id)).map((s2) => s2.bbox);
+      const visible = removed
+        .filter((s2) => !room.undone.has(s2.id))
+        .map((s2) => translateRect(s2.bbox, layer.offsetX ?? 0, layer.offsetY ?? 0));
       const u = unionRects(visible);
       room.strokes = room.strokes.filter((s2) => s2.layerId !== layer.id);
       for (const s2 of removed) room.undone.delete(s2.id);
@@ -465,6 +478,12 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (typeof patch.visible === 'boolean') setRender('visible', patch.visible);
       if (finite(patch.opacity)) setRender('opacity', clamp(patch.opacity, 0, 1));
       if (typeof patch.includeInAI === 'boolean' && layer.kind === 'reference') setRender('includeInAI', patch.includeInAI);
+      if (layer.kind === 'draw') {
+        // Offsets move existing strokes; the log keeps its original coordinates.
+        const limit = 2 * CANVAS_SIZE;
+        if (finite(patch.offsetX)) setRender('offsetX', clamp(patch.offsetX, -limit, limit));
+        if (finite(patch.offsetY)) setRender('offsetY', clamp(patch.offsetY, -limit, limit));
+      }
       if (layer.kind === 'reference') {
         if (finite(patch.x)) setRender('x', patch.x);
         if (finite(patch.y)) setRender('y', patch.y);
@@ -571,14 +590,13 @@ export function strokesForCrop(
   source: { strokes: readonly Stroke[]; undone: ReadonlySet<string> },
   crop: Rect,
   layerId?: string,
+  offset: { x: number; y: number } = { x: 0, y: 0 },
 ): Stroke[] {
-  return source.strokes.filter(
-    (s) =>
-      !source.undone.has(s.id) &&
-      (layerId === undefined || s.layerId === layerId) &&
-      s.bbox.x < crop.x + crop.width &&
-      crop.x < s.bbox.x + s.bbox.width &&
-      s.bbox.y < crop.y + crop.height &&
-      crop.y < s.bbox.y + s.bbox.height,
-  );
+  return source.strokes.filter((s) => {
+    if (source.undone.has(s.id)) return false;
+    if (layerId !== undefined && s.layerId !== layerId) return false;
+    // the stroke's *world* box is its own box plus the layer offset
+    const box = translateRect(s.bbox, offset.x, offset.y);
+    return box.x < crop.x + crop.width && crop.x < box.x + box.width && box.y < crop.y + crop.height && crop.y < box.y + box.height;
+  });
 }

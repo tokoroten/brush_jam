@@ -32,7 +32,7 @@ function points(value: unknown): Point[] | null {
   return out;
 }
 
-const LAYER_PATCH_KEYS = new Set(['name', 'visible', 'locked', 'opacity', 'includeInAI', 'x', 'y', 'scale']);
+const LAYER_PATCH_KEYS = new Set(['name', 'visible', 'locked', 'opacity', 'includeInAI', 'x', 'y', 'scale', 'offsetX', 'offsetY']);
 
 function layerPatch(value: unknown): Record<string, unknown> | null {
   if (!isObj(value)) return null;
@@ -41,7 +41,9 @@ function layerPatch(value: unknown): Record<string, unknown> | null {
     if (!LAYER_PATCH_KEYS.has(key)) continue;
     if (key === 'name' && !isStr(v)) return null;
     if ((key === 'visible' || key === 'locked' || key === 'includeInAI') && typeof v !== 'boolean') return null;
-    if ((key === 'opacity' || key === 'x' || key === 'y' || key === 'scale') && !isNum(v)) return null;
+    if ((key === 'opacity' || key === 'x' || key === 'y' || key === 'scale' || key === 'offsetX' || key === 'offsetY') && !isNum(v)) {
+      return null;
+    }
     out[key] = v;
   }
   return out;

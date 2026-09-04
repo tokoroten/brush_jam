@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { Layer } from '@brushjam/shared';
 import { layerActions } from '../src/LayerPanel.js';
-import { layerRect, movedPosition, pickReferenceLayer, scaledBy, MAX_LAYER_SCALE, MIN_LAYER_SCALE } from '../src/move.js';
+import {
+  drawLayerRect,
+  layerOrigin,
+  layerPoint,
+  layerRect,
+  movePatch,
+  movedPosition,
+  pickMovableLayer,
+  pickReferenceLayer,
+  scaledBy,
+  MAX_LAYER_SCALE,
+  MIN_LAYER_SCALE,
+} from '../src/move.js';
 
 const ref = (id: string, extra: Partial<Layer> = {}): Layer => ({
   id,
@@ -124,5 +136,64 @@ describe('layer actions confirmation', () => {
       { t: 'clear_layer', layerId: 'a' },
       { t: 'layer_delete', id: 'a' },
     ]);
+  });
+});
+
+/** Move also applies to draw layers, via a render-time offset. */
+describe('draw layer moves', () => {
+  const stroke = (id: string, layerId: string, box: { x: number; y: number; width: number; height: number }): never =>
+    ({
+      id,
+      userId: 'u',
+      layerId,
+      tool: 'pen',
+      color: '#000',
+      width: 4,
+      points: [{ x: box.x, y: box.y }],
+      revision: 1,
+      bbox: box,
+    }) as never;
+
+  const drawLayer = (id: string, extra: Partial<Layer> = {}): Layer => ({ ...draw(id, 1), ...extra });
+  const none = new Set<string>();
+
+  it('boxes a draw layer by its strokes plus the offset', () => {
+    const layer = drawLayer('d1', { offsetX: 100, offsetY: 50 });
+    const strokes = [stroke('s1', 'd1', { x: 10, y: 10, width: 40, height: 20 })];
+    expect(drawLayerRect(layer, strokes, none)).toEqual({ x: 110, y: 60, width: 40, height: 20 });
+    // undone strokes do not count, and an empty layer has no box
+    expect(drawLayerRect(layer, strokes, new Set(['s1']))).toBeNull();
+    expect(drawLayerRect(layer, [], none)).toBeNull();
+  });
+
+  it('picks the draw layer under the pointer', () => {
+    const layer = drawLayer('d1', { offsetX: 100, offsetY: 0 });
+    const strokes = [stroke('s1', 'd1', { x: 0, y: 0, width: 50, height: 50 })];
+    const ctx = { sizeOf, strokes, undone: none };
+    expect(pickMovableLayer([layer], ctx, { x: 120, y: 20 })?.id).toBe('d1');
+    // the *old* position is no longer where the content is
+    expect(pickMovableLayer([layer], ctx, { x: 20, y: 20 })).toBeNull();
+  });
+
+  it('prefers the frontmost layer and never a locked one', () => {
+    const back = drawLayer('back', { order: 1 });
+    const front = ref('front', { order: 9, imageId: 'img-a' });
+    const strokes = [stroke('s1', 'back', { x: 0, y: 0, width: 80, height: 40 })];
+    const ctx = { sizeOf, strokes, undone: none };
+    expect(pickMovableLayer([back, front], ctx, { x: 20, y: 20 })?.id).toBe('front');
+    expect(pickMovableLayer([{ ...back, locked: true }], ctx, { x: 20, y: 20 })).toBeNull();
+  });
+
+  it('sends offsetX/offsetY for a draw layer and x/y for a reference', () => {
+    expect(movePatch(drawLayer('d1'), { x: 5, y: 6 })).toEqual({ offsetX: 5, offsetY: 6 });
+    expect(movePatch(ref('r1'), { x: 5, y: 6 })).toEqual({ x: 5, y: 6 });
+    expect(layerOrigin(drawLayer('d1', { offsetX: 3, offsetY: 4 }))).toEqual({ x: 3, y: 4 });
+    expect(layerOrigin(ref('r1', { x: 7, y: 8 }))).toEqual({ x: 7, y: 8 });
+  });
+
+  it('records stroke points in layer space so the line lands under the pointer', () => {
+    const layer = drawLayer('d1', { offsetX: 120, offsetY: -30 });
+    expect(layerPoint({ x: 200, y: 100 }, layer)).toEqual({ x: 80, y: 130 });
+    expect(layerPoint({ x: 200, y: 100 }, undefined)).toEqual({ x: 200, y: 100 });
   });
 });
