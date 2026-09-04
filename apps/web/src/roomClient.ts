@@ -14,6 +14,18 @@ import { createSerialQueue, type SerialQueue } from './serialQueue.js';
 import { sessionToken } from './session.js';
 import { createRaster, ctxOf, drawStroke, loadImageElement, redrawLayer } from './raster.js';
 
+/**
+ * Injectable seam for the two browser-only things this class touches, so the
+ * message-handling logic (ordering, snapshot resets, asset failures) can be
+ * exercised in a plain Node test.
+ */
+export interface ClientDeps {
+  createRaster: typeof createRaster;
+  loadImage: typeof loadImageElement;
+}
+
+const browserDeps: ClientDeps = { createRaster, loadImage: loadImageElement };
+
 export interface LiveStroke {
   userId: string;
   init: StrokeInit;
@@ -32,7 +44,7 @@ export interface RemoteCursor {
  * high-frequency drawing never goes through setState.
  */
 export class RoomClient {
-  readonly aiCanvas = createRaster();
+  readonly aiCanvas: HTMLCanvasElement;
   readonly layerCanvases = new Map<string, HTMLCanvasElement>();
   readonly live = new Map<string, LiveStroke>();
   readonly cursors = new Map<string, RemoteCursor>();
@@ -65,11 +77,24 @@ export class RoomClient {
    * concurrently let a slow image load apply revision 1 after revision 2.
    */
   private readonly enqueue: SerialQueue = createSerialQueue((err) => console.warn('[brushjam] message handler failed', err));
+  /** Cancels in-flight asset loads on reconnect and dispose. */
+  private assets = new AbortController();
+  /** Reference images already being fetched, so we never queue two loads. */
+  private readonly loading = new Set<string>();
+  private aiRefreshQueued = false;
 
-  constructor(readonly roomId: string, private readonly name: string) {}
+  constructor(
+    readonly roomId: string,
+    private readonly name: string,
+    private readonly deps: ClientDeps = browserDeps,
+  ) {
+    this.aiCanvas = this.deps.createRaster();
+  }
 
   connect(): void {
     if (this.closed) return;
+    this.assets.abort();
+    this.assets = new AbortController();
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const token = sessionToken(this.roomId, typeof sessionStorage === 'undefined' ? undefined : sessionStorage);
     const query = `name=${encodeURIComponent(this.name)}&token=${encodeURIComponent(token)}`;
@@ -98,6 +123,7 @@ export class RoomClient {
 
   dispose(): void {
     this.closed = true;
+    this.assets.abort();
     this.socket?.close();
   }
 
@@ -120,7 +146,7 @@ export class RoomClient {
   layerCanvas(layerId: string): HTMLCanvasElement {
     let canvas = this.layerCanvases.get(layerId);
     if (!canvas) {
-      canvas = createRaster();
+      canvas = this.deps.createRaster();
       this.layerCanvases.set(layerId, canvas);
     }
     return canvas;
@@ -134,20 +160,46 @@ export class RoomClient {
     return this.layers.find((l) => l.id === id);
   }
 
-  private async ensureImage(imageId: string): Promise<HTMLImageElement | undefined> {
-    const hit = this.images.get(imageId);
-    if (hit) return hit;
-    try {
-      const img = await loadImageElement(`/rooms/${this.roomId}/images/${imageId}`);
-      this.images.set(imageId, img);
-      return img;
-    } catch {
-      return undefined;
-    }
+  /**
+   * Start loading a reference image *without* blocking the ordered message
+   * queue. When it arrives the layer is repainted, if it still exists.
+   */
+  private requestImage(imageId: string): void {
+    if (this.images.has(imageId) || this.loading.has(imageId)) return;
+    this.loading.add(imageId);
+    this.deps
+      .loadImage(`/rooms/${this.roomId}/images/${imageId}`, { signal: this.assets.signal })
+      .then((img) => {
+        this.images.set(imageId, img);
+        for (const layer of this.layers) if (layer.imageId === imageId) this.repaint(layer);
+        this.bump();
+      })
+      .catch(() => {
+        /* the layer simply stays blank; a later snapshot retries */
+      })
+      .finally(() => this.loading.delete(imageId));
+  }
+
+  /** Re-pull the authoritative AI raster, outside the ordered queue. */
+  private scheduleAiRefresh(): void {
+    if (this.aiRefreshQueued || this.closed) return;
+    this.aiRefreshQueued = true;
+    const forRevision = this.aiRevision;
+    setTimeout(() => {
+      this.aiRefreshQueued = false;
+      // only useful if nothing newer has already been painted
+      if (this.aiRevision !== forRevision) return;
+      void this.loadAiCanvas().then(() => this.bump());
+    }, 1000);
   }
 
   private repaint(layer: Layer): void {
     redrawLayer(this.layerCanvas(layer.id), layer, this.strokes, this.undone, this.images);
+  }
+
+  /** Exposed for tests: pushes one message through the ordered queue. */
+  receive(msg: ServerMessage): void {
+    this.enqueue(() => this.onMessage(msg));
   }
 
   private async onMessage(msg: ServerMessage): Promise<void> {
@@ -169,9 +221,14 @@ export class RoomClient {
         this.cursors.clear();
         this.layerCanvases.clear();
         for (const layer of s.layers) {
-          if (layer.imageId) await this.ensureImage(layer.imageId);
+          if (layer.imageId) this.requestImage(layer.imageId);
           this.repaint(layer);
         }
+        // A snapshot replaces everything: a restarted or recreated room would
+        // otherwise keep showing the previous room's AI pixels.
+        ctxOf(this.aiCanvas).clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        this.lastCrop = null;
+        this.lastApply = null;
         // Nothing to fetch before the first result (the route 404s by design).
         if (s.aiRevision > 0) await this.loadAiCanvas();
         break;
@@ -228,7 +285,7 @@ export class RoomClient {
       }
       case 'layer_created':
         this.layers = [...this.layers, msg.layer];
-        if (msg.layer.imageId) await this.ensureImage(msg.layer.imageId);
+        if (msg.layer.imageId) this.requestImage(msg.layer.imageId);
         this.repaint(msg.layer);
         this.humanRevision = msg.humanRevision;
         break;
@@ -258,7 +315,9 @@ export class RoomClient {
       case 'ai_result': {
         // Load first: only advance the AI state once the pixels are really here.
         try {
-          const patch = await loadImageElement(msg.url);
+          // Bounded await: ordering matters here, but a stalled request must
+          // never freeze the whole message queue.
+          const patch = await this.deps.loadImage(msg.url, { signal: this.assets.signal });
           const ctx = ctxOf(this.aiCanvas);
           ctx.clearRect(msg.rect.x, msg.rect.y, msg.rect.width, msg.rect.height);
           ctx.drawImage(patch, msg.rect.x, msg.rect.y, msg.rect.width, msg.rect.height);
@@ -267,9 +326,9 @@ export class RoomClient {
           this.aiRevision = msg.aiRevision;
           this.aiLatencyMs = msg.latencyMs;
         } catch {
-          // A dropped patch would leave a hole, so fall back to the server's
-          // authoritative full raster rather than silently losing the update.
-          await this.loadAiCanvas();
+          // A dropped patch would leave a hole. Recover from the server's
+          // authoritative raster, but outside the queue so nothing stalls.
+          this.scheduleAiRefresh();
         }
         break;
       }
@@ -284,7 +343,7 @@ export class RoomClient {
 
   private async loadAiCanvas(): Promise<void> {
     try {
-      const img = await loadImageElement(`/rooms/${this.roomId}/ai.png?v=${Date.now()}`);
+      const img = await this.deps.loadImage(`/rooms/${this.roomId}/ai.png?v=${Date.now()}`, { signal: this.assets.signal });
       const ctx = ctxOf(this.aiCanvas);
       ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
       ctx.drawImage(img, 0, 0);
