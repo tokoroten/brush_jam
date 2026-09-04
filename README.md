@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 417 tests across shared / server / web
+pnpm test         # 440 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -270,6 +270,18 @@ that follows took **1–4 minutes** whenever VRAM was contended (one run was sti
 decoding 2.5 minutes after sampling finished, and was cut off by the watchdog).
 `VAEDecodeTiled` at `tile_size` 512 / `overlap` 64 decodes in slices instead, and
 is the default. Set `AI_VAE_TILE=0` to go back to the plain node.
+
+### Measuring latency
+
+```
+pnpm --filter @brushjam/server latency -- --url http://127.0.0.1:8787 --n 10
+```
+
+Joins a **running** server as an ordinary client, draws N short strokes one at a
+time, and reports each edit's `stroke_end` -> `ai_result` time (what a person
+actually feels: debounce + render + backend + compositing) next to the backend's
+own `latencyMs`, with min/median/max for both. It starts nothing itself, so the
+`/healthz` line tells you which backend was really measured.
 
 ## Measured behaviour
 

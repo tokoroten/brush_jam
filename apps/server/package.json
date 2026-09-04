@@ -9,7 +9,8 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "latency": "tsx scripts/latency.ts"
   },
   "dependencies": {
     "@brushjam/shared": "workspace:*",
