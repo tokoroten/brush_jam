@@ -77,3 +77,22 @@ export function strokeBBox(points: readonly Point[], width: number): Rect {
   const pad = width / 2 + 1;
   return { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
 }
+
+/**
+ * `a` minus `b`, as up to four rects (the L/U/O-shaped remainder). Used to keep
+ * only the parts of a dirty region that the AI did not actually repaint.
+ */
+export function subtractRect(a: Rect, b: Rect): Rect[] {
+  const overlap = intersectRect(a, b);
+  if (!overlap) return [a];
+  const out: Rect[] = [];
+  if (overlap.y > a.y) out.push({ x: a.x, y: a.y, width: a.width, height: overlap.y - a.y });
+  if (rectBottom(overlap) < rectBottom(a)) {
+    out.push({ x: a.x, y: rectBottom(overlap), width: a.width, height: rectBottom(a) - rectBottom(overlap) });
+  }
+  if (overlap.x > a.x) out.push({ x: a.x, y: overlap.y, width: overlap.x - a.x, height: overlap.height });
+  if (rectRight(overlap) < rectRight(a)) {
+    out.push({ x: rectRight(overlap), y: overlap.y, width: rectRight(a) - rectRight(overlap), height: overlap.height });
+  }
+  return out;
+}
