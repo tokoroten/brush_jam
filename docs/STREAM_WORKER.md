@@ -555,6 +555,16 @@ the drawing, see §4.5), **`AI_WINDOW=768`** (768 is both twice as fast as 1024
 300. The round trip is 0.76 s at 512², 1.8 s at 768² and 3.5 s at 1024², so a
 very short debounce just queues work the GPU cannot absorb.
 
+**Worker-side defaults to change** (these live in the worker's own env, not in
+`config.ts`): set **`STREAM_LORA=dmd2`** and **`STREAM_GUIDANCE=1.0`**. Measured
+over four 768 grids (`docs/experiments/2026-09-05-stream/REPORT.md` §8), DMD2 is
+1384 ms against LCM's 1798 ms and reinterprets a whole denoise step earlier with
+cleaner objects; DMD2 is guidance-distilled, so dropping CFG costs it nothing,
+whereas the same change makes LCM's line art fade (1.64% surviving ink at
+denoise 0.8 against the input's 2.36%). **Caveat: at CFG 1.0 the negative prompt
+has no effect** — the server may still send one, it is simply inert. If it must
+stay live, use `STREAM_GUIDANCE=1.5` at +27% latency; DMD2 still beats LCM.
+
 **Do not hard-code the top of the denoise range.** Read it from `/healthz`
 (`max_denoise`, §6.4) and clamp the room slider to it. The worker enforces the
 same ceiling server-side, so a request above it is silently clamped rather than

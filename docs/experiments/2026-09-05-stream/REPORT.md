@@ -192,6 +192,10 @@ are kept as the before side of that comparison.
 **Backend: `stream`.** Faster than ComfyUI at every size tested with identical
 sampling, and the only one of the two that can hold the model resident.
 
+**LoRA and CFG: `STREAM_LORA=dmd2`, `STREAM_GUIDANCE=1.0`** — added in section 8,
+which supersedes the LCM/CFG 1.5 assumption the rest of this report was written
+under. 1384 ms at 768 and better reinterpretation.
+
 **VAE: `fp16fix`** (the current default). `taesd` is 1.6x faster and holds up
 better than expected — it has since been inspected at 1:1 (section 7) and is
 *sharper* on line art — but it visibly flattens continuous tone, so it stays an
@@ -310,3 +314,110 @@ failure mode is content-dependent and would show up as "the AI made my shading
 blocky" mid-playtest, and at 768 (the recommended size) fp16fix is already
 1.8 s, so the absolute saving is small. `STREAM_VAE=taesd` stays a supported,
 documented option for anyone who wants 1024 under 2.2 s.
+
+---
+
+## 8. LoRA and CFG: DMD2 vs LCM, guidance 1.5 vs 1.0
+
+Four 768 grids, all with the v2 sampling (section 6), `fp16fix`, 4 steps,
+seed 424242, same drawings and prompt. The only variables are the distillation
+LoRA and `STREAM_GUIDANCE`.
+
+| dir | LoRA | CFG | median latency |
+| --- | --- | --- | --- |
+| `fp16fix-768-v2/` | LCM | 1.5 | 1798 ms |
+| `dmd2-768/` | DMD2 | 1.5 | 1756 ms |
+| `dmd2-cfg1-768/` | DMD2 | 1.0 | **1384 ms** |
+| `lcm-cfg1-768/` | LCM | 1.0 | 1398 ms |
+
+The DMD2 LoRA (`tianweiy/DMD2`, `dmd2_sdxl_4step_lora_fp16.safetensors`, 394 MB)
+was downloaded into `E:\ComfyUI\models\loras`, so a ComfyUI workflow can use the
+same file.
+
+A note on the design: DMD2 is *guidance-distilled* and is meant to be run at
+CFG 1.0, so comparing `dmd2-768` (CFG 1.5) against `fp16fix-768-v2` (CFG 1.5)
+alone would confound the LoRA with a setting DMD2 was not built for. Both CFG
+levels were therefore run for both LoRAs — four cells, not two.
+
+### Latency: CFG 1.0 is worth ~22%, not 2x
+
+| LoRA | CFG 1.5 | CFG 1.0 | saving |
+| --- | --- | --- | --- |
+| LCM | 1798 ms | 1398 ms | -22% |
+| DMD2 | 1756 ms | 1384 ms | -21% |
+
+Dropping CFG halves the UNet work, but the UNet is only ~55% of a 768 request
+(see section 4.4 of `docs/STREAM_WORKER.md`), so the end-to-end saving is about
+a fifth. **The two LoRAs cost the same** — DMD2 is not slower despite being the
+larger file, because both are fused into the UNet at load.
+
+### Reinterpretation at 0.8 / 0.9: DMD2 is clearly better
+
+DMD2 starts producing *objects* a whole denoise step earlier than LCM, and what
+it produces is more coherent:
+
+| row | LCM CFG 1.5 | DMD2 CFG 1.5 |
+| --- | --- | --- |
+| a @0.8 | spear-carrying figures, loose | a figure beside three clean conifers — readable as a scene |
+| b @0.8 | blob becomes a soft glowing disc | blob becomes a proper flower with petals and a centre |
+| c @0.65 | abstract damask pattern | already resolving into shelves and figures |
+| d @0.65 | mottled brown texture | **a lit shop interior with shelved goods** |
+| d @0.9 | crowded street scene | a clean, composed bookshop interior with depth |
+
+The difference in character: LCM fills the noise with *ornament* — patterns,
+foliage, clutter. DMD2 fills it with *things* — shelves, windows, figures,
+objects with edges. For "the AI reinterprets what I drew", DMD2 is the better
+behaviour, and it reaches it at a lower denoise, which also means less of the
+user's drawing is destroyed to get there.
+
+DMD2's colour is flatter and more saturated (vector-like); LCM's is softer and
+more painterly. Which is nicer is a taste call, but DMD2 reads more clearly at
+thumbnail size, which is how a Brush Jam room will mostly be seen.
+
+### Line-art fidelity at 0.65, and what CFG 1.0 costs
+
+Percentage of pixels darker than L=100 — a proxy for how much ink survives.
+The input drawing is 2.36%:
+
+| run | a @0.65 | a @0.80 | b @0.65 |
+| --- | --- | --- | --- |
+| input drawing | 2.36% | — | — |
+| LCM CFG 1.5 | 2.35% | 2.35% | 1.66% |
+| DMD2 CFG 1.5 | 3.08% | 4.37% | 3.50% |
+| DMD2 CFG 1.0 | 3.06% | 4.15% | 1.95% |
+| **LCM CFG 1.0** | 2.28% | **1.64%** | 1.66% |
+
+This is the finding that decides the CFG question. **LCM at CFG 1.0 fades.** At
+0.8 it retains 1.64% ink against the input's 2.36% — and the grid shows exactly
+that: the house outline goes ghostly grey-green, the trees are pale, and at 0.9
+row a collapses into a faint ornament instead of the character LCM CFG 1.5
+produced. Strokes lose weight and the drawing dissolves rather than transforms.
+
+**DMD2 at CFG 1.0 does not.** Its ink numbers are within 1-2% of its own CFG 1.5
+values (3.06 vs 3.08, 4.15 vs 4.37), and the grids are near-identical in
+composition — same conifers, same character, same bookshop — just very slightly
+less saturated. This is what guidance distillation is supposed to buy, and here
+it visibly does.
+
+So CFG 1.0 is not a free 22% in general; it is free *for DMD2* and expensive for
+LCM.
+
+### Recommendation
+
+**`STREAM_LORA=dmd2`, `STREAM_GUIDANCE=1.0`.** 1384 ms at 768 — 23% faster than
+the current LCM/CFG 1.5 default and, by every reading of these grids, better
+output: bolder reinterpretation, earlier onset, stronger line retention.
+
+**The one real cost: at CFG 1.0 the negative prompt is ignored.** Brush Jam
+sends the usual `lowres, bad anatomy, bad hands, text, error, worst quality,
+low quality, jpeg artifacts, signature, watermark, blurry` and none of it will
+have any effect. In these grids that did not visibly hurt — hallucinated text
+and watermarks appear at d>=0.8 in *every* configuration including the ones with
+CFG on, so the negative prompt was not suppressing them anyway. But it should be
+a conscious choice, not a surprise: if a playtest turns up an artefact class the
+negative prompt could fix, the lever is `STREAM_GUIDANCE=1.5` at +27% latency.
+
+If the negative prompt must stay live, the second choice is
+**`STREAM_LORA=dmd2`, `STREAM_GUIDANCE=1.5`** (1756 ms): same quality gain over
+LCM, same latency as today's default, and CFG still on. There is no reading of
+these four grids in which LCM is the right default.
