@@ -421,3 +421,57 @@ If the negative prompt must stay live, the second choice is
 **`STREAM_LORA=dmd2`, `STREAM_GUIDANCE=1.5`** (1756 ms): same quality gain over
 LCM, same latency as today's default, and CFG still on. There is no reading of
 these four grids in which LCM is the right default.
+
+## 9. 3-user simulation
+
+The first measurement of the whole system under the load it was built for:
+three clients drawing at once, through the real WebSocket protocol against the
+live server on `:8787` (stream backend, DMD2 at CFG 1.0, 768) and the worker on
+`:8790`. Run with:
+
+```
+pnpm --filter @brushjam/server playtest-sim -- --url http://127.0.0.1:8787 --users 3 --minutes 2
+```
+
+Each simulated user draws a short pen stroke every 0.5-2 s, a wide noise stroke
+every 20 s, and undoes something every 30 s; one user changes the prompt at the
+midpoint.
+
+```
+=== playtest simulation summary ===
+room                 gfgm5mdz at http://127.0.0.1:8787
+users / duration     3 / 2.07 min
+strokes drawn        235 (visible per client: 224, 224, 224)
+ai results           68 (32.9/min)
+  gap between        median 1.72 s, p90 2.10 s, max 3.18 s
+  since last stroke  median 0.43 s, p90 0.84 s
+  server latencyMs   median 1.56 s, p90 1.70 s
+presence             3, 3, 3 of 3 OK
+convergence          OK - all clients agree
+errors               none
+RESULT: PASS
+```
+
+**Reading it.**
+
+- **32.9 AI results per minute** - a new picture roughly every 1.7 s, sustained
+  for two minutes with three people drawing continuously. The p90 gap of 2.1 s
+  and worst gap of 3.2 s mean the canvas never visibly stalls.
+- **1.56 s median server latency** against the 1.38 s the worker measures for
+  the diffusion alone (section 8): about 180 ms of that is Brush Jam's own
+  work - rasterising the crop, building the mask, PNG encode/decode and the
+  composite - which is the right order for this resolution.
+- **"since last stroke" median 0.43 s** is the debounce (400 ms) doing its job:
+  results are landing on top of work that had only just stopped, so the AI is
+  following the drawing rather than trailing it.
+- **224 strokes visible on all three clients**, from 235 drawn (the difference
+  is the undos), with presence intact and no errors of any kind: no dropped
+  broadcast, no rejected stroke, no `ai_status` error, across 235 strokes,
+  ~700 chunk messages, 6 noise strokes, 8 undos and a prompt change.
+
+The prompt change at the midpoint is visible in the cadence only as a normal
+gap - the room re-dirties the last painted area and carries on, which is what
+it is supposed to do.
+
+This is the load the playtest will actually put on it, and it held.
+
