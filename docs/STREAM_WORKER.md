@@ -9,16 +9,23 @@ CUDA 12.4 wheels, ComfyUI 0.28 running alongside on :8188.
 
 ---
 
-## 1. Why a stream worker at all
+## 1. Why a stream worker at all — and why that premise is now half wrong
 
-The ComfyUI backend re-walks a graph for every request. Even warm it costs
-~8–15 s at 1024²/14 steps on this GPU (`README.md` "latency"), which is fine for
-a playtest but far from the "AI reacts while you draw" feeling
-`BRUSHJAM_CONTEXT.md` §11 is aiming at.
+**Read §4.6 before investing further in this component.** The reasoning below is
+what motivated it; the measurements have since undercut most of it.
 
-Everything expensive in that number is fixed cost we can pay once: model load,
-prompt encoding, sampler setup. A resident process that holds the model in VRAM
-and runs 4 LCM steps answers the *same* JSON contract in well under a second.
+The original argument: the ComfyUI backend re-walks a graph for every request,
+costing ~10–24 s at 1024²/14 steps, which is far from the "AI reacts while you
+draw" feeling `BRUSHJAM_CONTEXT.md` §11 wants. Everything expensive in that
+number looked like fixed cost we could pay once — model load, prompt encoding,
+sampler setup — so a resident process running 4 LCM steps should answer the same
+contract in well under a second.
+
+Two things turned out to be wrong. The resident process does **not** answer in
+well under a second (§4.1). And the honest comparison was never against 14-step
+ComfyUI: once ComfyUI runs the *same* 4-step LCM workflow, most of the gap
+closes on its own (§4.6). The graph-walking overhead this component exists to
+remove was a small part of that 10–24 s.
 
 ## 2. StreamDiffusion evaluation (step 1 of the brief)
 
@@ -355,13 +362,74 @@ consistency function is trained to jump toward a clean image from *high* noise
 levels, so entering the trajectory at 55 % gives it little to do. `AI_DENOISE`
 0.55 was tuned for 14-step `euler_ancestral` and does not transfer.
 
-Recommendation for whoever wires the backend: with the `stream` backend use
-**`AI_DENOISE` around 0.75–0.85**, not 0.55, and compare LCM against
-`STREAM_LORA=dmd2` (DMD2 usually holds line art better on Illustrious-class
-checkpoints). I did not get to sweep denoise on an uncontended GPU — the window
-went to the latency work above — so treat 0.75–0.85 as a starting point to
-verify, not a measured optimum. `scripts/quality_probe.py` sweeps it in one
-command.
+Recommendation: use **`AI_DENOISE` around 0.75–0.85**, not 0.55.
+
+**This has since been measured** — not by me, and not on this worker, but on the
+same checkpoint through the ComfyUI backend, by the `apps/server` agent's
+quality grid (`docs/experiments/2026-09-05-comfyui/`). Their finding, on a 48-cell
+sweep of four drawings:
+
+| denoise | result |
+| --- | --- |
+| 0.5 | no-op — the output is the input with softer lines |
+| 0.65 | decorates without touching composition |
+| **0.8** | **genuinely reinterprets** — a noise-pen sky resolves into buildings |
+| 0.9 | past the cliff: the drawing is discarded for the checkpoint's own priors |
+
+So the estimate was right, and it is a property of the checkpoint rather than of
+few-step sampling — it holds for the 14-step workflow too. What is still
+unmeasured is whether **this worker** behaves identically at those values;
+`scripts/quality_probe.py 512` sweeps it in one command when a GPU window
+allows.
+
+One caveat that matters more for this worker than for ComfyUI: the same grid
+found LCM tracks the 14-step result closely up to ~0.65 but is **visibly weaker
+at 0.8**, where a noise-pen sky becomes speckled clutter instead of
+architecture. 0.8 is exactly where reinterpretation starts, so few-step sampling
+is weakest precisely at the setting that makes the feature worth having. Still
+worth comparing `STREAM_LORA=dmd2`, which usually holds line art better on
+Illustrious-class checkpoints.
+
+### 4.6 Against a fair baseline, this component barely wins
+
+The comparison in §1 was against ComfyUI at **14 steps**. That was the wrong
+baseline: §5's 4-step LoRA workflow makes ComfyUI do the same work this worker
+does. Measured by the `apps/server` agent on this box, ComfyUI alone, after the
+contention was removed:
+
+| size | ComfyUI 14-step | ComfyUI 4-step (`AI_FAST`) | this worker (4-step) |
+| --- | --- | --- | --- |
+| 512² | — | 2.6 s | **1.7 s** |
+| 768² | — | **3.7 s** | 6.0 s |
+| 1024² | 10.3 s | **5.7 s** | 15.2 s |
+
+So the resident worker wins at 512² by ~0.9 s, and **loses at 768² and 1024²** —
+badly at 1024². A separate 5 GB process, a second model copy, and a GPU that can
+then hold only one of the two services (§3.1) currently buys us one size class.
+
+Note also that ComfyUI's 14-step 1024² is 10.3 s, not the 10–24 s in §1: the
+wide spread in the older figure was my worker being resident at the same time.
+My own presence inflated the baseline I was arguing against.
+
+What this does *not* settle: the VAE work in §4.4 is implemented but unmeasured,
+and if `fp16fix`/`taesd` removes the ~1.4 s fixed cost, the ranking changes at
+every size. That measurement is the deciding one. **If it does not, the honest
+recommendation is to drop this component and put the 4-step LoRA workflow behind
+`AI_FAST` in the ComfyUI backend instead** — same model, same LoRA, same
+sampler, one process, no VRAM handover, and it is already implemented.
+
+Two further caveats that argue against a 512-only niche:
+
+- **Downsampling destroys the noise pen.** At 768 a noise-pen stroke already
+  averages to flat grey before it reaches the model, and 512 is worse. "Reinterpret
+  this texture" is precisely the interaction the AI panel exists for, and it wants
+  native 1024 — the one size where this worker is furthest behind.
+- **LCM is not a free win at high denoise.** Up to ~0.65 it tracks the 14-step
+  result closely; at 0.8 — the denoise §4.5 recommends for actual
+  reinterpretation — it is visibly weaker, resolving textures into speckled
+  clutter where 14 steps resolves them into structure. Few-step sampling is a
+  latency/quality trade, not a strict improvement, and that is true of this
+  worker and of `AI_FAST` equally.
 
 ## 5. ComfyUI: the same LoRA, a 4-step Illustrious workflow
 
@@ -410,19 +478,37 @@ sampler_name: "euler_ancestral", scheduler: "normal"`):
 "9": { "class_type": "KSampler", "inputs": {
   "model": ["12", 0], "positive": ["2", 0], "negative": ["3", 0], "latent_image": ["8", 0],
   "seed": <seed>,
-  "steps": 8,               // = ceil(4 / denoise); ComfyUI also scales steps by denoise
+  "steps": 4,               // the REAL step count; do NOT divide by denoise
   "cfg": 1.5,               // LCM wants 1.0-2.0. NEVER 5.5 - it burns out at 4 steps
   "sampler_name": "lcm",
   "scheduler": "sgm_uniform",
-  "denoise": 0.55
+  "denoise": 0.8            // 0.55 is a near-no-op; see 4.5
 }}
 ```
 
 Notes:
 
-- ComfyUI's `KSampler` applies `denoise` the same way diffusers does — it runs
-  `steps * denoise` actual steps — so pass `ceil(desiredSteps / denoise)` to get
-  4 real steps at denoise 0.55. At `denoise: 1.0`, `steps: 4`.
+- **`steps` is the real step count at any denoise. Do not scale it.** An earlier
+  version of this document said to pass `ceil(steps / denoise)`, on the
+  assumption that ComfyUI truncates the schedule the way diffusers does. It does
+  not, and the `apps/server` agent caught the error in review. `comfy/samplers.py`
+  `KSampler.set_steps` is explicit:
+
+  ```python
+  new_steps = int(steps / denoise)
+  sigmas = self.calculate_sigmas(new_steps).to(self.device)
+  self.sigmas = sigmas[-(steps + 1):]      # exactly `steps` sampling steps
+  ```
+
+  ComfyUI already does the division internally. Passing `ceil(4 / 0.55)` made
+  "4-step" mode run **8** steps — double the intended cost, and 20 steps at the
+  room's minimum denoise. Pass `steps: 4` and mean it.
+
+  This is a genuine asymmetry between the two runtimes, which is what made it
+  easy to get wrong: **diffusers keeps only the last `n * strength` timesteps
+  without compensating**, so this worker's `steps_for_strength()` really does
+  need `ceil(steps / denoise)`. Same parameter names, opposite conventions. Do
+  not copy the compensation from one into the other.
 - `sampler_name: "lcm"` with `scheduler: "sgm_uniform"` is the pairing that
   behaves at 4 steps. `normal` visibly under-denoises.
 - For **DMD2** instead: `lora_name: "dmd2_sdxl_4step_lora_fp16.safetensors"`,
