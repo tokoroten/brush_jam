@@ -13,6 +13,9 @@ pnpm install
 pnpm dev          # server on :8787, web on :5173
 ```
 
+For a shared playtest with the fast backend, skip to
+[Playtest quickstart](#playtest-quickstart-3-people-on-a-lan).
+
 Open <http://localhost:5173>, pick a name, press **Create room**, and send the
 resulting `/r/<id>` URL to someone else (or open a second tab). Draw on the left;
 AI patches appear on the right.
@@ -27,7 +30,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 440 tests across shared / server / web
+pnpm test         # 586 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -36,6 +39,80 @@ pnpm --filter @brushjam/server smoke   # real end-to-end generation, saves smoke
 
 `pnpm build` then `pnpm start` serves the built client from the room server on
 `:8787`, so no Vite proxy is needed in production.
+
+## Playtest quickstart (3 people on a LAN)
+
+The fastest configuration, in order. Steps 1 and 2 are enough on your own
+machine; step 3 is what lets other people in.
+
+**1. Start the stream worker.** It loads the model on startup and takes about
+40 seconds before it is useful.
+
+```bash
+cd apps/stream-worker && uv run stream-worker
+```
+
+Wait until it answers warm, in another terminal:
+
+```bash
+curl http://127.0.0.1:8790/healthz     # {"ok":true,"warm":true,...}
+```
+
+`"ok": true` with `"warm": false` means it is still loading. Starting the app
+before it is warm is fine - the server keeps probing every 10 seconds and logs
+`[ai] stream worker is up ...` when it appears - but the first generation will
+wait for the model.
+
+**2. Start the app.**
+
+```bash
+pnpm dev:stream    # server on :8787, web on :5173, AI_BACKEND=stream
+```
+
+**3. Let other people join.** By default the server binds `127.0.0.1` and Vite
+binds localhost, so nothing outside the machine can reach either. Use:
+
+```bash
+pnpm dev:lan       # HOST=0.0.0.0 for the server, vite --host for the web
+```
+
+- Windows will show a **Windows Defender Firewall** prompt for Node the first
+  time. Allow it on **private networks**. If you dismiss it by accident, no one
+  can connect and the symptom is a page that never loads at all; re-run
+  `pnpm dev:lan` to get the prompt back.
+- Find your LAN address with `ipconfig` (the IPv4 address of your Wi-Fi or
+  Ethernet adapter, e.g. `192.168.0.66`) and open
+  **`http://192.168.0.66:5173`** - not `localhost` - on the host machine too.
+- Then **Copy invite URL** produces a working link. That button copies
+  `location.href`, and the client opens its WebSocket against `location.host`,
+  so both follow whatever address the page was opened with. Open the page on
+  `localhost` and you will copy a `localhost` URL that works for nobody else;
+  open it by LAN IP and everything downstream is correct. There is nothing to
+  configure - just be the first one to use the IP.
+
+Everyone opens the invite URL, picks a name, and draws on the same canvas.
+
+**One model at a time.** The worker and ComfyUI each hold several GB of VRAM.
+On an 8 GB card, running both turns a 10-second generation into minutes of
+thrashing. Stop one before starting the other.
+
+**ComfyUI instead of the worker.** Stop the worker, start ComfyUI, and use
+plain `pnpm dev` (or `pnpm dev:lan` without `AI_BACKEND`, adding `HOST=0.0.0.0`
+yourself). ComfyUI is auto-detected. It is slower - about 3.7 s for `fast` at
+768 and 10.3 s for `quality` at 1024 - but it has a real `quality` profile,
+which the worker does not.
+
+## Documents
+
+| document | what it is |
+| --- | --- |
+| [`docs/BRUSHJAM_CONTEXT.md`](docs/BRUSHJAM_CONTEXT.md) | The product context: what Brush Jam is, phased. |
+| [`docs/MVP_PLAN.md`](docs/MVP_PLAN.md) | The build plan this repository implements, sections 1-9. |
+| [`docs/STREAM_WORKER.md`](docs/STREAM_WORKER.md) | The stream worker: protocol, why it is explicit-only. |
+| [`docs/NIGHT_REPORT.md`](docs/NIGHT_REPORT.md) | Handoff report: what was built and measured overnight, and the recommended configuration. |
+| [`docs/experiments/2026-09-05-comfyui/REPORT.md`](docs/experiments/2026-09-05-comfyui/REPORT.md) | Reference measurement for ComfyUI: latency by size and profile, and what each denoise value actually does. |
+| [`docs/experiments/2026-09-05-stream/REPORT.md`](docs/experiments/2026-09-05-stream/REPORT.md) | The stream worker measured the same way, plus the LCM vs DMD2 comparison behind the current default. |
+| [`docs/experiments/README.md`](docs/experiments/README.md) | Index of raw experiment output. |
 
 ## Layout
 
@@ -238,14 +315,15 @@ outside it rather than silently substituting.
 | stream | **fast only** | worker's `max_size`, else 1024 | worker's `max_denoise`, else 0.9 | worker's `negative_prompt_active`, else active |
 | mock | fast + quality | 2048 | 0.95 | active |
 
-The stream worker holds one fused LCM LoRA, so it has no quality mode at all -
-asking it for 14 steps would silently run 4. Its defaults also differ, and the
+The stream worker holds one fused few-step LoRA (DMD2 at CFG 1.0), so it has no
+quality mode at all - asking it for 14 steps would silently run 4. Its defaults also differ, and the
 server applies them once the backend is known (`auto` only resolves at startup):
 resolution 768 and denoise 0.8, because 0.7 barely moves the drawing at 4 LCM
 steps. An explicit `AI_WINDOW` or `AI_DENOISE` still wins.
 
 ```
 pnpm dev:stream    # same as pnpm dev with AI_BACKEND=stream (works on Windows)
+pnpm dev:lan       # the same, plus HOST=0.0.0.0 and vite --host so a LAN can join
 ```
 
 **Why these numbers.** Measured on an RTX 3070 8 GB - see

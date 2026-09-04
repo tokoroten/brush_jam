@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ComfyUIBackend, createBackend, MockBackend, PROBE_TIMEOUT_MS, StreamBackend } from '../src/ai/backends/index.js';
+import {
+  ComfyUIBackend,
+  createBackend,
+  MockBackend,
+  PROBE_TIMEOUT_MS,
+  STREAM_RETRY_MS,
+  StreamBackend,
+  watchForStreamWorker,
+} from '../src/ai/backends/index.js';
 import { loadConfig, resolveBackendConfig } from '../src/config.js';
 
 interface Probes {
@@ -328,5 +336,84 @@ describe('backend defaults', () => {
   it('never lets the ceiling exceed the backend', () => {
     expect(resolveBackendConfig(config(), 'stream', streamCaps).maxResolution).toBe(1024);
     expect(resolveBackendConfig(config(), 'stream', caps({ profiles: ['fast'], maxResolution: 768 })).maxResolution).toBe(768);
+  });
+});
+
+/**
+ * A worker that is not up yet is the normal case: it takes ~40 s to load. Say
+ * how to start it, and keep looking so nobody has to restart the server.
+ */
+const NL = String.fromCharCode(10);
+
+describe('waiting for a stream worker that is not up yet', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('prints the exact command to start the worker', async () => {
+    stub({ stream: 'error' });
+    const logs: string[] = [];
+    await createBackend(config({ AI_BACKEND: 'stream' }), (m) => logs.push(m));
+    expect(logs.join(NL)).toContain('cd apps/stream-worker && uv run stream-worker');
+  });
+
+  it('says nothing about starting it when the worker is already answering', async () => {
+    stub({ stream: 'ok' });
+    const logs: string[] = [];
+    await createBackend(config({ AI_BACKEND: 'stream' }), (m) => logs.push(m));
+    expect(logs.join(NL)).not.toContain('uv run stream-worker');
+  });
+
+  it('retries every 10 s by default', () => {
+    expect(STREAM_RETRY_MS).toBe(10_000);
+  });
+
+  it('keeps probing while the worker is down, then announces it once', async () => {
+    let up = false;
+    let probes = 0;
+    vi.stubGlobal('fetch', async () => {
+      probes += 1;
+      if (!up) throw new Error('connection refused');
+      return new Response(JSON.stringify({ ok: true, warm: true, max_size: 1024, busy: false }), { status: 200 });
+    });
+
+    const logs: string[] = [];
+    const watcher = watchForStreamWorker('http://127.0.0.1:8790', { log: (m) => logs.push(m), intervalMs: 5 });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(probes).toBeGreaterThan(1);
+    expect(logs).toEqual([]);
+
+    up = true;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/stream worker is up/);
+
+    // and it stopped: no further probes, no second announcement
+    const settled = probes;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(probes).toBe(settled);
+    expect(logs).toHaveLength(1);
+    watcher.stop();
+  });
+
+  it('distinguishes a worker that is up but still loading its model', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ ok: true, warm: false, max_size: 1024, busy: false }), { status: 200 }),
+    );
+    const logs: string[] = [];
+    const watcher = watchForStreamWorker('http://127.0.0.1:8790', { log: (m) => logs.push(m), intervalMs: 5 });
+    await new Promise((r) => setTimeout(r, 40));
+    watcher.stop();
+    expect(logs[0]).toMatch(/still loading its model/);
+  });
+
+  it('can be stopped before the worker ever appears', async () => {
+    let probes = 0;
+    vi.stubGlobal('fetch', async () => {
+      probes += 1;
+      throw new Error('connection refused');
+    });
+    watchForStreamWorker('http://127.0.0.1:8790', { log: () => {}, intervalMs: 5 }).stop();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(probes).toBe(0);
   });
 });

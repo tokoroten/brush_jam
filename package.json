@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"pnpm --filter @brushjam/server dev\" \"pnpm --filter @brushjam/web dev\"",
     "dev:stream": "cross-env AI_BACKEND=stream pnpm dev",
+    "dev:lan": "cross-env HOST=0.0.0.0 AI_BACKEND=stream concurrently -n server,web -c cyan,magenta \"pnpm --filter @brushjam/server dev\" \"pnpm --filter @brushjam/web dev:host\"",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",

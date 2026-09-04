@@ -18,6 +18,41 @@ export { StreamBackend, streamHealth, streamReachable, pngSize } from './stream.
  */
 export const PROBE_TIMEOUT_MS = 2000;
 
+/** How often to look again for a stream worker that was not up at startup. */
+export const STREAM_RETRY_MS = 10_000;
+
+/** Stoppable so a test does not leave a timer behind. */
+export interface Watcher {
+  stop(): void;
+}
+
+/**
+ * Poll until the worker answers, then say so once and stop. The backend object
+ * needs no repair - it builds its URL per request - so appearing late is enough;
+ * RoomRegistry picks the real limits up on its own capability poll.
+ */
+export function watchForStreamWorker(
+  url: string,
+  opts: { log?: (m: string) => void; intervalMs?: number } = {},
+): Watcher {
+  const log = opts.log ?? console.log;
+  const timer = setInterval(() => {
+    void streamHealth(url, PROBE_TIMEOUT_MS).then((health) => {
+      if (!health.ok) return;
+      stop();
+      log(
+        health.warm
+          ? `[ai] stream worker is up at ${url}; generations will use it from now on`
+          : `[ai] stream worker is up at ${url} but still loading its model; the first request will wait`,
+      );
+    });
+  }, opts.intervalMs ?? STREAM_RETRY_MS);
+  // A background probe must never be the reason the process stays alive.
+  (timer as { unref?: () => void }).unref?.();
+  const stop = (): void => clearInterval(timer);
+  return { stop };
+}
+
 export async function createBackend(config: Config, log: (m: string) => void = console.log): Promise<AIBackend> {
   const comfy = (): AIBackend =>
     new ComfyUIBackend({
@@ -51,8 +86,13 @@ export async function createBackend(config: Config, log: (m: string) => void = c
     // An explicit choice is honoured either way, but say so now rather than
     // letting every generation fail with a puzzling 400.
     const health = await streamHealth(config.streamUrl, PROBE_TIMEOUT_MS);
-    if (!health.ok) log(`[ai] warning: stream worker is not answering (${health.reason ?? 'no answer'})`);
-    else if (!health.warm) log('[ai] warning: stream worker is reachable but not warm; the first request will load the model');
+    if (!health.ok) {
+      log(`[ai] warning: stream worker is not answering (${health.reason ?? 'no answer'})`);
+      log(`[ai] start it with: cd apps/stream-worker && uv run stream-worker   (~40 s to warm up)`);
+      // Nothing else to do here: the room will work the moment it appears, so
+      // keep looking rather than making someone restart the server.
+      watchForStreamWorker(config.streamUrl, { log });
+    } else if (!health.warm) log('[ai] warning: stream worker is reachable but not warm; the first request will load the model');
     else if (health.maxSize > 0 && health.maxSize < config.aiWindow) {
       log(`[ai] warning: stream worker max_size ${health.maxSize} is below AI_WINDOW ${config.aiWindow}; requests will be refused`);
     }
