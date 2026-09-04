@@ -51,9 +51,16 @@ class FakePipeline:
     def model_name(self) -> str:
         return "fake-model"
 
+    def memory(self) -> dict:
+        return {}
+
     def generate(self, **kwargs):
         from stream_worker.pipeline import GenerateResult
 
+        # should_cancel / request_id are part of the pipeline signature now;
+        # the fake ignores them but must accept them.
+        kwargs.pop("should_cancel", None)
+        kwargs.pop("request_id", None)
         self.calls.append(kwargs)
         generated = Image.new("RGB", (kwargs["width"], kwargs["height"]), (255, 0, 0))
         out = composite_through_mask(kwargs["image"].convert("RGB"), generated, kwargs["mask"])
@@ -99,6 +106,7 @@ def test_generate_returns_png_of_requested_size(client_and_pipe):
     assert out.size == (512, 512)
     assert body["width"] == 512 and body["height"] == 512
     assert "total_ms" in body["timings"] and "wait_ms" in body["timings"]
+    assert body["request_id"]
     # `denoise` must reach the pipeline as `strength`.
     assert pipe.calls[0]["strength"] == pytest.approx(0.55)
     assert pipe.calls[0]["steps"] == 4

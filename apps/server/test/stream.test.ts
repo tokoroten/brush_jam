@@ -110,6 +110,72 @@ describe('StreamBackend', () => {
     await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/timed out/);
   });
 
+  it('sends a request_id and queue flag', async () => {
+    const calls = stubFetch(() => okResponse(Buffer.from('x').toString('base64')));
+    await new StreamBackend({ url: 'http://127.0.0.1:8790' }).generate(req, new AbortController().signal);
+    const body = JSON.parse(String(calls[0]!.init!.body)) as Record<string, unknown>;
+    expect(typeof body.request_id).toBe('string');
+    expect((body.request_id as string).length).toBeGreaterThan(8);
+    expect(body.queue).toBe(true);
+  });
+
+  it('cancels the GPU job when the caller aborts', async () => {
+    // The whole point: dropping the HTTP request does not stop the diffusion
+    // loop, so the backend must tell the worker to stop.
+    const controller = new AbortController();
+    const calls = stubFetch((path, init) => {
+      if (path === '/cancel') return new Response('{}', { status: 200 });
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+      });
+    });
+    const promise = new StreamBackend({ url: 'http://127.0.0.1:8790' }).generate(req, controller.signal);
+    controller.abort();
+    await expect(promise).rejects.toBeInstanceOf(AbortedError);
+
+    const generateBody = JSON.parse(String(calls[0]!.init!.body)) as { request_id: string };
+    const cancel = calls.find((c) => c.url.endsWith('/cancel'));
+    expect(cancel, 'a /cancel call').toBeDefined();
+    expect(JSON.parse(String(cancel!.init!.body))).toEqual({ request_id: generateBody.request_id });
+  });
+
+  it('cancels on its own timeout too', async () => {
+    const calls = stubFetch((path, init) => {
+      if (path === '/cancel') return new Response('{}', { status: 200 });
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('t'), { name: 'TimeoutError' })), { once: true });
+      });
+    });
+    const backend = new StreamBackend({ url: 'http://127.0.0.1:8790', timeoutMs: 20 });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/timed out/);
+    await vi.waitFor(() => expect(calls.some((c) => c.url.endsWith('/cancel'))).toBe(true));
+  });
+
+  it('a failing /cancel does not mask the original error', async () => {
+    const controller = new AbortController();
+    stubFetch((path, init) => {
+      if (path === '/cancel') return Promise.reject(new Error('worker gone'));
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+      });
+    });
+    const promise = new StreamBackend({ url: 'http://127.0.0.1:8790' }).generate(req, controller.signal);
+    controller.abort();
+    await expect(promise).rejects.toBeInstanceOf(AbortedError);
+  });
+
+  it('maps the worker 499 (cancelled) to AbortedError', async () => {
+    stubFetch(() => new Response('cancelled (abc)', { status: 499 }));
+    const backend = new StreamBackend({ url: 'http://127.0.0.1:8790' });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toBeInstanceOf(AbortedError);
+  });
+
+  it('reports a 409 as busy rather than a generic failure', async () => {
+    stubFetch(() => new Response('busy with other-id', { status: 409 }));
+    const backend = new StreamBackend({ url: 'http://127.0.0.1:8790', queue: false });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toThrow(/busy/);
+  });
+
   it('streamReachable is true only when /healthz reports ok', async () => {
     stubFetch((path) => (path === '/healthz' ? new Response(JSON.stringify({ ok: true }), { status: 200 }) : new Response('', { status: 404 })));
     await expect(streamReachable('http://127.0.0.1:8790')).resolves.toBe(true);

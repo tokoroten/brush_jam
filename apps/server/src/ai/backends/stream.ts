@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { QUALITY_SUFFIX } from '@brushjam/shared';
 import { AbortedError, type AIBackend, type GenerateRequest } from './types.js';
 
@@ -8,6 +9,13 @@ export interface StreamOptions {
   timeoutMs?: number;
   /** Deadline for the cheap /healthz probe. */
   probeTimeoutMs?: number;
+  /**
+   * Wait for the GPU when the worker is busy instead of being refused with 409.
+   * On by default: the scheduler already allows one in-flight request per room,
+   * so a 409 here would only mean "another room is generating", which is worth
+   * waiting for rather than failing.
+   */
+  queue?: boolean;
 }
 
 interface StreamResponse {
@@ -40,6 +48,11 @@ export class StreamBackend implements AIBackend {
 
   async generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {
     const timeout = AbortSignal.timeout(this.opts.timeoutMs ?? 120_000);
+    // Dropping the HTTP request does NOT stop the GPU: the worker is already
+    // inside a diffusion loop on a background thread and would run to
+    // completion, holding the GPU while the next request queues behind it. The
+    // id lets us tell it to stop at its next step.
+    const requestId = randomUUID();
     let res: Response;
     try {
       res = await fetch(`${this.base}/generate`, {
@@ -55,16 +68,26 @@ export class StreamBackend implements AIBackend {
           seed: req.seed,
           width: req.size,
           height: req.size,
+          request_id: requestId,
+          queue: this.opts.queue ?? true,
         }),
         signal: AbortSignal.any([signal, timeout]),
       });
     } catch (err) {
+      // Abandoned or timed out: free the GPU rather than leaving it working on
+      // a result nobody will read.
+      void this.cancel(requestId);
       if (signal.aborted) throw new AbortedError();
       const name = (err as { name?: string })?.name;
       if (name === 'TimeoutError' || name === 'AbortError') throw new Error('stream worker request timed out');
       throw err;
     }
 
+    // 499 is the worker acknowledging our own cancellation.
+    if (res.status === 499) throw new AbortedError();
+    if (res.status === 409) {
+      throw new Error(`stream worker is busy: ${await safeText(res)}`);
+    }
     if (!res.ok) throw new Error(`stream worker /generate failed: ${res.status} ${await safeText(res)}`);
 
     let body: StreamResponse;
@@ -78,6 +101,24 @@ export class StreamBackend implements AIBackend {
       throw new Error('stream worker returned no image');
     }
     return Buffer.from(stripDataUrl(body.image_b64), 'base64');
+  }
+
+  /**
+   * Best effort "stop working on this". Fire-and-forget by design: the caller
+   * has already given up, and a failed cancel must not turn into a second
+   * error on a path that is already unwinding.
+   */
+  private async cancel(requestId: string): Promise<void> {
+    try {
+      await fetch(`${this.base}/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ request_id: requestId }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      /* the worker will finish the job; nothing better to do from here */
+    }
   }
 
   /** Cheap reachability + warmth probe, mirroring `comfyReachable`. */

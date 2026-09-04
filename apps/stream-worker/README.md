@@ -71,18 +71,42 @@ while unloaded reloads transparently, but pays the ~90 s cold start.
   "mask_b64":  "<PNG base64>",       // optional, L/RGB, white = regenerate
   "prompt": "anime style, fantasy town, vibrant colors",
   "negative_prompt": "lowres, bad anatomy, ...",
-  "denoise": 0.55,                   // alias: "strength"
+  "denoise": 0.8,                    // alias: "strength"
   "steps": 4,                        // denoising steps actually performed
   "seed": 12345,
-  "width": 1024, "height": 1024      // alias: "size" for squares
+  "width": 1024, "height": 1024,     // alias: "size" for squares
+  "request_id": "optional-caller-id",// for /cancel; generated if omitted
+  "queue": false                     // true = wait for the GPU instead of 409
 }
 ```
 
-→ `{ "image_b64": "<PNG base64>", "width": 1024, "height": 1024, "timings": { … } }`
+→ `{ "image_b64": "<PNG base64>", "width": 1024, "height": 1024, "request_id": "…", "timings": { … } }`
 
-`timings` contains `wait_ms` (queued behind another request), `prompt_ms`,
-`prompt_cached` (1.0 on an embedding-cache hit), `diffusion_ms`,
-`composite_ms`, `encode_ms`, `total_ms`.
+The PNG is always **exactly** `width x height`; the worker returns 500 rather
+than a differently-sized image.
+
+`timings`: `wait_ms` (queued behind another request), `prompt_ms` +
+`prompt_cached` (1.0 on an embedding-cache hit), `diffusion_ms` and its
+breakdown `unet_ms` / `vae_encode_ms` / `vae_decode_ms`, `steps_run`,
+`composite_ms`, `png_encode_ms`, `empty_cache_ms`, `total_ms`. `unet_ms` is the
+remainder after the two VAE spans, so it also carries scheduler overhead - treat
+it as an upper bound rather than a pure UNet number.
+
+Status codes: 200 ok, 400 bad image or out-of-range size, 409 busy (unless
+`queue: true`; carries `retry-after`), 499 cancelled, 500 generation failed,
+503 model failed to load.
+
+`POST /cancel`
+
+```jsonc
+{ "request_id": "the-id-you-sent" }
+// -> { "ok": true, "request_id": "...", "state": "running" | "pending" }
+```
+
+Stops a running job at its **next diffusion step** (0.1-1 s depending on size),
+or prevents a queued one from starting. Closing the HTTP connection is *not*
+enough: the diffusion loop runs on a background thread and would finish anyway,
+holding the GPU. Cancelling an unknown or already-finished id is not an error.
 
 Notes on the contract:
 
@@ -109,6 +133,7 @@ Notes on the contract:
 | `STREAM_WARMUP_SIZE` | `768` | size of the startup warm-up run; `0` disables |
 | `STREAM_MAX_SIZE` | `1024` | requests above this are rejected with 400 |
 | `STREAM_OFFLOAD_TEXT_ENCODERS` | `1` | park the two CLIP encoders in system RAM between requests (saves ~1.8 GB VRAM) |
+| `STREAM_VAE` | `fp16fix` | which VAE to run: `fp16fix` (`madebyollin/sdxl-vae-fp16-fix`, same weights rescaled so fp16 does not overflow), `taesd` (`madebyollin/taesdxl`, distilled and much faster, slightly softer), or `checkpoint` (the one baked into the checkpoint, which forces an fp32 upcast on every call). |
 | `STREAM_VAE_TILING` | `1` | tiled/sliced VAE |
 | `STREAM_EMPTY_CACHE` | `1` | return the allocator's cache after every generation. **Leave this on**: without it PyTorch reserves ~7.5 GB against 5.05 GB of live tensors, the card reports 0 bytes free, and 768²/1024² spill to shared memory and get 2–8× slower (`docs/STREAM_WORKER.md` §4.3). |
 | `STREAM_EMBED_CACHE` | `16` | prompt-embedding cache entries |
@@ -141,8 +166,15 @@ curl -X POST http://127.0.0.1:8188/free -H "content-type: application/json" \
 ## Benchmark
 
 ```bash
-uv run python scripts/make_sample.py --size 1024
-uv run python scripts/bench.py --sizes 512 768 1024 --runs 5
+# one configuration, against a worker you already started
+uv run python scripts/bench.py --sizes 512 768 1024 --runs 5 --mask
+
+# every VAE x every size, starting and stopping its own workers
+# (nothing else may be listening on the port, and free ComfyUI first)
+uv run python scripts/bench_vae.py
+
+# sweep denoise to pick AI_DENOISE
+uv run python scripts/quality_probe.py 512
 ```
 
 Measured on this machine (RTX 3070 8 GB, ComfyUI stopped, warm, 4 steps,

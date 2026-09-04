@@ -11,6 +11,18 @@ DEFAULT_LORA_DIR = r"E:\ComfyUI\models\loras"
 
 # Both are 4-step SDXL distillation LoRAs. LCM is the default; DMD2 is the
 # fallback documented in docs/STREAM_WORKER.md.
+# Alternative VAEs. The checkpoint's own SDXL VAE sets force_upcast=True, so
+# diffusers casts it to fp32 on every call - see docs/STREAM_WORKER.md 4.4.
+VAE_SOURCES = {
+    # Same architecture, weights rescaled so fp16 does not overflow: a drop-in
+    # replacement with no quality loss and no upcast.
+    "fp16fix": ("madebyollin/sdxl-vae-fp16-fix", "AutoencoderKL"),
+    # Distilled ~1M-parameter VAE: far faster, slightly softer output.
+    "taesd": ("madebyollin/taesdxl", "AutoencoderTiny"),
+    # Whatever is baked into the checkpoint (the upcasting one).
+    "checkpoint": (None, None),
+}
+
 LORA_REPOS = {
     "lcm": ("latent-consistency/lcm-lora-sdxl", "pytorch_lora_weights.safetensors", "lcm-lora-sdxl.safetensors"),
     "dmd2": ("tianweiy/DMD2", "dmd2_sdxl_4step_lora_fp16.safetensors", "dmd2_sdxl_4step_lora_fp16.safetensors"),
@@ -62,6 +74,8 @@ class Settings:
     # Hand fragmented blocks back after every generation; on 8 GB the allocator
     # otherwise reserves ~2.5 GB more than it uses and the next run spills.
     empty_cache_each_run: bool = field(default_factory=lambda: _env_bool("STREAM_EMPTY_CACHE", True))
+    # Which VAE to run. fp16fix removes the fp32 upcast that dominates latency.
+    vae: str = field(default_factory=lambda: os.environ.get("STREAM_VAE", "fp16fix").lower())
     vae_tiling: bool = field(default_factory=lambda: _env_bool("STREAM_VAE_TILING", True))
     embed_cache_size: int = field(default_factory=lambda: _env_int("STREAM_EMBED_CACHE", 16))
     # Debug/CI escape hatch: serve the contract without touching the GPU.
@@ -74,3 +88,8 @@ class Settings:
 
     def lora_path(self) -> Path:
         return self.lora_dir / self.lora_spec()[2]
+
+    def vae_spec(self) -> tuple[str | None, str | None]:
+        if self.vae not in VAE_SOURCES:
+            raise ValueError(f"STREAM_VAE must be one of {sorted(VAE_SOURCES)}, got {self.vae!r}")
+        return VAE_SOURCES[self.vae]

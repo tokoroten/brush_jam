@@ -308,16 +308,39 @@ every call, decodes in fp32, and casts back — visible as a deprecation warning
 in the log on each generation, and as the 1.5 GB gap between `allocated_gb` and
 `max_allocated_gb`.
 
+**The VAE swap is now implemented but NOT yet measured.** `STREAM_VAE` selects
+`fp16fix` (default, `madebyollin/sdxl-vae-fp16-fix` — same weights rescaled so
+fp16 does not overflow, with `force_upcast` forced off), `taesd`
+(`madebyollin/taesdxl`, distilled, much faster and slightly softer), or
+`checkpoint` (the old upcasting behaviour, kept so the comparison is possible).
+`/generate` now also reports `unet_ms` / `vae_encode_ms` / `vae_decode_ms`, so
+the next run can attribute the time instead of inferring it.
+
 Next steps, in the order I would take them:
 
-1. **Replace the VAE** with `madebyollin/sdxl-vae-fp16-fix` (drop-in, fp16-safe,
-   removes the upcast) or `taesdxl` (distilled, decodes in tens of ms). This is
-   the single highest-value change and needs no architectural work. I did not
-   get to it inside the GPU window.
-2. Re-measure with `memory` in `/healthz` to confirm `max_allocated_gb` drops
-   toward `allocated_gb`; if it does, the spill headroom problem is gone too and
-   `STREAM_EMPTY_CACHE` may become unnecessary.
-3. Only then consider RCFG / TensorRT (§2.4).
+1. **Run the comparison.** One command measures all three VAEs at all three
+   sizes, starting and stopping its own worker per configuration:
+
+   ```bash
+   cd apps/stream-worker && uv run python scripts/bench_vae.py
+   ```
+
+   Free ComfyUI first (§3.1). Expect ~15 minutes for the full 3×3 grid; narrow
+   it with `--vaes fp16fix --sizes 512 768` if the window is short.
+2. Check `memory.max_allocated_gb` in `/healthz` afterwards. If it drops toward
+   `allocated_gb` (5.05), the fp32 upcast was the transient-memory problem too,
+   and `STREAM_EMPTY_CACHE` may stop being necessary — worth re-testing with it
+   off, since it costs 70–755 ms per request.
+3. Sweep denoise (`scripts/quality_probe.py 512`) to replace the 0.75–0.85
+   estimate in §4.5 with a measurement.
+4. Only then consider RCFG / TensorRT (§2.4).
+
+**Prediction, recorded before measuring so it can be wrong:** `fp16fix` should
+remove most of the ~1.4 s fixed cost at 512² and a larger share at 768²/1024²,
+because the fp32 upcast doubles VAE memory traffic and inflates the transient
+peak. `taesd` should be faster still. If `fp16fix` changes nothing, my §4.2
+elimination was wrong and the next suspect is the img2img pipeline's own
+pre/post-processing rather than the VAE.
 
 ### 4.5 Output quality at 4 steps is also disappointing
 
@@ -485,12 +508,71 @@ For reference, `streamReachable()` returns true only when `/healthz` answers
 will block the first request until it is ready — useful for a startup log line
 or a health page, just not for backend selection.
 
-### 6.3 Nothing else changes
+### 6.3 Cancellation, `request_id` and the busy contract
+
+**Aborting the HTTP request does not stop the GPU.** When `scheduler.ts` aborts
+a stale generation, the worker is already inside a diffusion loop on a
+background thread; the socket closing does not reach it. Left alone it runs to
+completion, holds the GPU, and the next request queues behind work nobody will
+ever read. On a 15 s 1024² job that is 15 s of dead time per abandoned request,
+and the scheduler abandons requests routinely (prompt changes, stale revisions,
+its own watchdog).
+
+So cancellation is cooperative:
+
+| call | meaning |
+| --- | --- |
+| `POST /generate { …, request_id, queue }` | `request_id` is caller-chosen (the worker invents one if absent) and comes back in the response. `queue: true` waits for the GPU; `queue: false` (default on the worker) is refused with **409** while busy. |
+| `POST /cancel { request_id }` | Ask it to stop. Returns `{ ok, request_id, state: "running" \| "pending" }`. Cancelling an unknown or already-finished id is **not** an error — the server may cancel something the worker just finished. |
+| `GET /healthz` → `busy`, `current_request_id` | What the GPU is doing right now. |
+
+Status codes `/generate` can return: **200** success, **400** undecodable image
+or out-of-range size, **409** busy (only when `queue` is false; carries
+`retry-after: 1`), **499** cancelled (either cancelled mid-flight or cancelled
+while queued), **500** generation failed, **503** the model failed to load.
+
+A cancelled job stops at its **next diffusion step**, so cancellation latency is
+one step — 0.1–1 s depending on size. It cannot interrupt a step already on the
+GPU; nothing in PyTorch can.
+
+**`StreamBackend` already implements all of this** — you do not need to write
+it. It generates a `request_id` per call, sends `queue: true` (the scheduler
+already allows one in-flight request per room, so a 409 would only mean "another
+room is generating", which is worth waiting for), fires `POST /cancel` when the
+caller's signal aborts *or* its own timeout fires, maps 499 → `AbortedError` and
+409 → a "stream worker is busy" error. `queue: false` is available via
+`new StreamBackend({ url, queue: false })` if you ever want fail-fast instead.
+
+If you want the server to wait for a free GPU rather than send `queue: true`,
+poll `GET /healthz` until `busy: false` — but prefer `queue: true`, which does
+the same thing without a polling loop.
+
+### 6.4 Verified against a real worker
+
+The TS backend and the Python worker have now been driven against each other
+end-to-end, with no GPU, using the worker's dry-run mode:
+
+```bash
+cd apps/stream-worker && STREAM_DRY_RUN=1 STREAM_PORT=8795 uv run python -m stream_worker
+# then, against the real StreamBackend:
+#   streamReachable() sees the worker              PASS
+#   generate() returns a Buffer                    PASS
+#   result is a PNG, exactly size x size           PASS
+#   oversized request rejects with the worker's message   PASS
+#   caller abort surfaces as AbortedError          PASS
+```
+
+`STREAM_DRY_RUN=1` serves the whole contract — status codes, field names,
+`request_id`, sizes — without loading a model or touching the GPU. Use it in CI
+and for any server-side work on this backend; it is the cheapest way to catch a
+contract mismatch, and it costs no GPU minutes.
+
+### 6.5 Nothing else changes
 
 `StreamBackend` implements the existing `AIBackend` interface exactly
 (`generate(req, signal) → Buffer` of a `size×size` PNG), honours the abort
-signal, and has its own request timeout, so `scheduler.ts` needs no changes at
-all.
+signal, cancels the GPU job when it does, and has its own request timeout, so
+`scheduler.ts` needs no changes at all.
 
 ## 7. Honest limitations
 

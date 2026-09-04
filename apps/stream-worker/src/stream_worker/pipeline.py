@@ -24,7 +24,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from PIL import Image
@@ -93,6 +93,20 @@ def steps_for_strength(steps: int, strength: float) -> int:
     return max(steps, int(math.ceil(steps / strength)))
 
 
+class CancelledError(Exception):
+    """Raised inside the diffusion loop when a request is cancelled.
+
+    HTTP abort alone cannot stop GPU work: the pipeline call is already running
+    in a worker thread and will finish regardless, so an abandoned request keeps
+    the GPU busy and the next one queues behind it. Cancellation therefore has
+    to be cooperative - the caller sets a flag, and the step callback notices.
+    """
+
+    def __init__(self, request_id: str | None = None) -> None:
+        super().__init__(f"generation cancelled ({request_id or 'unknown'})")
+        self.request_id = request_id
+
+
 @dataclass
 class GenerateResult:
     image: Image.Image
@@ -111,6 +125,7 @@ class StreamPipeline:
         self.device = "cuda"
         self._embed_cache: OrderedDict[tuple[str, str, bool], tuple[Any, ...]] = OrderedDict()
         self._torch: Any = None
+        self._vae_timings: dict[str, float] = {}
 
     # ---------------------------------------------------------------- loading
     def load(self) -> None:
@@ -141,10 +156,16 @@ class StreamPipeline:
         pipe.fuse_lora()
         pipe.unload_lora_weights()
 
+        self._install_vae(pipe)
+
         pipe.to(self.device)
         if s.vae_tiling:
-            pipe.vae.enable_tiling()
-            pipe.vae.enable_slicing()
+            # AutoencoderTiny gained tiling later than AutoencoderKL.
+            if hasattr(pipe.vae, "enable_tiling"):
+                pipe.vae.enable_tiling()
+            if hasattr(pipe.vae, "enable_slicing"):
+                pipe.vae.enable_slicing()
+        self._instrument_vae(pipe)
         self.pipe = pipe
         self._park_text_encoders()
         log.info("loaded %s + %s in %.1fs", s.checkpoint.name, lora.name, time.perf_counter() - t0)
@@ -152,6 +173,60 @@ class StreamPipeline:
         if s.warmup_size:
             self.warmup(s.warmup_size)
         self.warm = True
+
+    def _install_vae(self, pipe: Any) -> None:
+        """Swap in a VAE that does not need the fp32 upcast.
+
+        The checkpoint's SDXL VAE sets ``force_upcast=True``, so diffusers casts
+        it to fp32 for every encode/decode and back again. That was measured as
+        the dominant fixed cost per request (docs/STREAM_WORKER.md 4.4), so the
+        default is the fp16-safe rescale of the same weights.
+        """
+        torch = self._torch
+        repo, cls_name = self.settings.vae_spec()
+        if repo is None:
+            log.info("VAE: checkpoint's own (force_upcast=%s)", getattr(pipe.vae.config, "force_upcast", None))
+            return
+
+        import diffusers
+
+        vae_cls = getattr(diffusers, cls_name)
+        t0 = time.perf_counter()
+        vae = vae_cls.from_pretrained(repo, torch_dtype=torch.float16)
+        # Belt and braces: the replacement is fp16-safe by construction, but the
+        # flag is what diffusers actually checks before upcasting.
+        if hasattr(vae, "config") and hasattr(vae.config, "force_upcast"):
+            vae.config.force_upcast = False
+        pipe.vae = vae
+        log.info("VAE: %s (%s) loaded in %.1fs", repo, cls_name, time.perf_counter() - t0)
+
+    def _instrument_vae(self, pipe: Any) -> None:
+        """Time VAE encode/decode separately from the UNet.
+
+        Wraps the bound methods once at load time; ``generate`` resets the
+        accumulator per request. The synchronize calls make the split honest at
+        the cost of a couple of stalls per request.
+        """
+        torch = self._torch
+        vae = pipe.vae
+        if getattr(vae, "_brushjam_timed", False):
+            return
+
+        def wrap(name: str, fn: Any) -> Any:
+            def timed(*args: Any, **kwargs: Any) -> Any:
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    torch.cuda.synchronize()
+                    self._vae_timings[name] = self._vae_timings.get(name, 0.0) + (time.perf_counter() - t0) * 1000.0
+
+            return timed
+
+        vae.encode = wrap("vae_encode_ms", vae.encode)
+        vae.decode = wrap("vae_decode_ms", vae.decode)
+        vae._brushjam_timed = True
 
     def warmup(self, size: int) -> None:
         """One throwaway generation so CUDA kernels and autotuning are paid for."""
@@ -220,10 +295,17 @@ class StreamPipeline:
         seed: int,
         width: int,
         height: int,
+        should_cancel: Callable[[], bool] | None = None,
+        request_id: str | None = None,
     ) -> GenerateResult:
         torch = self._torch
         s = self.settings
         timings: dict[str, float] = {}
+        self._vae_timings = {}
+
+        def check_cancel() -> None:
+            if should_cancel is not None and should_cancel():
+                raise CancelledError(request_id)
 
         t_start = time.perf_counter()
         base = image.convert("RGB")
@@ -240,10 +322,23 @@ class StreamPipeline:
 
         prompt_embeds, negative_embeds, pooled, negative_pooled = embeds
         generator = torch.Generator(device=self.device).manual_seed(int(seed) & 0x7FFFFFFF)
+        check_cancel()
+
+        # The only place inside pipe() where we get control back. Raising here
+        # unwinds the pipeline call, so a cancelled job stops at the next step
+        # boundary instead of running to completion on a GPU nobody is waiting
+        # for. Steps are 0.1-1 s, which bounds the cancellation latency.
+        steps_done = [0]
+
+        def on_step_end(_pipe: Any, step: int, _timestep: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+            steps_done[0] = step + 1
+            check_cancel()
+            return kwargs
 
         torch.cuda.synchronize()
         t = time.perf_counter()
         out = self.pipe(
+            callback_on_step_end=on_step_end,
             image=base,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_embeds,
@@ -257,9 +352,27 @@ class StreamPipeline:
         )
         torch.cuda.synchronize()
         timings["diffusion_ms"] = (time.perf_counter() - t) * 1000.0
+        timings["steps_run"] = float(steps_done[0])
 
+        # Split the diffusion span. vae_* are measured directly by the wrappers
+        # installed at load; unet_ms is the remainder, so it also carries
+        # scheduler and conditioning overhead - it is a bound, not a pure UNet
+        # number.
+        timings["vae_encode_ms"] = round(self._vae_timings.get("vae_encode_ms", 0.0), 2)
+        timings["vae_decode_ms"] = round(self._vae_timings.get("vae_decode_ms", 0.0), 2)
+        timings["unet_ms"] = round(
+            max(0.0, timings["diffusion_ms"] - timings["vae_encode_ms"] - timings["vae_decode_ms"]), 2
+        )
+
+        check_cancel()
         t = time.perf_counter()
         composed = composite_through_mask(base, out.images[0], mask)
+        # The contract promises exactly width x height; composite_through_mask
+        # resizes the model output to the base, so this can only fail if `base`
+        # itself was wrong. Assert rather than return a differently-sized PNG
+        # that the server would silently composite at the wrong scale.
+        if composed.size != (width, height):
+            raise RuntimeError(f"internal error: produced {composed.size}, expected {(width, height)}")
         timings["composite_ms"] = (time.perf_counter() - t) * 1000.0
 
         # Return the transient blocks to the driver. Without this the caching
