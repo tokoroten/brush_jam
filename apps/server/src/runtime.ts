@@ -15,7 +15,7 @@ import {
   snapshot,
   type RoomState,
 } from './room.js';
-import { AICanvas, buildMask, decodeUpload, forgetImages, renderCropInput } from './raster.js';
+import { AICanvas, buildFullMask, buildMask, decodeUpload, forgetImages, renderCropInput } from './raster.js';
 import { validateClientMessage } from './validate.js';
 
 const MAX_PATCHES = 24;
@@ -60,6 +60,10 @@ export class RoomRuntime {
           const built = buildMask(dirty, crop, size, apply);
           return { png: built.png, alpha: built.alpha, empty: built.plan.empty };
         },
+        buildFullMask: (size): MaskHandle => {
+          const built = buildFullMask(size);
+          return { png: built.png, alpha: built.alpha, empty: false };
+        },
         applyResult: async (patch, crop, _apply, mask, forRevision) => {
           const png = await this.aiCanvas().composite(patch, crop, mask as never);
           const id = shortId(10);
@@ -76,6 +80,8 @@ export class RoomRuntime {
       },
       backend,
       {
+        mode: config.aiMode,
+        canvasSize: config.canvasSize,
         window: config.aiWindow,
         apply: config.aiApply,
         steps: config.aiSteps,
@@ -88,7 +94,7 @@ export class RoomRuntime {
   }
 
   private aiCanvas(): AICanvas {
-    if (!this.ai) this.ai = new AICanvas();
+    if (!this.ai) this.ai = new AICanvas(this.config.canvasSize);
     return this.ai;
   }
 
@@ -127,6 +133,7 @@ export class RoomRuntime {
       snapshot: snapshot(this.state, member.userId, this.scheduler.state, {
         window: this.config.aiWindow,
         apply: this.config.aiApply,
+        canvasSize: this.config.canvasSize,
       }),
     });
     this.broadcast({ t: 'presence', members: [...this.state.members.values()] });

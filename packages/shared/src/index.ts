@@ -6,5 +6,6 @@ export * from './revision.js';
 export * from './undo.js';
 export * from './mask.js';
 export * from './camera.js';
+export * from './noise.js';
 export * from './render.js';
 export * from './protocol.js';

@@ -1,5 +1,6 @@
 import { useEffect, useRef, type JSX } from 'react';
-import { CANVAS_SIZE, renderStrokes, worldToScreen, type Camera } from '@brushjam/shared';
+import { renderStrokes, worldToScreen, type Camera } from '@brushjam/shared';
+import { scratchCanvas } from './raster.js';
 import type { RoomClient } from './roomClient.js';
 
 export interface StageViewProps {
@@ -54,7 +55,7 @@ export function StageView(props: StageViewProps): JSX.Element {
       ctx.imageSmoothingEnabled = cam.zoom < 1;
 
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+      ctx.fillRect(0, 0, client.canvasSize, client.canvasSize);
 
       if (kind === 'human') {
         for (const layer of client.orderedLayers) {
@@ -66,13 +67,18 @@ export function StageView(props: StageViewProps): JSX.Element {
         }
         ctx.globalAlpha = 1;
         for (const live of client.live.values()) {
-          renderStrokes(ctx as unknown as never, [{ ...live.init, points: live.points }]);
+          renderStrokes(ctx as unknown as never, [{ ...live.init, points: live.points }], {
+            createCanvas: (w, h) => scratchCanvas(w, h) as never,
+          });
         }
       } else {
         ctx.drawImage(client.aiCanvas, 0, 0);
       }
 
-      if (client.lastCrop) {
+      // In full-canvas mode the crop *is* the canvas, so the overlay is noise.
+      const fullCanvas =
+        client.lastCrop?.width === client.canvasSize && client.lastCrop?.height === client.canvasSize;
+      if (client.lastCrop && !fullCanvas) {
         ctx.globalAlpha = 1;
         ctx.lineWidth = Math.max(1, 1 / cam.zoom);
         ctx.strokeStyle = 'rgba(90,160,255,0.55)';

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+uv.lock
+samples/*
+!samples/.gitkeep
+!samples/example_output.png
+!samples/example_input.png
+bench/

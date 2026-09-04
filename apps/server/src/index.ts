@@ -26,13 +26,50 @@ try {
 const backend = await createBackend(config);
 const { server, close } = createBrushJamServer(config, backend);
 
-server.listen(config.port, config.host, () => {
-  console.log(`[brushjam] server on http://${config.host}:${config.port} (set HOST=0.0.0.0 to expose on the LAN)`);
-  console.log(`[brushjam] ai window ${config.aiWindow} / apply ${config.aiApply} / steps ${config.aiSteps} / denoise ${config.aiDenoise}`);
-});
+/**
+ * A watch restart can begin before the previous process has actually released
+ * the port (Windows in particular), so listening is retried briefly instead of
+ * dying with EADDRINUSE.
+ */
+const LISTEN_RETRIES = 12;
+const LISTEN_RETRY_MS = 250;
 
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    void close().then(() => process.exit(0));
+function listenWithRetry(attempt = 1): void {
+  const onError = (err: NodeJS.ErrnoException): void => {
+    if (err.code === 'EADDRINUSE' && attempt < LISTEN_RETRIES) {
+      console.warn(`[brushjam] port ${config.port} still busy, retrying (${attempt}/${LISTEN_RETRIES})`);
+      setTimeout(() => listenWithRetry(attempt + 1), LISTEN_RETRY_MS);
+      return;
+    }
+    console.error(`[brushjam] ${err.message}`);
+    process.exit(1);
+  };
+  server.once('error', onError);
+  server.listen(config.port, config.host, () => {
+    server.off('error', onError);
+    console.log(`[brushjam] server on http://${config.host}:${config.port} (set HOST=0.0.0.0 to expose on the LAN)`);
+    console.log(`[brushjam] canvas ${config.canvasSize} / ai mode ${config.aiMode}`);
+    console.log(`[brushjam] ai window ${config.aiWindow} / apply ${config.aiApply} / steps ${config.aiSteps} / denoise ${config.aiDenoise}`);
   });
 }
+
+listenWithRetry();
+
+let shuttingDown = false;
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  // Hard deadline: a stuck close would keep the port bound and break the next
+  // watch restart, which is far worse than an abrupt exit.
+  const kill = setTimeout(() => process.exit(0), 2000);
+  kill.unref();
+  void close().then(() => process.exit(0));
+}
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) {
+  process.on(signal, shutdown);
+}
+// tsx watch (and other supervisors) may ask over IPC instead of by signal
+process.on('message', (msg) => {
+  if (msg === 'shutdown' || msg === 'SIGTERM' || msg === 'SIGINT') shutdown();
+});

@@ -90,6 +90,8 @@ export class RoomClient {
   lastApply: Rect | null = null;
   aiWindow = 0;
   aiApply = 0;
+  /** World canvas size, learned from the snapshot (never hard-coded). */
+  canvasSize = CANVAS_SIZE;
   connected = false;
 
   private socket: SocketLike | null = null;
@@ -216,7 +218,7 @@ export class RoomClient {
   layerCanvas(layerId: string): HTMLCanvasElement {
     let canvas = this.layerCanvases.get(layerId);
     if (!canvas) {
-      canvas = this.deps.createRaster();
+      canvas = this.deps.createRaster(this.canvasSize);
       this.layerCanvases.set(layerId, canvas);
     }
     return canvas;
@@ -263,6 +265,14 @@ export class RoomClient {
     }, 1000);
   }
 
+  /** The server owns the world size; adopt it and drop rasters of the old one. */
+  private resizeRasters(size: number): void {
+    this.canvasSize = size;
+    this.aiCanvas.width = size;
+    this.aiCanvas.height = size;
+    this.layerCanvases.clear();
+  }
+
   private repaint(layer: Layer): void {
     redrawLayer(this.layerCanvas(layer.id), layer, this.strokes, this.undone, this.images);
   }
@@ -282,6 +292,7 @@ export class RoomClient {
         this.strokes = s.strokes;
         this.undone = new Set(s.undone);
         this.prompt = s.prompt;
+        if (s.canvasSize !== this.canvasSize) this.resizeRasters(s.canvasSize);
         this.denoise = s.denoise;
         this.negativePrompt = s.negativePrompt;
         this.humanRevision = s.humanRevision;
@@ -298,7 +309,7 @@ export class RoomClient {
         }
         // A snapshot replaces everything: a restarted or recreated room would
         // otherwise keep showing the previous room's AI pixels.
-        ctxOf(this.aiCanvas).clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        ctxOf(this.aiCanvas).clearRect(0, 0, this.canvasSize, this.canvasSize);
         this.aiPaintGeneration += 1;
         this.lastCrop = null;
         this.lastApply = null;
@@ -427,7 +438,7 @@ export class RoomClient {
       // it is already stale: drawing it would undo the newer patch.
       if (this.aiPaintGeneration !== startedAt) return;
       const ctx = ctxOf(this.aiCanvas);
-      ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+      ctx.clearRect(0, 0, this.canvasSize, this.canvasSize);
       ctx.drawImage(img, 0, 0);
       this.aiPaintGeneration += 1;
     } catch {

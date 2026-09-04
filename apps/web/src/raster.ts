@@ -1,5 +1,13 @@
 import { CANVAS_SIZE, renderStrokes, type Layer, type Stroke } from '@brushjam/shared';
 
+/** Temp canvases for the noise pen; kept here so both renderers share it. */
+export const scratchCanvas = (width: number, height: number): HTMLCanvasElement => {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+};
+
 export function createRaster(size = CANVAS_SIZE): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -34,13 +42,13 @@ export function redrawLayer(
   renderStrokes(
     ctx as unknown as never,
     strokes.filter((s) => s.layerId === layer.id),
-    { undone },
+    { undone, createCanvas: (w, h) => scratchCanvas(w, h) as never },
   );
 }
 
 /** Draw a single committed stroke incrementally (the common case). */
 export function drawStroke(canvas: HTMLCanvasElement, stroke: Stroke): void {
-  renderStrokes(ctxOf(canvas) as unknown as never, [stroke]);
+  renderStrokes(ctxOf(canvas) as unknown as never, [stroke], { createCanvas: (w, h) => scratchCanvas(w, h) as never });
 }
 
 export const ASSET_TIMEOUT_MS = 10_000;

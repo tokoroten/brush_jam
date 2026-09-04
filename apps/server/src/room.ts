@@ -228,7 +228,7 @@ export function snapshot(
   room: RoomState,
   youUserId: string,
   aiState: RoomSnapshot['aiState'],
-  ai: { window: number; apply: number },
+  ai: { window: number; apply: number; canvasSize?: number },
 ): RoomSnapshot {
   return {
     roomId: room.id,
@@ -236,7 +236,7 @@ export function snapshot(
     prompt: room.prompt,
     humanRevision: room.humanRevision,
     aiRevision: room.aiRevision,
-    canvasSize: CANVAS_SIZE,
+    canvasSize: ai.canvasSize ?? CANVAS_SIZE,
     aiWindow: ai.window,
     aiApply: ai.apply,
     denoise: room.denoise,

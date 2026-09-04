@@ -236,3 +236,57 @@ describe('MockBackend', () => {
     await expect(promise).rejects.toThrow(/aborted/);
   });
 });
+
+/** Noise strokes must look the same in a server crop as on the client canvas. */
+describe('noise strokes in a crop', () => {
+  it('renders the same noise pixels as a full-size render of the same world', async () => {
+    const state = createRoom('noise-room');
+    const userId = addMember(state, 'Alice').userId;
+    const layerId = state.layers[0]!.id;
+    applyClientMessage(state, userId, {
+      t: 'stroke_start',
+      stroke: {
+        id: 'n1',
+        layerId,
+        tool: 'noise',
+        color: '#000000',
+        width: 40,
+        points: [
+          { x: 1100, y: 1100 },
+          { x: 1200, y: 1160 },
+        ],
+      },
+    });
+    applyClientMessage(state, userId, { t: 'stroke_end', strokeId: 'n1', points: [{ x: 1300, y: 1120 }] });
+
+    const snap = captureRenderSnapshot(state);
+    const crop = { x: 1024, y: 1024, width: 512, height: 512 };
+    const png = await renderCropInput(snap, crop, 512);
+    const rendered = await loadImage(png);
+    const server = createCanvas(512, 512);
+    server.getContext('2d').drawImage(rendered, 0, 0);
+    const serverData = server.getContext('2d').getImageData(0, 0, 512, 512).data;
+
+    // "client-style": the whole layer at world scale, then the same window read back
+    const client = createCanvas(2048, 2048);
+    const cctx = client.getContext('2d');
+    cctx.fillStyle = '#ffffff';
+    cctx.fillRect(0, 0, 2048, 2048);
+    renderStrokes(cctx as never, state.strokes, { createCanvas: (w, h) => createCanvas(w, h) as never });
+    const clientData = cctx.getImageData(1024, 1024, 512, 512).data;
+
+    let compared = 0;
+    let mismatched = 0;
+    for (let i = 0; i < serverData.length; i += 4) {
+      // only compare pixels the stroke actually covers (not the white paper)
+      if (clientData[i] === 255 && clientData[i + 1] === 255 && clientData[i + 2] === 255) continue;
+      compared += 1;
+      if (serverData[i] !== clientData[i] || serverData[i + 1] !== clientData[i + 1] || serverData[i + 2] !== clientData[i + 2]) {
+        mismatched += 1;
+      }
+    }
+    expect(compared).toBeGreaterThan(1000);
+    // edge antialiasing may round differently; the noise body must match
+    expect(mismatched / compared).toBeLessThan(0.05);
+  });
+});

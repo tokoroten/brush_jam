@@ -179,7 +179,18 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
         registry.dispose();
         wss.close();
         for (const client of wss.clients) client.terminate();
-        server.close(() => resolve());
+        // Open ws upgrades and keep-alive HTTP sockets otherwise hold the
+        // listener open, which is what made a tsx-watch restart hit EADDRINUSE.
+        server.closeAllConnections?.();
+        let settled = false;
+        const done = (): void => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        server.close(done);
+        // last resort: never let shutdown hang a watch restart
+        setTimeout(done, 1500).unref();
       }),
   };
 }

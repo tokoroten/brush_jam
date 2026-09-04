@@ -6,7 +6,8 @@ const env = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({ ...ext
 /** Finding 15: bad configuration must fail fast, not produce broken crops. */
 describe('loadConfig', () => {
   it('uses the documented defaults', () => {
-    expect(loadConfig(env())).toMatchObject({
+    // patch mode: full mode deliberately locks the window to the canvas
+    expect(loadConfig(env({ AI_MODE: 'patch' }))).toMatchObject({
       host: '127.0.0.1',
       port: 8787,
       aiBackend: 'auto',
@@ -40,7 +41,7 @@ describe('loadConfig', () => {
   });
 
   it('rejects an apply area larger than the window', () => {
-    expect(() => loadConfig(env({ AI_WINDOW: '512', AI_APPLY: '1024' }))).toThrow(/AI_APPLY/);
+    expect(() => loadConfig(env({ AI_MODE: 'patch', AI_WINDOW: '512', AI_APPLY: '1024' }))).toThrow(/AI_APPLY/);
   });
 
   it('requires credentials for the runpod backend', () => {
@@ -49,7 +50,9 @@ describe('loadConfig', () => {
   });
 
   it('accepts valid overrides', () => {
-    const config = loadConfig(env({ AI_WINDOW: '1536', AI_APPLY: '1024', AI_DENOISE: '0.85', HOST: '0.0.0.0', PORT: '9000' }));
+    const config = loadConfig(
+      env({ AI_MODE: 'patch', AI_WINDOW: '1536', AI_APPLY: '1024', AI_DENOISE: '0.85', HOST: '0.0.0.0', PORT: '9000' }),
+    );
     expect(config).toMatchObject({ aiWindow: 1536, aiApply: 1024, aiDenoise: 0.85, host: '0.0.0.0', port: 9000 });
   });
 
@@ -77,5 +80,40 @@ describe('AI_VAE_TILE', () => {
 
   it('refuses a value outside the node range', () => {
     expect(() => loadConfig({ AI_VAE_TILE: '9000' } as NodeJS.ProcessEnv)).toThrow();
+  });
+});
+
+describe('canvas size and AI mode', () => {
+  it('defaults to a 1024 canvas in full mode, with the window locked to it', () => {
+    const c = loadConfig({} as NodeJS.ProcessEnv);
+    expect(c.canvasSize).toBe(1024);
+    expect(c.aiMode).toBe('full');
+    expect(c.aiWindow).toBe(1024);
+    expect(c.aiApply).toBe(1024);
+  });
+
+  it('locks window and apply to the canvas in full mode', () => {
+    const c = loadConfig({ CANVAS_SIZE: '768', AI_WINDOW: '1024', AI_APPLY: '512' } as NodeJS.ProcessEnv);
+    expect(c.aiWindow).toBe(768);
+    expect(c.aiApply).toBe(768);
+  });
+
+  it('leaves window and apply alone in patch mode', () => {
+    const c = loadConfig({ AI_MODE: 'patch', CANVAS_SIZE: '4096', AI_WINDOW: '1024', AI_APPLY: '768' } as NodeJS.ProcessEnv);
+    expect(c.canvasSize).toBe(4096);
+    expect(c.aiWindow).toBe(1024);
+    expect(c.aiApply).toBe(768);
+  });
+
+  it('refuses a canvas too large to generate in one pass', () => {
+    expect(() => loadConfig({ CANVAS_SIZE: '4096' } as NodeJS.ProcessEnv)).toThrow(/AI_MODE=patch/);
+  });
+
+  it.each(['500', '1000', '5000'])('refuses CANVAS_SIZE=%s', (value) => {
+    expect(() => loadConfig({ CANVAS_SIZE: value } as NodeJS.ProcessEnv)).toThrow(ConfigError);
+  });
+
+  it('refuses an unknown AI_MODE', () => {
+    expect(() => loadConfig({ AI_MODE: 'sideways' } as NodeJS.ProcessEnv)).toThrow(/AI_MODE/);
   });
 });

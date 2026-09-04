@@ -72,6 +72,10 @@ function makeHost(): Harness {
       masks.push({ crop, apply });
       return { png: Buffer.from('mask'), alpha: {}, empty: maskEmpty.value };
     },
+    buildFullMask: (size): MaskHandle => {
+      masks.push({ crop: { x: 0, y: 0, width: size, height: size }, apply: { x: 0, y: 0, width: size, height: size } });
+      return { png: Buffer.from('full-mask'), alpha: {}, empty: false };
+    },
     applyResult: async (_patch, crop, apply, _mask, forRevision) => {
       applied.push({ crop, apply, forRevision });
       return { rect: crop, url: '/patch.png' };
@@ -492,6 +496,106 @@ describe('room AI settings', () => {
     s.markDirty([R(2000, 2000)]);
     await vi.advanceTimersByTimeAsync(400);
     expect(backend.calls[0]?.negativePrompt).toBe(DEFAULT_NEGATIVE_PROMPT);
+    s.stop();
+  });
+});
+
+/** Full-canvas mode: one whole-canvas generation per quiet period. */
+describe('AIScheduler full mode', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const fullOpts = { ...opts, mode: 'full' as const, canvasSize: 1024, window: 1024, apply: 1024 };
+
+  it('debounces any change into a single whole-canvas run', async () => {
+    const { host, masks, applied } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, fullOpts);
+    s.markDirty([R(10, 10)]);
+    await vi.advanceTimersByTimeAsync(200);
+    s.markDirty([R(900, 900)]);
+    await vi.advanceTimersByTimeAsync(399);
+    expect(backend.calls).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(backend.calls).toHaveLength(1);
+    // the mask and the applied rect are the whole canvas
+    expect(masks[0]).toEqual({ crop: { x: 0, y: 0, width: 1024, height: 1024 }, apply: { x: 0, y: 0, width: 1024, height: 1024 } });
+    await backend.finish();
+    expect(applied[0]?.crop).toEqual({ x: 0, y: 0, width: 1024, height: 1024 });
+    expect(applied[0]?.apply).toEqual({ x: 0, y: 0, width: 1024, height: 1024 });
+    s.stop();
+  });
+
+  it('never keeps dirty regions or picks a crop', async () => {
+    const { host } = makeHost();
+    const s = new AIScheduler(host, new FakeBackend(), fullOpts);
+    s.markDirty([R(10, 10), R(3000, 3000)]);
+    expect(s.dirtyRegions).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(400);
+    s.stop();
+  });
+
+  it('keeps one request in flight and re-runs once for changes made during it', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, fullOpts);
+    s.markDirty([R(10, 10)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls).toHaveLength(1);
+
+    s.markDirty([R(20, 20)]);
+    s.markDirty([R(30, 30)]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls).toHaveLength(1);
+
+    await backend.finish();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(backend.calls).toHaveLength(2);
+    s.stop();
+  });
+
+  it('re-runs after a prompt or settings change with nothing drawn', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, fullOpts);
+    s.nudge();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(backend.calls).toHaveLength(1);
+    s.stop();
+  });
+
+  it('discards a result the canvas has moved past', async () => {
+    const { host, revision, applied, emitted } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, fullOpts);
+    s.markDirty([R(10, 10)]);
+    await vi.advanceTimersByTimeAsync(400);
+
+    // a newer generation was accepted while this one was running
+    revision.value = 99;
+    s.markDirty([R(40, 40)]);
+    await vi.advanceTimersByTimeAsync(400);
+    await backend.finish();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(applied.length).toBe(1);
+
+    await backend.finish();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(applied.length).toBe(2);
+    expect(applied[1]!.forRevision).toBe(99);
+    expect(emitted.filter((m) => m.t === 'ai_result')).toHaveLength(2);
+    s.stop();
+  });
+
+  it('retries after an error', async () => {
+    const { host } = makeHost();
+    const backend = new FakeBackend();
+    backend.failNext = true;
+    const s = new AIScheduler(host, backend, fullOpts);
+    s.markDirty([R(10, 10)]);
+    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(backend.calls.length).toBeGreaterThan(1);
     s.stop();
   });
 });

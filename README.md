@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 318 tests across shared / server / web
+pnpm test         # 354 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -116,6 +116,8 @@ are multiples of 64, denoise is 0..1, and so on).
 | `AI_BACKEND` | auto | `comfyui`, `mock`, `runpod`, or unset for auto-detect |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | Local ComfyUI |
 | `COMFYUI_CHECKPOINT` | `waiNSFWIllustrious_v150.safetensors` | Must exist in ComfyUI |
+| `CANVAS_SIZE` | `1024` | World canvas size in px (square, multiple of 64, 512-4096) |
+| `AI_MODE` | `full` | `full` regenerates the whole canvas; `patch` uses crops + dirty regions |
 | `AI_WINDOW` | `1024` | Square generation window in world px (8 GB VRAM friendly) |
 | `AI_APPLY` | `768` | Central area the result is allowed to change |
 | `AI_STEPS` | `14` | Sampler steps |
@@ -161,6 +163,43 @@ moving to the cloud is a transport change, not a pipeline change. Nothing in thi
 repository deploys to RunPod, and the adapter has not been run against a live
 endpoint — treat it as untested code.
 
+### Two AI modes
+
+`AI_MODE=full` (the default, and what the playtest uses) treats the whole canvas
+as one unit: any change - a stroke, an undo, a layer edit, a prompt or settings
+change - marks the room changed, and after the debounce the entire canvas is
+rendered, sent with a fully opaque mask, and the result **replaces** the AI
+raster. There is no crop selection, no dirty-region bookkeeping and no mask
+feathering, so a thin line no longer comes back as a narrow repainted band. The
+window is locked to `CANVAS_SIZE`, which must therefore be <= 2048; the server
+refuses to boot otherwise and points at patch mode.
+
+`AI_MODE=patch` restores the original large-canvas pipeline (dirty regions ->
+crop -> dilated, feathered mask -> apply rect), e.g.
+`AI_MODE=patch CANVAS_SIZE=4096 AI_WINDOW=1024 AI_APPLY=768`.
+
+The client never hard-codes a canvas size: it takes `canvasSize` from the
+snapshot, sizes its rasters to it and fits the camera to it. In full mode the
+crop/apply overlay rectangles are hidden, because they are the whole canvas.
+
+### The noise pen
+
+A third stroke tool next to pen and eraser. It fills the stroke shape with
+deterministic RGB noise: the value of a pixel is `hash(seed, worldX, worldY)`
+with `seed = FNV-1a(stroke.id)`, so two renders are byte-identical and a
+server-side crop (rendered with the crop origin subtracted) produces the same
+pixels as the client's full-size layer. The shape's antialiased alpha is kept,
+so it composites like any other stroke, and it is a normal stroke everywhere
+else: same undo, same eraser interaction, same dirty-region behaviour. It exists
+to give the model something richer than white paper to reinterpret.
+
+Implementation note: `renderStrokes` takes a `createCanvas(w, h)` dependency
+(browser: `document.createElement('canvas')`, server: `@napi-rs/canvas`) and
+rasterises the stroke into a temporary canvas of its bounding box before
+replacing each covered pixel's RGB. Live preview while drawing uses the same
+renderer per chunk - the per-frame cost is bounded by the stroke's bbox and was
+not noticeable in the browser.
+
 ### Room-level AI settings
 
 Behind the **advanced** toggle next to the prompt, and shared by everyone in the
@@ -200,6 +239,16 @@ art, because the input latent is dominated by white. Making the AI feel like a
 real collaborator is a tuning problem for the playtest phase (denoise, prompt,
 maybe a coloured/filled base), not an architectural one — the plumbing described
 above is what this slice was built to prove.
+
+### Dev restart on Windows
+
+`tsx watch` restarts used to fail with `EADDRINUSE 127.0.0.1:8787`: open
+WebSocket connections kept the old process's listener alive. The server now
+terminates every socket, calls `closeAllConnections()`, and exits on
+SIGINT/SIGTERM/SIGHUP/SIGBREAK or an IPC `shutdown` message, with a hard 2 s
+deadline; `listen` also retries EADDRINUSE a few times. Verified by editing a
+server file twice under `tsx watch` with a WebSocket client connected - both
+restarts served the new code.
 
 ## Decisions and deviations from the plan
 

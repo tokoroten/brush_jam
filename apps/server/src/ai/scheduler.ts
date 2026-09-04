@@ -36,11 +36,18 @@ export interface SchedulerHost {
   beginJob(): RenderJob;
   getRevision(): number;
   buildMask(dirty: Rect[], crop: Rect, size: number, apply: Rect): MaskHandle;
+  /** Fully opaque mask: full-canvas mode regenerates everything. */
+  buildFullMask(size: number): MaskHandle;
   applyResult(patch: Buffer, crop: Rect, apply: Rect, mask: unknown, forRevision: number): Promise<{ rect: Rect; url: string }>;
   emit(msg: ServerMessage): void;
 }
 
 export interface SchedulerOptions {
+  /**
+   * 'full' regenerates the whole canvas on every change (the playtest default,
+   * small canvases only); 'patch' keeps the dirty-region + crop pipeline.
+   */
+  mode?: 'full' | 'patch';
   window: number;
   apply: number;
   steps: number;
@@ -77,6 +84,8 @@ export class AIScheduler {
   private promptEpoch = 0;
   /** crop+region signature of the last run that repainted none of its region. */
   private lastNoProgress: string | null = null;
+  /** Full-canvas mode: anything at all changed since the last generation. */
+  private changed = false;
 
   constructor(
     private readonly host: SchedulerHost,
@@ -92,8 +101,19 @@ export class AIScheduler {
     return this.dirty;
   }
 
+  private get full(): boolean {
+    return this.opts.mode === 'full';
+  }
+
   markDirty(rects: readonly Rect[]): void {
     if (this.stopped || rects.length === 0) return;
+    if (this.full) {
+      // No regions, no crop selection: the whole canvas is the unit of work.
+      this.changed = true;
+      this.setState('queued');
+      this.schedule(this.opts.debounceMs);
+      return;
+    }
     this.dirty = mergeDirtyAll(this.dirty, rects);
     this.setState('queued');
     this.schedule(this.opts.debounceMs);
@@ -109,6 +129,12 @@ export class AIScheduler {
     // Bumped even while a run is in flight: that run captured the old prompt and
     // must be re-done, otherwise the new prompt is silently dropped.
     this.promptEpoch += 1;
+    if (this.full) {
+      this.changed = true;
+      this.setState('queued');
+      this.schedule(this.opts.debounceMs);
+      return;
+    }
     if (this.dirty.length === 0) {
       if (!this.lastAppliedRect) return;
       this.dirty = [this.lastAppliedRect];
@@ -151,6 +177,7 @@ export class AIScheduler {
   }
 
   private async run(): Promise<void> {
+    if (this.full) return this.runFull();
     if (this.dirty.length === 0) {
       this.setState('idle');
       return;
@@ -160,6 +187,9 @@ export class AIScheduler {
     // Centred on the region, not on the crop: a region against a canvas edge must
     // still fall inside the repainted area or it would never be consumed.
     const apply = applyRectFor(crop, this.opts.apply, region);
+    // Captured before the mask so the mask uses the same settings the request
+    // will carry (beginJob is synchronous and side-effect free).
+    const job = this.host.beginJob();
     const mask = this.host.buildMask([...this.dirty], crop, this.opts.window, apply);
     if (mask.empty) {
       this.dirty = this.dirty.filter((r) => r !== region);
@@ -168,7 +198,6 @@ export class AIScheduler {
       return;
     }
 
-    const job = this.host.beginJob();
     const forRevision = job.revision;
     const promptEpoch = this.promptEpoch;
     this.inFlight = true;
@@ -237,10 +266,91 @@ export class AIScheduler {
     }
   }
 
+  /**
+   * Full-canvas mode: render everything, regenerate everything, replace
+   * everything. One request in flight, latest revision wins, and any change
+   * that arrives mid-flight simply queues another whole-canvas run.
+   */
+  private async runFull(): Promise<void> {
+    if (!this.changed) {
+      this.setState('idle');
+      return;
+    }
+    const size = this.opts.canvasSize ?? CANVAS_SIZE;
+    const rect: Rect = { x: 0, y: 0, width: size, height: size };
+    const job = this.host.beginJob();
+    const forRevision = job.revision;
+    const mask = this.host.buildFullMask(this.opts.window);
+
+    this.changed = false;
+    this.inFlight = true;
+    this.pending = false;
+    this.controller = new AbortController();
+    this.setState('generating');
+    const startedAt = Date.now();
+    let timedOut = false;
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      this.controller?.abort();
+    }, this.opts.watchdogMs ?? 180_000);
+
+    try {
+      const imagePng = await job.render(rect, this.opts.window);
+      const patch = await this.backend.generate(
+        {
+          prompt: job.prompt,
+          negativePrompt: job.negativePrompt?.trim() ? job.negativePrompt : DEFAULT_NEGATIVE_PROMPT,
+          imagePng,
+          maskPng: mask.png,
+          size: this.opts.window,
+          denoise: job.denoise ?? this.opts.denoise,
+          steps: this.opts.steps,
+          seed: (this.opts.seed ?? defaultSeed)(),
+          tag: `${this.opts.tag ?? 'room'}_r${forRevision}`,
+        },
+        this.controller.signal,
+      );
+
+      if (!shouldAcceptResult(forRevision, this.lastAccepted)) {
+        this.setState('idle');
+      } else {
+        const applied = await this.host.applyResult(patch, rect, rect, mask.alpha, forRevision);
+        this.lastAccepted = forRevision;
+        this.lastAppliedRect = rect;
+        const latencyMs = Date.now() - startedAt;
+        this.host.emit({ t: 'ai_result', rect: applied.rect, url: applied.url, aiRevision: forRevision, crop: rect, apply: rect, latencyMs });
+        this.setState('idle', undefined, latencyMs);
+      }
+      this.afterRun(0);
+    } catch (err) {
+      if (this.stopped) {
+        this.inFlight = false;
+        this.controller = null;
+        return;
+      }
+      if (err instanceof AbortedError && !timedOut) {
+        this.inFlight = false;
+        this.controller = null;
+        return;
+      }
+      // the work was not done, so it is still owed
+      this.changed = true;
+      const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
+      this.setState('error', message);
+      this.afterRun(this.opts.errorBackoffMs ?? 2000);
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
+
   private afterRun(delayMs: number): void {
     this.inFlight = false;
     this.controller = null;
     if (this.stopped) return;
+    if (this.full) {
+      if (this.pending || this.changed) this.schedule(delayMs);
+      return;
+    }
     if (this.pending || this.dirty.length > 0) this.schedule(delayMs);
   }
 

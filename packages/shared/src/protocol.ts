@@ -1,6 +1,6 @@
 import type { Point, Rect } from './geometry.js';
 
-export type Tool = 'pen' | 'eraser';
+export type Tool = 'pen' | 'eraser' | 'noise';
 export type LayerKind = 'draw' | 'reference';
 
 export interface Layer {

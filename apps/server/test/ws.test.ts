@@ -9,7 +9,13 @@ import { createBrushJamServer, type BrushJamServer } from '../src/server.js';
 let app: BrushJamServer;
 let port = 0;
 
-const config = loadConfig({ AI_BACKEND: 'mock', AI_DEBOUNCE_MS: '100000', WEB_DIST: 'nonexistent-dir' } as NodeJS.ProcessEnv);
+const config = loadConfig({
+  AI_BACKEND: 'mock',
+  AI_MODE: 'patch',
+  CANVAS_SIZE: '4096',
+  AI_DEBOUNCE_MS: '100000',
+  WEB_DIST: 'nonexistent-dir',
+} as NodeJS.ProcessEnv);
 
 beforeEach(async () => {
   app = createBrushJamServer(config, new MockBackend(0));

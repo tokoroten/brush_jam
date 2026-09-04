@@ -57,7 +57,7 @@ function makeLoader(): Loader {
   const requested: string[] = [];
   const aborted: string[] = [];
   const deps: ClientDeps = {
-    createRaster: () => createCanvas(CANVAS_SIZE, CANVAS_SIZE) as unknown as HTMLCanvasElement,
+    createRaster: (size = CANVAS_SIZE) => createCanvas(size, size) as unknown as HTMLCanvasElement,
     openSocket: (url) => new FakeSocket(url),
     loadImage: (src, options) =>
       new Promise((resolve, reject) => {
@@ -444,6 +444,22 @@ describe('ai settings', () => {
     await tick();
     expect(client.denoise).toBe(0.35);
     expect(client.negativePrompt).toBe('');
+    client.dispose();
+  });
+});
+
+/** Full-canvas mode: the world size comes from the server, never a constant. */
+describe('canvas size', () => {
+  it('adopts the snapshot canvas size and resizes the AI raster', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ canvasSize: 1024 }));
+    await tick();
+    expect(client.canvasSize).toBe(1024);
+    expect(client.aiCanvas.width).toBe(1024);
+    expect(client.aiCanvas.height).toBe(1024);
+    // layer rasters follow the new size
+    expect(client.layerCanvas('l1').width).toBe(1024);
     client.dispose();
   });
 });

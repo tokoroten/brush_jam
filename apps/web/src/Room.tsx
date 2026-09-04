@@ -16,15 +16,18 @@ import {
   type Point,
 } from '@brushjam/shared';
 import { LayerPanel } from './LayerPanel.js';
+import { movedPosition, pickReferenceLayer, scaledBy } from './move.js';
 import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pastePlacement } from './paste.js';
 import { RoomClient } from './roomClient.js';
 
-export type Tool = 'pen' | 'eraser' | 'move';
+export type Tool = 'pen' | 'noise' | 'eraser' | 'move';
 
 const CURSOR_INTERVAL_MS = 50;
 const CHUNK_INTERVAL_MS = 40;
+/** ~20 Hz while dragging a reference layer. */
+const MOVE_INTERVAL_MS = 50;
 
 interface Drag {
   kind: 'stroke' | 'pan' | 'move';
@@ -41,7 +44,7 @@ interface Drag {
 
 export function Room({ roomId, name }: { roomId: string; name: string }): JSX.Element {
   const client = useMemo(() => new RoomClient(roomId, name), [roomId, name]);
-  useSyncExternalStore(client.subscribe, client.getVersion);
+  const version = useSyncExternalStore(client.subscribe, client.getVersion);
 
   useEffect(() => {
     client.connect();
@@ -61,10 +64,16 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const [negativeDraft, setNegativeDraft] = useState<string | null>(null);
 
   const dragRef = useRef<Drag | null>(null);
+  /** Image id of a paste we are still waiting for the server to turn into a layer. */
+  const pastedImageId = useRef<string | null>(null);
   const spaceRef = useRef(false);
   const lastCursorAt = useRef(0);
 
   const layers = client.orderedLayers;
+  const sizeOf = (imageId: string): { width: number; height: number } | undefined => {
+    const img = client.images.get(imageId);
+    return img ? { width: img.naturalWidth, height: img.naturalHeight } : undefined;
+  };
   const activeLayer: Layer | undefined =
     layers.find((l) => l.id === activeLayerId) ?? layers.filter((l) => l.kind === 'draw').at(-1) ?? layers.at(-1);
 
@@ -101,6 +110,15 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     return () => clearTimeout(timer);
   }, [negativeDraft, client]);
 
+  // The server assigns the layer id, so selection has to wait for the echo.
+  useEffect(() => {
+    if (!pastedImageId.current) return;
+    const created = client.layers.find((l) => l.imageId === pastedImageId.current);
+    if (!created) return;
+    pastedImageId.current = null;
+    setActiveLayerId(created.id);
+  }, [client.layers, version]);
+
   // --- camera helpers -------------------------------------------------------
   const stageSize = (e: { currentTarget: HTMLCanvasElement }): { w: number; h: number } => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -113,6 +131,15 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   };
 
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>): void => {
+    // Move tool: the wheel scales the layer being moved instead of the camera.
+    const moving = dragRef.current?.kind === 'move' ? dragRef.current.layerId : null;
+    if (tool === 'move' && (moving || e.shiftKey)) {
+      const target = client.findLayer(moving ?? activeLayer?.id ?? '');
+      if (target?.kind === 'reference' && !target.locked) {
+        client.send({ t: 'layer_update', id: target.id, patch: { scale: scaledBy(target.scale, Math.exp(-e.deltaY * 0.0015)) } });
+        return;
+      }
+    }
     const rect = e.currentTarget.getBoundingClientRect();
     const { w, h } = stageSize(e);
     setCamera((cam) => zoomAt(cam, w, h, e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.0015)));
@@ -121,9 +148,19 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const fit = (): void => {
     const el = document.querySelector('.stage');
     const rect = el?.getBoundingClientRect();
-    setCamera(fitCamera(rect?.width ?? 800, rect?.height ?? 600, CANVAS_SIZE));
+    setCamera(fitCamera(rect?.width ?? 800, rect?.height ?? 600, client.canvasSize));
   };
   const reset = (): void => setCamera((cam) => ({ ...cam, zoom: 1 }));
+
+  // The world size comes from the snapshot, so the default view can only be
+  // fitted once the server has told us how big the canvas is.
+  const fittedFor = useRef(0);
+  useEffect(() => {
+    if (fittedFor.current === client.canvasSize) return;
+    fittedFor.current = client.canvasSize;
+    const rect = document.querySelector('.stage')?.getBoundingClientRect();
+    setCamera(fitCamera(rect?.width ?? 800, rect?.height ?? 600, client.canvasSize));
+  }, [client.canvasSize]);
 
   // --- drawing --------------------------------------------------------------
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>): void => {
@@ -135,15 +172,22 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       dragRef.current = { kind: 'pan', lastScreen: screen, sentPoints: 0, lastChunkAt: 0 };
       return;
     }
-    if (tool === 'move' && activeLayer?.kind === 'reference') {
-      dragRef.current = {
-        kind: 'move',
-        layerId: activeLayer.id,
-        lastScreen: screen,
-        sentPoints: 0,
-        lastChunkAt: 0,
-        origin: { x: activeLayer.x ?? 0, y: activeLayer.y ?? 0 },
-      };
+    if (tool === 'move') {
+      // Topmost reference under the pointer wins; otherwise the selected one,
+      // which is what makes a freshly pasted image draggable straight away.
+      const target = pickReferenceLayer(layers, sizeOf, world, activeLayer?.id ?? null);
+      if (target) {
+        setActiveLayerId(target.id);
+        dragRef.current = {
+          kind: 'move',
+          layerId: target.id,
+          lastScreen: screen,
+          sentPoints: 0,
+          lastChunkAt: 0,
+          origin: { x: target.x ?? 0, y: target.y ?? 0 },
+        };
+      }
+      // the move tool never draws, even with nothing to move
       return;
     }
     if (!activeLayer || activeLayer.kind !== 'draw' || activeLayer.locked) return;
@@ -153,7 +197,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     // stroke replaces the live one instead of leaving a duplicate behind.
     const liveKey = `${client.youUserId}:${strokeId}`;
     const point: Point = { x: world.x, y: world.y, p: e.pressure > 0 ? e.pressure : 1 };
-    const init = { id: liveKey, layerId: activeLayer.id, tool: tool === 'eraser' ? ('eraser' as const) : ('pen' as const), color, width, points: [point] };
+    const init = { id: liveKey, layerId: activeLayer.id, tool: tool === 'eraser' ? ('eraser' as const) : tool === 'noise' ? ('noise' as const) : ('pen' as const), color, width, points: [point] };
     client.live.set(liveKey, { userId: client.youUserId, init, points: [point] });
     client.send({ t: 'stroke_start', stroke: { ...init, id: strokeId } });
     dragRef.current = { kind: 'stroke', strokeId, liveKey, lastScreen: screen, sentPoints: 1, lastChunkAt: Date.now() };
@@ -178,11 +222,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       return;
     }
     if (drag.kind === 'move' && drag.layerId && drag.origin) {
-      const dx = (e.clientX - drag.lastScreen.x) / camera.zoom;
-      const dy = (e.clientY - drag.lastScreen.y) / camera.zoom;
+      drag.origin = movedPosition(drag.origin, e.clientX - drag.lastScreen.x, e.clientY - drag.lastScreen.y, camera.zoom);
       drag.lastScreen = { x: e.clientX, y: e.clientY };
-      drag.origin = { x: drag.origin.x + dx, y: drag.origin.y + dy };
-      if (now - drag.lastChunkAt > 60) {
+      if (now - drag.lastChunkAt > MOVE_INTERVAL_MS) {
         drag.lastChunkAt = now;
         client.send({ t: 'layer_update', id: drag.layerId, patch: { x: drag.origin.x, y: drag.origin.y } });
       }
@@ -254,6 +296,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       if (!res.ok) return;
       const stored = (await res.json()) as { imageId: string };
       const at = pastePlacement({ x: camera.centerX, y: camera.centerY }, { width: w, height: h });
+      // Select it and switch to move, so the very next drag moves the paste.
+      pastedImageId.current = stored.imageId;
+      setTool('move');
       client.send({ t: 'layer_create', layer: { kind: 'reference', imageId: stored.imageId, x: at.x, y: at.y, scale: 1 } });
     },
     [camera.centerX, camera.centerY, client, roomId],
@@ -337,7 +382,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       ) : null}
 
       <div className="tools">
-        {(['pen', 'eraser', 'move'] as const).map((t) => (
+        {(['pen', 'noise', 'eraser', 'move'] as const).map((t) => (
           <button key={t} className={tool === t ? 'active' : ''} onClick={() => setTool(t)}>
             {t}
           </button>
@@ -348,7 +393,6 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           <input type="range" min={1} max={128} value={width} onChange={(e) => setWidth(Number(e.target.value))} />
         </label>
         <button onClick={() => client.send({ t: 'undo' })}>undo (Ctrl+Z)</button>
-        <button onClick={() => activeLayer && client.send({ t: 'clear_layer', layerId: activeLayer.id })}>clear layer</button>
         <button onClick={fit}>fit</button>
         <button onClick={reset}>100%</button>
         <span className="zoom">{Math.round(camera.zoom * 100)}%</span>

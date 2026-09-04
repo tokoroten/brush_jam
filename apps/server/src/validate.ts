@@ -62,7 +62,7 @@ export function validateClientMessage(raw: unknown): ValidationResult {
       if (!isObj(s)) return bad('stroke_start needs a stroke object');
       if (!isId(s.id)) return bad('stroke needs an id');
       if (!isId(s.layerId)) return bad('stroke needs a layerId');
-      if (s.tool !== 'pen' && s.tool !== 'eraser') return bad('stroke tool must be pen or eraser');
+      if (s.tool !== 'pen' && s.tool !== 'eraser' && s.tool !== 'noise') return bad('stroke tool must be pen, eraser or noise');
       if (!isStr(s.color)) return bad('stroke needs a color');
       if (!isNum(s.width)) return bad('stroke needs a finite width');
       const pts = points(s.points);

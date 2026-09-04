@@ -104,6 +104,7 @@ export async function renderCropInput(snapshot: RenderSnapshot, crop: Rect, size
         undone: snapshot.undone,
         offsetX: crop.x,
         offsetY: crop.y,
+        createCanvas: (w, h) => createCanvas(w, h) as never,
       });
     }
 
@@ -176,6 +177,24 @@ export function buildMask(dirty: readonly Rect[], crop: Rect, size: number, appl
   fctx.fillRect(0, 0, size, size);
   fctx.drawImage(alpha, 0, 0);
   return { png: flat.toBuffer('image/png'), alpha, plan };
+}
+
+/**
+ * Full-canvas mode: everything is regenerated, so the mask is simply opaque.
+ * No dilation and no feather - there is no surrounding area to blend into.
+ */
+export function buildFullMask(size: number): BuiltMask {
+  const alpha = createCanvas(size, size);
+  const actx = alpha.getContext('2d');
+  actx.fillStyle = '#ffffff';
+  actx.fillRect(0, 0, size, size);
+  const plan: MaskPlan = {
+    shapes: [{ x: 0, y: 0, width: size, height: size }],
+    apply: { x: 0, y: 0, width: size, height: size },
+    feather: 0,
+    empty: false,
+  };
+  return { png: alpha.toBuffer('image/png'), alpha, plan };
 }
 
 /** The room's persistent AI canvas: a full-size, initially transparent raster. */

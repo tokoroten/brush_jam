@@ -4,6 +4,10 @@ export interface Config {
   aiBackend: 'comfyui' | 'mock' | 'runpod' | 'auto';
   comfyUrl: string;
   comfyCheckpoint: string;
+  /** World canvas size in px (square). */
+  canvasSize: number;
+  /** 'full' regenerates the whole canvas; 'patch' uses crops + dirty regions. */
+  aiMode: 'full' | 'patch';
   aiWindow: number;
   aiApply: number;
   aiSteps: number;
@@ -55,6 +59,10 @@ function num(env: NodeJS.ProcessEnv, key: string, fallback: number, rule: Number
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const errors: string[] = [];
   const backendRaw = (env.AI_BACKEND ?? 'auto').toLowerCase();
+  const modeRaw = (env.AI_MODE ?? 'full').toLowerCase();
+  if (!['full', 'patch'].includes(modeRaw)) {
+    errors.push(`AI_MODE must be full or patch (got ${JSON.stringify(env.AI_MODE)})`);
+  }
   if (!['auto', 'comfyui', 'mock', 'runpod'].includes(backendRaw)) {
     errors.push(`AI_BACKEND must be one of auto, comfyui, mock, runpod (got ${JSON.stringify(env.AI_BACKEND)})`);
   }
@@ -65,6 +73,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     aiBackend: (['comfyui', 'mock', 'runpod'].includes(backendRaw) ? backendRaw : 'auto') as Config['aiBackend'],
     comfyUrl: (env.COMFYUI_URL ?? 'http://127.0.0.1:8188').replace(/\/+$/, ''),
     comfyCheckpoint: env.COMFYUI_CHECKPOINT ?? 'waiNSFWIllustrious_v150.safetensors',
+    canvasSize: num(env, 'CANVAS_SIZE', 1024, { min: 512, max: 4096, integer: true, multipleOf: 64 }, errors),
+    aiMode: modeRaw === 'patch' ? 'patch' : 'full',
     aiWindow: num(env, 'AI_WINDOW', 1024, { min: 256, max: 2048, integer: true, multipleOf: 64 }, errors),
     aiApply: num(env, 'AI_APPLY', 768, { min: 128, max: 2048, integer: true, multipleOf: 64 }, errors),
     aiSteps: num(env, 'AI_STEPS', 14, { min: 1, max: 150, integer: true }, errors),
@@ -78,6 +88,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     runpodApiKey: env.RUNPOD_API_KEY ?? '',
     webDist: env.WEB_DIST ?? null,
   };
+
+  if (config.aiMode === 'full') {
+    // The whole canvas is the generation window, so it has to fit in one pass.
+    if (config.canvasSize > 2048) {
+      errors.push(`AI_MODE=full needs CANVAS_SIZE <= 2048 (got ${config.canvasSize}); use AI_MODE=patch for a large canvas`);
+    }
+    config.aiWindow = config.canvasSize;
+    config.aiApply = config.canvasSize;
+  }
 
   if (config.aiApply > config.aiWindow) {
     errors.push(`AI_APPLY (${config.aiApply}) must not exceed AI_WINDOW (${config.aiWindow})`);
