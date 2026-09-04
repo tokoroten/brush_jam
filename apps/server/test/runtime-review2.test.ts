@@ -509,3 +509,84 @@ describe('capabilities reach open clients', () => {
     registry.dispose();
   });
 });
+
+/**
+ * Review 9 item 1: a room stuck on a 400 asks for the capability probe itself.
+ * If a routine probe that found nothing new cleared its permanent-error state,
+ * the same doomed request would run, 400, probe, clear, run - forever.
+ */
+describe('a rejected request cannot drive a retry loop', () => {
+  const cfg = loadConfig({ AI_BACKEND: 'mock', CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+  const limits = { profiles: ['fast', 'quality'] as ('fast' | 'quality')[], maxDenoise: 0.95, maxResolution: 1024 };
+
+  class Probe extends MockBackend {
+    fail = false;
+    maxResolution = 1024;
+    override async capabilities(): Promise<BackendCapabilities> {
+      if (this.fail) throw new Error('worker is down');
+      return {
+        profiles: ['fast', 'quality'],
+        maxResolution: this.maxResolution,
+        maxDenoise: 0.95,
+        negativePromptActive: { fast: true, quality: true },
+      };
+    }
+  }
+
+  function countRetries(registry: RoomRegistry, id: string): () => number {
+    const room = registry.ensure(id)!;
+    let n = 0;
+    room.retryNow = (): void => void (n += 1);
+    return () => n;
+  }
+
+  it('does not retry after a routine probe that found nothing new', async () => {
+    const backend = new Probe(1);
+    const registry = new RoomRegistry(backend, cfg, { ...limits });
+    const retries = countRetries(registry, 'loop1');
+    // the first probe legitimately settles the limits (the constructor's are
+    // less specific than the backend's); after that nothing changes.
+    await registry.refreshCapabilities();
+    const settled = retries();
+
+    // what a 400 does: onError -> refreshCapabilities, over and over
+    for (let i = 0; i < 5; i++) await registry.refreshCapabilities();
+
+    expect(retries()).toBe(settled);
+    registry.dispose();
+  });
+
+  it('retries when the limits actually changed, which can make it succeed', async () => {
+    const backend = new Probe(1);
+    const registry = new RoomRegistry(backend, cfg, { ...limits });
+    const retries = countRetries(registry, 'loop2');
+    await registry.refreshCapabilities();
+    const settled = retries();
+    backend.maxResolution = 512;
+    await registry.refreshCapabilities();
+    expect(retries()).toBe(settled + 1);
+    registry.dispose();
+  });
+
+  it('retries once when a backend that was down answers again', async () => {
+    const backend = new Probe(1);
+    const registry = new RoomRegistry(backend, cfg, { ...limits });
+    const retries = countRetries(registry, 'loop3');
+    await registry.refreshCapabilities();
+    const settled = retries();
+
+    backend.fail = true;
+    await registry.refreshCapabilities();
+    expect(retries()).toBe(settled);
+
+    backend.fail = false;
+    await registry.refreshCapabilities();
+    expect(retries()).toBe(settled + 1);
+
+    // and then settles again: no further probe retries anything
+    await registry.refreshCapabilities();
+    await registry.refreshCapabilities();
+    expect(retries()).toBe(settled + 1);
+    registry.dispose();
+  });
+});

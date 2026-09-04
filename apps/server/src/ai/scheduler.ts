@@ -11,7 +11,7 @@ import {
   type Rect,
   type ServerMessage,
 } from '@brushjam/shared';
-import { AbortedError, type AIBackend } from './backends/index.js';
+import { AbortedError, BackendHttpError, type AIBackend } from './backends/index.js';
 
 export interface MaskHandle {
   png: Buffer;
@@ -41,11 +41,19 @@ export interface RenderJob {
  * stay retryable, or a room that was drawn in before the worker was up would
  * owe its work forever.
  */
-export function isPermanentError(message: string): boolean {
-  if (/timed out|timeout|abort|econnrefused|econnreset|enotfound|socket hang up|fetch failed|not answering|no answer|not warm|\b5\d\d\b/i.test(message)) {
+export function isPermanentError(err: unknown): boolean {
+  // A real status beats reading tea leaves in the message: "size 512 out of
+  // range" contains something that looks like a 5xx, and "400" can appear in a
+  // pixel count. Backends attach the status they actually got.
+  if (err instanceof BackendHttpError) return err.status >= 400 && err.status < 500;
+  const message = err instanceof Error ? err.message : String(err);
+  if (/timed out|timeout|abort|econnrefused|econnreset|enotfound|socket hang up|fetch failed|not answering|no answer|not warm/i.test(message)) {
     return false;
   }
-  return /out of range|too large|too small|max_size|not supported|unsupported|invalid|malformed|\b4\d\d\b/i.test(message);
+  // Only a status in a place a status is written, not any three digits.
+  if (/(?:^|\s)(?:status|failed:?|code)\s*5\d\d\b/i.test(message)) return false;
+  if (/(?:^|\s)(?:status|failed:?|code)\s*4\d\d\b/i.test(message)) return true;
+  return /out of range|too large|too small|max_size|not supported|unsupported|malformed|invalid/i.test(message);
 }
 
 const rectKey = (r: Rect): string => `${r.x},${r.y},${r.width},${r.height}`;
@@ -338,7 +346,7 @@ export class AIScheduler {
         return;
       }
       const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
-      this.noteError(message);
+      this.noteError(message, timedOut ? undefined : err);
       if (this.stuckOn !== null) {
         // A request the backend refuses outright will be refused again.
         this.setState('error', `${message} - not retrying until something changes`);
@@ -443,7 +451,7 @@ export class AIScheduler {
       // the work was not done, so it is still owed
       this.changed = true;
       const message = timedOut ? 'generation timed out' : err instanceof Error ? err.message : String(err);
-      this.noteError(message);
+      this.noteError(message, timedOut ? undefined : err);
       if (this.stuckOn !== null) {
         this.setState('error', `${message} - not retrying until something changes`);
         this.inFlight = false;
@@ -464,13 +472,13 @@ export class AIScheduler {
    * backend is busy. `host.onError` lets the owner re-probe the backend, which
    * is how a worker that came back with different limits gets noticed.
    */
-  private noteError(message: string): void {
+  private noteError(message: string, err?: unknown): void {
     this.repeatedError = this.lastError === message ? this.repeatedError + 1 : 1;
     this.lastError = message;
     // Only a request the backend REFUSED is worth giving up on. A worker that
     // is down answers with the same connection error every time, and treating
     // that as permanent left work owed until someone drew again.
-    if (this.repeatedError >= (this.opts.maxRepeatedErrors ?? 2) && isPermanentError(message)) {
+    if (this.repeatedError >= (this.opts.maxRepeatedErrors ?? 2) && isPermanentError(err ?? message)) {
       this.stuckOn = message;
     }
     this.host.onError?.(message, this.repeatedError);

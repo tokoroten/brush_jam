@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { MAX_AI_RESOLUTION, MAX_DENOISE, QUALITY_SUFFIX } from '@brushjam/shared';
-import { AbortedError, delay, type AIBackend, type BackendCapabilities, type GenerateRequest } from './types.js';
+import { AbortedError, delay, type AIBackend, type BackendCapabilities, type GenerateRequest, BackendHttpError } from './types.js';
 
 export interface ComfyOptions {
   url: string;
@@ -203,7 +203,7 @@ export class ComfyUIBackend implements AIBackend {
     form.append('overwrite', 'true');
     form.append('type', 'input');
     const res = await this.fetch('/upload/image', { method: 'POST', body: form }, signal);
-    if (!res.ok) throw new Error(`ComfyUI upload failed: ${res.status} ${await res.text()}`);
+    if (!res.ok) throw new BackendHttpError(`ComfyUI upload failed: ${res.status} ${await res.text()}`, res.status);
     return (await res.json()) as UploadResult;
   }
 
@@ -253,7 +253,7 @@ export class ComfyUIBackend implements AIBackend {
       },
       signal,
     );
-    if (!queued.ok) throw new Error(`ComfyUI /prompt failed: ${queued.status} ${await queued.text()}`);
+    if (!queued.ok) throw new BackendHttpError(`ComfyUI /prompt failed: ${queued.status} ${await queued.text()}`, queued.status);
     const { prompt_id: promptId } = (await queued.json()) as { prompt_id: string };
     if (typeof promptId !== 'string' || promptId.length === 0) throw new Error('ComfyUI returned no prompt_id');
 
@@ -264,7 +264,7 @@ export class ComfyUIBackend implements AIBackend {
       const out = await this.waitForOutput(promptId, signal);
       const query = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder ?? '', type: out.type ?? 'output' });
       const view = await this.fetch(`/view?${query.toString()}`, {}, signal);
-      if (!view.ok) throw new Error(`ComfyUI /view failed: ${view.status}`);
+      if (!view.ok) throw new BackendHttpError(`ComfyUI /view failed: ${view.status}`, view.status);
       return Buffer.from(await view.arrayBuffer());
     } catch (err) {
       await this.cancelPrompt(promptId);

@@ -48,6 +48,22 @@ export interface AIBackend {
   generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer>;
 }
 
+/**
+ * The backend answered with an HTTP status. Carrying it beats re-deriving it
+ * from the message: "size 512 out of range" contains a number that looks like
+ * a 5xx, and a scheduler that guesses wrong either retries forever or gives up
+ * on a worker that was only briefly down.
+ */
+export class BackendHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'BackendHttpError';
+  }
+}
+
 export class AbortedError extends Error {
   constructor() {
     super('generation aborted');

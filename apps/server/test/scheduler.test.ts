@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_NEGATIVE_PROMPT, type Rect, type ServerMessage } from '@brushjam/shared';
 import { AIScheduler, isPermanentError, type MaskHandle, type SchedulerHost } from '../src/ai/scheduler.js';
-import { AbortedError, type AIBackend, type GenerateRequest, type BackendCapabilities } from '../src/ai/backends/index.js';
+import {
+  AbortedError,
+  BackendHttpError,
+  type AIBackend,
+  type GenerateRequest,
+  type BackendCapabilities,
+} from '../src/ai/backends/index.js';
 
 class FakeBackend implements AIBackend {
   readonly name = 'fake';
@@ -867,11 +873,20 @@ describe('ai_result metadata', () => {
  * worker's 40-second model load.
  */
 describe('transient versus permanent errors', () => {
-  it('classifies refusals as permanent', () => {
+  it('uses the status the backend actually reported, not a number in the text', () => {
+    // Review 9 item 2: "size 512 out of range" contains something that reads
+    // like a 5xx, and a pixel count can contain 400. The status is carried.
+    expect(isPermanentError(new BackendHttpError('size 512 out of range [256, 400]', 400))).toBe(true);
+    expect(isPermanentError(new BackendHttpError('size 512 out of range [256, 400]', 503))).toBe(false);
+    expect(isPermanentError(new BackendHttpError('gateway timeout', 504))).toBe(false);
+    expect(isPermanentError(new BackendHttpError('unprocessable', 422))).toBe(true);
+  });
+
+  it('classifies refusals as permanent when there is only a message', () => {
     expect(isPermanentError('stream worker /generate failed: 400 size 1024 out of range [256, 768]')).toBe(true);
     expect(isPermanentError('this profile is not supported')).toBe(true);
-    expect(isPermanentError('worker returned 512x512, expected 1024x1024')).toBe(false);
     expect(isPermanentError('malformed base64 in worker response')).toBe(true);
+    expect(isPermanentError(new Error('max_size exceeded'))).toBe(true);
   });
 
   it('classifies being unable to reach the backend as transient', () => {
@@ -880,6 +895,14 @@ describe('transient versus permanent errors', () => {
     expect(isPermanentError('generation timed out after 180000 ms')).toBe(false);
     expect(isPermanentError('stream worker /generate failed: 503 model still loading')).toBe(false);
     expect(isPermanentError('stream worker is not answering')).toBe(false);
+  });
+
+  it('does not read a size or a pixel count as an HTTP status', () => {
+    // These must not be classified by the digits alone; none of them is a
+    // refusal, and none names a status.
+    expect(isPermanentError('worker returned 512x512, expected 1024x1024')).toBe(false);
+    expect(isPermanentError('something went wrong at 400 dpi')).toBe(false);
+    expect(isPermanentError('rendered 500 strokes')).toBe(false);
   });
 
   describe('in the scheduler', () => {

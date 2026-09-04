@@ -388,6 +388,8 @@ export class RoomRegistry {
   private sweeper: ReturnType<typeof setInterval> | null = null;
   private capabilityTimer: ReturnType<typeof setInterval> | null = null;
   private backendWatcher: Watcher | null = null;
+  /** True once a probe has failed, until one answers again. */
+  private probeFailed = false;
   private refreshing: Promise<void> | null = null;
   private limits: RoomLimits;
 
@@ -424,17 +426,25 @@ export class RoomRegistry {
           maxResolution,
           negativePromptActive: caps.negativePromptActive,
         };
-        // A probe that answered at all means the backend is up. Rooms that gave
-        // up while it was down get another go, whether or not the limits moved.
-        this.retryAll();
-        if (sameLimits(this.limits, next)) return;
+        // Only a CHANGE justifies re-running rejected work. A room stuck on a
+        // 400 asks for this probe itself; if a routine, unchanged probe cleared
+        // its permanent-error state, the same doomed request would run, 400,
+        // probe, clear, run... forever. Recovery (the last probe had failed) or
+        // different limits are the two things that can make it succeed.
+        const recovered = this.probeFailed;
+        this.probeFailed = false;
+        const changed = !sameLimits(this.limits, next);
+        if (recovered || changed) this.retryAll();
+        if (!changed) return;
         console.log(
           `[ai] backend limits changed: ${next.profiles?.join('/')} up to ${next.maxResolution} at denoise <= ${next.maxDenoise}`,
         );
         this.limits = next;
         for (const room of this.rooms.values()) room.applyLimits(next);
       } catch {
-        /* a probe failure is not a reason to change what rooms believe */
+        // Not a reason to change what rooms believe - but the next probe that
+        // answers is now a recovery, and owed work should run then.
+        this.probeFailed = true;
       } finally {
         this.refreshing = null;
       }

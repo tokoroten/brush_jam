@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, envOrigin, loadConfig, stepsForProfile } from '../src/config.js';
+import { ConfigError, envOrigin, loadConfig, resolveBackendConfig, stepsForProfile } from '../src/config.js';
 
 const env = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({ ...extra }) as NodeJS.ProcessEnv;
 
@@ -204,16 +204,51 @@ describe('AI profile', () => {
   });
 
   // Review 6 finding 6, kept: fast without a LoRA is not fast, it is a broken
-  // 4-step euler_ancestral. Fall all the way back instead.
-  it('falls back to quality when no LoRA is configured', () => {
-    const c = loadConfig({ AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
+  // 4-step euler_ancestral. Fall all the way back instead - but only once the
+  // backend that would have to run it is known (review 9 item 3): with
+  // AI_BACKEND=auto the answer may be the stream worker, which is fast-only.
+  it('falls back to quality when ComfyUI is chosen and has no LoRA', () => {
+    const c = loadConfig({ AI_BACKEND: 'comfyui', AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
     expect(c.aiProfile).toBe('quality');
     expect(c.fastDisabled).toBe(true);
     expect(c.aiWindow).toBe(1024);
   });
 
+  it('keeps fast under AI_BACKEND=auto until the backend is known', () => {
+    const c = loadConfig({ AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
+    expect(c.aiProfile).toBe('fast');
+    expect(c.fastDisabled).toBe(false);
+  });
+
+  it('demotes at resolveBackendConfig when auto resolved to a LoRA-less ComfyUI', () => {
+    const c = loadConfig({ COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
+    const resolved = resolveBackendConfig(c, 'comfyui', {
+      profiles: ['quality'],
+      maxResolution: 2048,
+      maxDenoise: 0.95,
+    });
+    expect(resolved.aiProfile).toBe('quality');
+    expect(resolved.fastDisabled).toBe(true);
+  });
+
+  it('keeps fast when auto resolved to the stream worker instead', () => {
+    const c = loadConfig({ AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
+    const resolved = resolveBackendConfig(c, 'stream', { profiles: ['fast'], maxResolution: 1024, maxDenoise: 0.9 });
+    expect(resolved.aiProfile).toBe('fast');
+    expect(resolved.fastDisabled).toBe(false);
+  });
+
+  it('says why an explicitly requested fast profile is impossible', () => {
+    const c = loadConfig({ AI_BACKEND: 'auto', AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '' } as NodeJS.ProcessEnv);
+    expect(() =>
+      resolveBackendConfig(c, 'comfyui', { profiles: ['quality'], maxResolution: 2048, maxDenoise: 0.95 }),
+    ).toThrow(/COMFYUI_FAST_LORA is empty/);
+  });
+
   it('treats a whitespace-only LoRA name as empty', () => {
-    expect(loadConfig({ AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '   ' } as NodeJS.ProcessEnv).aiProfile).toBe('quality');
+    expect(loadConfig({ AI_BACKEND: 'comfyui', AI_PROFILE: 'fast', COMFYUI_FAST_LORA: '   ' } as NodeJS.ProcessEnv).aiProfile).toBe(
+      'quality',
+    );
   });
 
   it('does not flag fastDisabled when quality was chosen anyway', () => {

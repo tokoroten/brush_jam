@@ -130,11 +130,18 @@ export function resolveBackendConfig(
   }
 
   if (!capabilities.profiles.includes(next.aiProfile)) {
+    // Naming the cause matters: "not supported" is baffling when the real
+    // reason is an empty COMFYUI_FAST_LORA in the operator's own config.
+    const because =
+      next.aiProfile === 'fast' && !config.comfyFastLora && (backendName === 'comfyui' || backendName === 'runpod')
+        ? ' - COMFYUI_FAST_LORA is empty, so there is no fast workflow to run'
+        : '';
     if (config.explicit.profile) {
       errors.push(
-        `AI_PROFILE=${next.aiProfile} is not supported by the ${backendName} backend (it offers ${capabilities.profiles.join(', ')})`,
+        `AI_PROFILE=${next.aiProfile} is not supported by the ${backendName} backend (it offers ${capabilities.profiles.join(', ')})${because}`,
       );
     } else {
+      if (next.aiProfile === 'fast') next.fastDisabled = true;
       next.aiProfile = capabilities.profiles[0] ?? 'quality';
       if (!config.explicit.window) next.aiWindow = Math.min(PROFILE_DEFAULTS[next.aiProfile].resolution, next.aiWindow);
     }
@@ -224,9 +231,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // a backend that builds one. The stream worker has its LoRA fused in and is
   // fast-only; letting an empty COMFYUI_FAST_LORA turn AI_PROFILE=fast into
   // quality there produced a room asking for a profile the worker refuses.
-  // `auto` may still resolve to ComfyUI, so it keeps the old behaviour;
-  // resolveBackendConfig() corrects it once the backend is actually known.
-  const loraDecides = backendRaw === 'comfyui' || backendRaw === 'runpod' || backendRaw === 'auto';
+  // `auto` is not known yet either - it may resolve to stream or mock - so it
+  // waits for resolveBackendConfig(), which asks the backend that was chosen.
+  const loraDecides = backendRaw === 'comfyui' || backendRaw === 'runpod';
   const fast = fastRequested && (!loraDecides || fastLora !== '');
   const profile: AIProfileName = fast ? 'fast' : 'quality';
 

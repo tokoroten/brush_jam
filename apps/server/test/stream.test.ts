@@ -367,3 +367,23 @@ describe('negative prompt capability', () => {
     await expect(caps({ negative_prompt_active: 'no' })).resolves.toBe(true);
   });
 });
+
+/** The status is carried, not re-derived from the message. */
+describe('HTTP errors carry their status', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('attaches a 400 so the scheduler can call it a refusal', async () => {
+    stubFetch(() => new Response(JSON.stringify({ detail: 'size 4096 out of range [256, 1024]' }), { status: 400 }));
+    const backend = new StreamBackend({ url: 'http://127.0.0.1:8790' });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toMatchObject({
+      name: 'BackendHttpError',
+      status: 400,
+    });
+  });
+
+  it('attaches a 5xx so the scheduler keeps retrying it', async () => {
+    stubFetch(() => new Response('model still loading', { status: 503 }));
+    const backend = new StreamBackend({ url: 'http://127.0.0.1:8790' });
+    await expect(backend.generate(req, new AbortController().signal)).rejects.toMatchObject({ status: 503 });
+  });
+});

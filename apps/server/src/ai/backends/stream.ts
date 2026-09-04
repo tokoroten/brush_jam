@@ -4,7 +4,7 @@ import { QUALITY_SUFFIX } from '@brushjam/shared';
 /** Used when the worker does not report its own limits. */
 export const DEFAULT_STREAM_MAX_RESOLUTION = 1024;
 export const DEFAULT_STREAM_MAX_DENOISE = 0.9;
-import { AbortedError, type AIBackend, type BackendCapabilities, type GenerateRequest } from './types.js';
+import { AbortedError, type AIBackend, type BackendCapabilities, type GenerateRequest, BackendHttpError } from './types.js';
 
 export interface StreamOptions {
   /** Base URL of apps/stream-worker, e.g. http://127.0.0.1:8790 */
@@ -132,9 +132,9 @@ export class StreamBackend implements AIBackend {
     // 499 is the worker acknowledging our own cancellation.
     if (res.status === 499) throw new AbortedError();
     if (res.status === 409) {
-      throw new Error(`stream worker is busy: ${await safeText(res)}`);
+      throw new BackendHttpError(`stream worker is busy: ${await safeText(res)}`, res.status);
     }
-    if (!res.ok) throw new Error(`stream worker /generate failed: ${res.status} ${await safeText(res)}`);
+    if (!res.ok) throw new BackendHttpError(`stream worker /generate failed: ${res.status} ${await safeText(res)}`, res.status);
 
     let body: StreamResponse;
     try {
