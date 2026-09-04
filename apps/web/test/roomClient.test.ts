@@ -1,7 +1,44 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { describe, expect, it, vi } from 'vitest';
 import { CANVAS_SIZE, type Layer, type RoomSnapshot, type ServerMessage } from '@brushjam/shared';
-import { RoomClient, type ClientDeps } from '../src/roomClient.js';
+import { RoomClient, RECONNECT_MS, type ClientDeps, type SocketLike } from '../src/roomClient.js';
+
+class FakeSocket implements SocketLike {
+  readyState = 0;
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  closed = false;
+  readonly sent: string[] = [];
+  constructor(readonly url: string) {}
+  open(): void {
+    this.readyState = 1;
+    this.onopen?.();
+  }
+  close(): void {
+    this.closed = true;
+    this.readyState = 3;
+    this.onclose?.();
+  }
+  send(data: string): void {
+    this.sent.push(data);
+  }
+}
+
+function sockets(): { deps: Pick<ClientDeps, 'openSocket'>; all: FakeSocket[] } {
+  const all: FakeSocket[] = [];
+  return {
+    all,
+    deps: {
+      openSocket: (url) => {
+        const s = new FakeSocket(url);
+        all.push(s);
+        return s;
+      },
+    },
+  };
+}
 
 const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -21,6 +58,7 @@ function makeLoader(): Loader {
   const aborted: string[] = [];
   const deps: ClientDeps = {
     createRaster: () => createCanvas(CANVAS_SIZE, CANVAS_SIZE) as unknown as HTMLCanvasElement,
+    openSocket: (url) => new FakeSocket(url),
     loadImage: (src, options) =>
       new Promise((resolve, reject) => {
         requested.push(src);
@@ -248,6 +286,144 @@ describe('live stroke cleanup', () => {
     client.receive({ t: 'presence', members: [{ userId: 'me', name: 'Me', color: '#fff' }] });
     await tick();
     expect(client.live.size).toBe(0);
+    client.dispose();
+  });
+});
+
+/** Regression: StrictMode mounts, unmounts and remounts the effect. */
+describe('connection lifecycle', () => {
+  it('reconnects after dispose, as StrictMode double-mounting requires', () => {
+    const { deps, all } = sockets();
+    const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+
+    client.connect();
+    all[0]!.open();
+    expect(client.connected).toBe(true);
+
+    client.dispose();
+    expect(all[0]!.closed).toBe(true);
+    expect(client.connected).toBe(false);
+
+    client.connect();
+    expect(all).toHaveLength(2);
+    all[1]!.open();
+    expect(client.connected).toBe(true);
+
+    // and the live socket is the new one
+    client.send({ t: 'set_prompt', prompt: 'hi' });
+    expect(all[1]!.sent).toHaveLength(1);
+    expect(all[0]!.sent).toHaveLength(0);
+    client.dispose();
+  });
+
+  it('does not schedule a reconnect once disposed', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = sockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.open();
+      client.dispose();
+
+      // the closing socket's onclose must not resurrect the connection
+      vi.advanceTimersByTime(10 * RECONNECT_MS);
+      expect(all).toHaveLength(1);
+      expect(client.connected).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconnects on its own when the server drops the socket', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = sockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.open();
+      all[0]!.close();
+      expect(client.connected).toBe(false);
+
+      vi.advanceTimersByTime(RECONNECT_MS + 10);
+      expect(all).toHaveLength(2);
+      all[1]!.open();
+      expect(client.connected).toBe(true);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops a stale socket instead of letting it clear the new connection', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = sockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      const stale = all[0]!;
+      client.connect(); // remount before the first socket ever opened
+      all[1]!.open();
+      expect(client.connected).toBe(true);
+
+      stale.readyState = 3;
+      stale.onclose?.(); // arrives late; already detached, so it is a no-op
+      vi.advanceTimersByTime(5 * RECONNECT_MS);
+      expect(client.connected).toBe(true);
+      expect(all).toHaveLength(2);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/** Round 3, finding 3: a late full raster must not undo a newer patch. */
+describe('stale ai.png loads', () => {
+  it('discards a full raster that lost the race to a newer patch', async () => {
+    vi.useFakeTimers();
+    try {
+      const loader = makeLoader();
+      const client = new RoomClient('r1', 'Me', loader.deps);
+      client.receive(snapshot());
+      await vi.advanceTimersByTimeAsync(0);
+
+      // a patch fails, so a full refresh is scheduled...
+      client.receive(aiResult(1));
+      await vi.advanceTimersByTimeAsync(0);
+      loader.reject('/patch-1.png');
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(loader.pending().some((s) => s.includes('ai.png'))).toBe(true);
+
+      // ...but a newer patch lands and is painted while it is still in flight
+      client.receive(aiResult(7));
+      await vi.advanceTimersByTimeAsync(0);
+      loader.resolve('/patch-7.png');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.aiRevision).toBe(7);
+
+      const ctx = (client.aiCanvas as unknown as ReturnType<typeof createCanvas>).getContext('2d');
+      // paint a marker inside the patch rect so we can see if it is wiped
+      ctx.fillStyle = '#00ff00';
+      ctx.fillRect(0, 0, 4, 4);
+
+      loader.resolve('ai.png');
+      await vi.advanceTimersByTimeAsync(10);
+      const px = ctx.getImageData(1, 1, 1, 1).data;
+      expect([px[0], px[1], px[2]]).toEqual([0, 255, 0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still applies a full raster when nothing newer was painted', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ aiRevision: 4 }));
+    await tick();
+    loader.resolve('ai.png');
+    await tick();
+    const ctx = (client.aiCanvas as unknown as ReturnType<typeof createCanvas>).getContext('2d');
+    expect(ctx.getImageData(1, 1, 1, 1).data[3]).toBeGreaterThan(0);
     client.dispose();
   });
 });

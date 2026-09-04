@@ -202,3 +202,32 @@ describe('session table', () => {
     expect(state.sessions.size).toBeLessThanOrEqual(64);
   });
 });
+
+/** Round 3, finding 4: a full session table never costs a live participant. */
+describe('session table under pressure', () => {
+  it('refuses to record a new token rather than evicting a connected member', () => {
+    const state = createRoom('sessions3');
+    const tokens = Array.from({ length: 64 }, (_, i) => `full-${i}`);
+    for (const t of tokens) joinMember(state, 'Someone', t);
+    expect(state.sessions.size).toBe(64);
+
+    const latecomer = joinMember(state, 'Late', 'full-new');
+    // they are in the room...
+    expect(state.members.has(latecomer.userId)).toBe(true);
+    // ...but nobody else's identity was sacrificed for their token
+    expect(state.sessions.size).toBe(64);
+    expect(state.sessions.has('full-new')).toBe(false);
+    for (const t of tokens) expect(state.sessions.has(t)).toBe(true);
+  });
+
+  it('still recycles a slot as soon as one of them disconnects', () => {
+    const state = createRoom('sessions4');
+    const members = Array.from({ length: 64 }, (_, i) => joinMember(state, `U${i}`, `full-${i}`));
+    removeMember(state, members[3]!.userId);
+
+    const latecomer = joinMember(state, 'Late', 'full-new');
+    expect(state.sessions.get('full-new')?.userId).toBe(latecomer.userId);
+    expect(state.sessions.has('full-3')).toBe(false);
+    expect(state.sessions.size).toBe(64);
+  });
+});

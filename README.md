@@ -27,7 +27,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 278 tests across shared / server / web
+pnpm test         # 290 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -246,7 +246,21 @@ Judgement calls made while implementing, since the plan left them open:
     `ai.png` load with a 10 s timeout outside the ordered message queue and are
     aborted on dispose/reconnect, so a stalled image can never wedge frame
     application; a failed AI patch schedules a revision-guarded refresh instead.
-20. **The server binds to `127.0.0.1` by default.** Exposing the room server
+20. **Socket teardown is connection-scoped.** A superseded socket (React
+    StrictMode's mount/unmount/mount, or a reconnect that beat the old close
+    event) closes *after* its replacement joined, so `leave()` ignores a close
+    from a socket that is no longer the member's current one. The client is
+    likewise re-connectable after `dispose()`.
+21. **Upload quota is reserved before the decode await**, so concurrent uploads
+    cannot all measure the same pre-upload totals and collectively overshoot the
+    per-room cap. A failed decode releases the reservation.
+22. **A full `ai.png` load is discarded if anything newer was painted** while it
+    was in flight (a paint generation counter), so a slow recovery fetch can
+    never undo a fresher patch.
+23. **A full session table costs nobody their identity.** If every recorded
+    session belongs to someone still connected, the newcomer gets a working but
+    non-resumable identity instead of evicting a live participant's token.
+24. **The server binds to `127.0.0.1` by default.** Exposing the room server
     needs an explicit `HOST=0.0.0.0`, since there is no authentication.
 
 ## Not verified

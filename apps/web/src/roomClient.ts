@@ -22,9 +22,30 @@ import { createRaster, ctxOf, drawStroke, loadImageElement, redrawLayer } from '
 export interface ClientDeps {
   createRaster: typeof createRaster;
   loadImage: typeof loadImageElement;
+  /** Opens the room socket. Replaced in tests; there is no browser here. */
+  openSocket: (url: string) => SocketLike;
 }
 
-const browserDeps: ClientDeps = { createRaster, loadImage: loadImageElement };
+/** The slice of WebSocket this client uses. */
+export interface SocketLike {
+  readyState: number;
+  onopen: (() => void) | null;
+  onclose: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror?: (() => void) | null;
+  close(): void;
+  send(data: string): void;
+}
+
+const browserDeps: ClientDeps = {
+  createRaster,
+  loadImage: loadImageElement,
+  openSocket: (url) => new WebSocket(url) as unknown as SocketLike,
+};
+
+/** WebSocket.OPEN, without needing the global to exist. */
+const SOCKET_OPEN = 1;
+export const RECONNECT_MS = 1000;
 
 export interface LiveStroke {
   userId: string;
@@ -68,7 +89,8 @@ export class RoomClient {
   aiApply = 0;
   connected = false;
 
-  private socket: WebSocket | null = null;
+  private socket: SocketLike | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private version = 0;
   private listeners = new Set<() => void>();
   private closed = false;
@@ -82,6 +104,11 @@ export class RoomClient {
   /** Reference images already being fetched, so we never queue two loads. */
   private readonly loading = new Set<string>();
   private aiRefreshQueued = false;
+  /**
+   * Bumped on every write to `aiCanvas`. A full ai.png load started before a
+   * newer patch was painted must not overwrite it when it finally arrives.
+   */
+  private aiPaintGeneration = 0;
 
   constructor(
     readonly roomId: string,
@@ -91,23 +118,39 @@ export class RoomClient {
     this.aiCanvas = this.deps.createRaster();
   }
 
+  /**
+   * Idempotent and re-runnable: React StrictMode mounts an effect, tears it
+   * down and mounts it again, so connect() after dispose() must produce a live
+   * connection rather than a permanently "offline" client.
+   */
   connect(): void {
-    if (this.closed) return;
+    this.closed = false;
+    this.cancelReconnect();
+    this.detach(this.socket);
+    this.socket = null;
     this.assets.abort();
     this.assets = new AbortController();
-    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const protocol = typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws';
+    const host = typeof location === 'undefined' ? 'localhost' : location.host;
     const token = sessionToken(this.roomId, typeof sessionStorage === 'undefined' ? undefined : sessionStorage);
     const query = `name=${encodeURIComponent(this.name)}&token=${encodeURIComponent(token)}`;
-    const socket = new WebSocket(`${protocol}://${location.host}/ws/rooms/${this.roomId}?${query}`);
+    const socket = this.deps.openSocket(`${protocol}://${host}/ws/rooms/${this.roomId}?${query}`);
     this.socket = socket;
     socket.onopen = () => {
       this.connected = true;
       this.bump();
     };
     socket.onclose = () => {
+      // a socket we already replaced or disposed must not drive state
+      if (this.socket !== socket) return;
       this.connected = false;
       this.bump();
-      if (!this.closed) setTimeout(() => this.connect(), 1000);
+      if (this.closed) return;
+      this.cancelReconnect();
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.connect();
+      }, RECONNECT_MS);
     };
     socket.onmessage = (event) => {
       let msg: ServerMessage;
@@ -123,8 +166,32 @@ export class RoomClient {
 
   dispose(): void {
     this.closed = true;
+    this.cancelReconnect();
     this.assets.abort();
-    this.socket?.close();
+    const socket = this.socket;
+    this.socket = null;
+    this.detach(socket);
+    this.connected = false;
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer === null) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  /** Silences a socket before closing it, so its onclose cannot reconnect. */
+  private detach(socket: SocketLike | null): void {
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onclose = null;
+    socket.onmessage = null;
+    if ('onerror' in socket) socket.onerror = null;
+    try {
+      socket.close();
+    } catch {
+      /* closing a socket that never opened is fine */
+    }
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -140,7 +207,7 @@ export class RoomClient {
   }
 
   send(msg: ClientMessage): void {
-    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(msg));
+    if (this.socket?.readyState === SOCKET_OPEN) this.socket.send(JSON.stringify(msg));
   }
 
   layerCanvas(layerId: string): HTMLCanvasElement {
@@ -227,6 +294,7 @@ export class RoomClient {
         // A snapshot replaces everything: a restarted or recreated room would
         // otherwise keep showing the previous room's AI pixels.
         ctxOf(this.aiCanvas).clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        this.aiPaintGeneration += 1;
         this.lastCrop = null;
         this.lastApply = null;
         // Nothing to fetch before the first result (the route 404s by design).
@@ -321,6 +389,7 @@ export class RoomClient {
           const ctx = ctxOf(this.aiCanvas);
           ctx.clearRect(msg.rect.x, msg.rect.y, msg.rect.width, msg.rect.height);
           ctx.drawImage(patch, msg.rect.x, msg.rect.y, msg.rect.width, msg.rect.height);
+          this.aiPaintGeneration += 1;
           this.lastCrop = msg.crop;
           this.lastApply = msg.apply;
           this.aiRevision = msg.aiRevision;
@@ -342,11 +411,16 @@ export class RoomClient {
   }
 
   private async loadAiCanvas(): Promise<void> {
+    const startedAt = this.aiPaintGeneration;
     try {
       const img = await this.deps.loadImage(`/rooms/${this.roomId}/ai.png?v=${Date.now()}`, { signal: this.assets.signal });
+      // Something newer was painted while this full raster was in flight, so
+      // it is already stale: drawing it would undo the newer patch.
+      if (this.aiPaintGeneration !== startedAt) return;
       const ctx = ctxOf(this.aiCanvas);
       ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
       ctx.drawImage(img, 0, 0);
+      this.aiPaintGeneration += 1;
     } catch {
       /* no AI output yet */
     }

@@ -36,6 +36,9 @@ export class RoomRuntime {
   private readonly sockets = new Map<string, WebSocket>();
   private readonly patches = new Map<string, Buffer>();
   private imageBytes = 0;
+  /** Uploads past their limit check but still decoding, so they count too. */
+  private pendingImages = 0;
+  private pendingImageBytes = 0;
 
   constructor(roomId: string, backend: AIBackend, private readonly config: Config) {
     this.state = createRoom(roomId);
@@ -128,7 +131,15 @@ export class RoomRuntime {
     return member.userId;
   }
 
-  leave(userId: string): void {
+  /**
+   * `socket` identifies *which* connection closed. A superseded socket (the
+   * StrictMode double-mount, or a reconnect that beat the old close event)
+   * fires its close *after* the replacement has already joined, so removing the
+   * member unconditionally would evict a participant who is still connected.
+   */
+  leave(userId: string, socket?: WebSocket): void {
+    const current = this.sockets.get(userId);
+    if (socket && current && current !== socket) return;
     for (const cancel of removeMember(this.state, userId)) this.broadcast(cancel);
     this.sockets.delete(userId);
     this.broadcast({ t: 'presence', members: [...this.state.members.values()] });
@@ -167,14 +178,29 @@ export class RoomRuntime {
     // The header check is only a cheap preflight against decompression bombs...
     const check = checkImage(bytes, mime);
     if (!check.ok) return { error: check.error };
-    if (this.state.images.size >= MAX_IMAGES_PER_ROOM) return { error: 'this room already holds the maximum number of images' };
-    if (this.imageBytes + bytes.length > MAX_IMAGE_BYTES_PER_ROOM) return { error: 'this room has reached its image storage limit' };
-    // ...so decode once here and confirm the file really is what it claims.
-    if (!(await decodeUpload(bytes, check.info))) return { error: 'image could not be decoded' };
-    const id = shortId(10);
-    this.state.images.set(id, { id, mime, bytes, width: check.info.width, height: check.info.height, createdAt: Date.now() });
-    this.imageBytes += bytes.length;
-    return { imageId: id, width: check.info.width, height: check.info.height };
+    // The quota is *reserved* before the await: concurrent uploads would
+    // otherwise all measure the same pre-upload totals and every one of them
+    // would fit.
+    if (this.state.images.size + this.pendingImages >= MAX_IMAGES_PER_ROOM) {
+      return { error: 'this room already holds the maximum number of images' };
+    }
+    if (this.imageBytes + this.pendingImageBytes + bytes.length > MAX_IMAGE_BYTES_PER_ROOM) {
+      return { error: 'this room has reached its image storage limit' };
+    }
+    this.pendingImages += 1;
+    this.pendingImageBytes += bytes.length;
+    try {
+      // ...so decode once here and confirm the file really is what it claims.
+      if (!(await decodeUpload(bytes, check.info))) return { error: 'image could not be decoded' };
+      const id = shortId(10);
+      this.state.images.set(id, { id, mime, bytes, width: check.info.width, height: check.info.height, createdAt: Date.now() });
+      this.imageBytes += bytes.length;
+      return { imageId: id, width: check.info.width, height: check.info.height };
+    } finally {
+      // the reservation becomes a real image, or is released on failure
+      this.pendingImages -= 1;
+      this.pendingImageBytes -= bytes.length;
+    }
   }
 
   /**

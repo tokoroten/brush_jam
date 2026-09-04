@@ -255,3 +255,42 @@ describe('room lifecycle', () => {
     alice.close();
   });
 });
+
+/**
+ * Regression: React StrictMode connects, disposes and reconnects with the same
+ * session token, so the superseded socket's close arrives *after* the
+ * replacement has joined. It must not evict the participant.
+ */
+describe('superseded sockets', () => {
+  it('keeps the member when an old socket for the same identity closes late', async () => {
+    const first = await Client.connect('strict1', 'Alice', 'tokenstrictmodeaaaa');
+    const second = await Client.connect('strict1', 'Alice', 'tokenstrictmodeaaaa');
+    expect(second.userId).toBe(first.userId);
+
+    // the first socket closes only now, well after the replacement joined
+    first.close();
+    await new Promise((r) => setTimeout(r, 150));
+
+    const observer = await Client.connect('strict1', 'Bob');
+    expect(observer.received.find((m) => m.t === 'snapshot')).toBeDefined();
+    const presence = await observer.waitFor('snapshot');
+    expect(presence.snapshot.members.map((m) => m.name).sort()).toEqual(['Alice', 'Bob']);
+
+    // and the surviving socket is still usable
+    second.clear();
+    second.send({ t: 'set_prompt', prompt: 'still here' });
+    expect((await second.waitFor('prompt_changed')).prompt).toBe('still here');
+    second.close();
+    observer.close();
+  });
+
+  it('still removes the member when the live socket closes', async () => {
+    const alice = await Client.connect('strict2', 'Alice', 'tokenstrictmodebbbb');
+    const bob = await Client.connect('strict2', 'Bob');
+    bob.clear();
+    alice.close();
+    const presence = await bob.waitFor('presence');
+    expect(presence.members.map((m) => m.name)).toEqual(['Bob']);
+    bob.close();
+  });
+});

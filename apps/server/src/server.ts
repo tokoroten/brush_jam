@@ -166,8 +166,8 @@ export function createBrushJamServer(config: Config, backend: AIBackend): BrushJ
       const token = SESSION_TOKEN.test(rawToken) ? rawToken : undefined;
       const userId = room.join(ws, url.searchParams.get('name') ?? '', token);
       ws.on('message', (data) => room.handle(userId, data.toString()));
-      ws.on('close', () => room.leave(userId));
-      ws.on('error', () => room.leave(userId));
+      ws.on('close', () => room.leave(userId, ws));
+      ws.on('error', () => room.leave(userId, ws));
     });
   });
 

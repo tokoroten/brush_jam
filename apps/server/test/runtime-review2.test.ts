@@ -150,3 +150,34 @@ describe('room capacity', () => {
     expect(registry.create()).not.toBeNull();
   });
 });
+
+/** Round 3, finding 2: the per-room upload quota survives concurrency. */
+describe('upload quota under concurrency', () => {
+  it('accepts exactly the cap when 33 uploads race', async () => {
+    const room = new RoomRuntime('race1', backend, config);
+    const results = await Promise.all(Array.from({ length: 33 }, (_, i) => room.addImage(png(8, 8, `#00${(i % 90) + 10}44`), 'image/png')));
+    expect(results.filter((r) => 'imageId' in r)).toHaveLength(32);
+    expect(results.filter((r) => 'error' in r)).toHaveLength(1);
+    expect(room.state.images.size).toBe(32);
+    room.dispose();
+  });
+
+  it('releases the reservation when a racing upload fails to decode', async () => {
+    const room = new RoomRuntime('race2', backend, config);
+    const bad = Buffer.alloc(24);
+    bad.writeUInt32BE(0x89504e47, 0);
+    bad.writeUInt32BE(0x0d0a1a0a, 4);
+    bad.write('IHDR', 12, 'ascii');
+    bad.writeUInt32BE(8, 16);
+    bad.writeUInt32BE(8, 20);
+
+    const results = await Promise.all([
+      ...Array.from({ length: 10 }, () => room.addImage(bad, 'image/png')),
+      ...Array.from({ length: 32 }, (_, i) => room.addImage(png(8, 8, `#11${(i % 90) + 10}55`), 'image/png')),
+    ]);
+    // the ten failures cost nothing: all 32 real uploads still fit
+    expect(results.filter((r) => 'imageId' in r)).toHaveLength(32);
+    expect(room.state.images.size).toBe(32);
+    room.dispose();
+  });
+});

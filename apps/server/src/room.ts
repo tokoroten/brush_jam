@@ -128,8 +128,12 @@ export function joinMember(room: RoomState, name: string, token?: string): Membe
   }
   const member = addMember(room, name);
   if (token) {
-    if (room.sessions.size >= MAX_SESSIONS) evictOldestDisconnectedSession(room);
-    room.sessions.set(token, member);
+    // A new token is only recorded if a slot can be freed without evicting
+    // somebody who is still connected; otherwise this participant simply gets a
+    // non-resumable identity, which is far better than splitting a live one.
+    if (room.sessions.size < MAX_SESSIONS || evictOldestDisconnectedSession(room)) {
+      room.sessions.set(token, member);
+    }
   }
   return member;
 }
@@ -138,15 +142,15 @@ export function joinMember(room: RoomState, name: string, token?: string): Membe
  * Make room in the session table without ever dropping a token belonging to
  * someone currently in the room (that would silently split their identity).
  */
-function evictOldestDisconnectedSession(room: RoomState): void {
+function evictOldestDisconnectedSession(room: RoomState): boolean {
   for (const [token, member] of room.sessions) {
     if (room.members.has(member.userId)) continue;
     room.sessions.delete(token);
-    return;
+    return true;
   }
-  // Everyone is connected: drop the oldest entry rather than growing forever.
-  const oldest = room.sessions.keys().next().value as string | undefined;
-  if (oldest !== undefined) room.sessions.delete(oldest);
+  // Everyone in the table is still connected: keep them all and refuse to
+  // record the newcomer's token.
+  return false;
 }
 
 export function addMember(room: RoomState, name: string): Member {
