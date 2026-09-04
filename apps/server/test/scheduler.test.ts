@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_NEGATIVE_PROMPT, type Rect, type ServerMessage } from '@brushjam/shared';
 import { AIScheduler, type MaskHandle, type SchedulerHost } from '../src/ai/scheduler.js';
-import { AbortedError, type AIBackend, type GenerateRequest } from '../src/ai/backends/index.js';
+import { AbortedError, type AIBackend, type GenerateRequest, type BackendCapabilities } from '../src/ai/backends/index.js';
 
 class FakeBackend implements AIBackend {
   readonly name = 'fake';
+
+  async capabilities(): Promise<BackendCapabilities> {
+    return { profiles: ['fast', 'quality'], maxResolution: 2048, maxDenoise: 0.95 };
+  }
+
   readonly calls: GenerateRequest[] = [];
   private resolvers: Array<(v: Buffer) => void> = [];
   failNext = false;

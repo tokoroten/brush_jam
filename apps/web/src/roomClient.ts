@@ -1,4 +1,5 @@
 import {
+  MAX_DENOISE,
   type AIProfileName,
   type AIState,
   type ClientMessage,
@@ -87,6 +88,9 @@ export class RoomClient {
   aiResolutionMax = 1024;
   aiResolutionAdjustable = true;
   aiProfile: AIProfileName = 'fast';
+  /** What the server's backend can do; the controls follow this. */
+  aiProfiles: AIProfileName[] = ['fast', 'quality'];
+  maxDenoise = MAX_DENOISE;
   /**
    * Last measured stroke-to-result time per profile, so the hint under the
    * fast/quality switch reflects this machine rather than my measurements.
@@ -341,6 +345,8 @@ export class RoomClient {
         this.aiResolutionMax = s.aiResolutionMax;
         this.aiResolutionAdjustable = s.aiResolutionAdjustable;
         this.aiProfile = s.aiProfile;
+        this.aiProfiles = s.aiProfiles;
+        this.maxDenoise = s.maxDenoise;
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;

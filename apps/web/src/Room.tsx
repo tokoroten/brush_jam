@@ -351,6 +351,15 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     return ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`;
   };
 
+  /**
+   * Only mention profiles the backend actually has: on the stream worker there
+   * is no quality mode, so "quality ~10 s" would be a promise it cannot keep.
+   */
+  const profileHint = AI_PROFILES.filter((p) => client.aiProfiles.includes(p))
+    .map((p) => `${p} ~${hint(p)}`)
+    .join(', ');
+  const backendLabel = 'current';
+
   const statusText =
     client.aiState === 'error'
       ? `AI error: ${client.aiMessage}`
@@ -391,20 +400,23 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             setPromptDirty(true);
           }}
         />
-        <div className="segmented" title={`fast ~${hint('fast')}, quality ~${hint('quality')}`}>
-          {AI_PROFILES.map((p) => (
-            <button
-              key={p}
-              className={client.aiProfile === p ? 'active' : ''}
-              onClick={() => client.send({ t: 'set_ai_settings', aiProfile: p })}
-            >
-              {p}
-            </button>
-          ))}
+        <div className="segmented" title={profileHint}>
+          {AI_PROFILES.map((p) => {
+            const supported = client.aiProfiles.includes(p);
+            return (
+              <button
+                key={p}
+                className={client.aiProfile === p ? 'active' : ''}
+                disabled={!supported}
+                title={supported ? undefined : `the ${backendLabel} backend has no ${p} profile`}
+                onClick={() => client.send({ t: 'set_ai_settings', aiProfile: p })}
+              >
+                {p}
+              </button>
+            );
+          })}
         </div>
-        <span className="hint">
-          fast ~{hint('fast')}, quality ~{hint('quality')}
-        </span>
+        <span className="hint">{profileHint}</span>
         <button className={advanced ? 'active' : ''} onClick={() => setAdvanced((v) => !v)}>
           advanced
         </button>
@@ -415,13 +427,13 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       {advanced ? (
         <div className="tools">
           <label>
-            denoise {(denoiseDraft ?? client.denoise).toFixed(2)}
+            denoise {Math.min(denoiseDraft ?? client.denoise, client.maxDenoise).toFixed(2)}
             <input
               type="range"
               min={MIN_DENOISE}
-              max={MAX_DENOISE}
+              max={client.maxDenoise}
               step={DENOISE_STEP}
-              value={denoiseDraft ?? client.denoise}
+              value={Math.min(denoiseDraft ?? client.denoise, client.maxDenoise)}
               onChange={(e) => setDenoiseDraft(Number(e.target.value))}
             />
           </label>

@@ -21,8 +21,23 @@ export interface GenerateRequest {
   tag: string;
 }
 
+/**
+ * What a backend can actually do. Rooms are clamped to this and the UI hides
+ * what is unavailable, so a user cannot pick a profile the running backend does
+ * not have (the stream worker holds one fused LCM LoRA: it has no quality mode
+ * at all, and asking for 14 steps would silently give 4).
+ */
+export interface BackendCapabilities {
+  profiles: AIProfileName[];
+  /** Largest square the backend will generate. */
+  maxResolution: number;
+  maxDenoise: number;
+}
+
 export interface AIBackend {
   readonly name: string;
+  /** Probed once at startup; may hit the network. */
+  capabilities(): Promise<BackendCapabilities>;
   /** Resolves to a size x size PNG. */
   generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer>;
 }

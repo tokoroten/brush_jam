@@ -1,5 +1,6 @@
+import { MAX_AI_RESOLUTION, MAX_DENOISE } from '@brushjam/shared';
 import { buildWorkflow } from './comfyui.js';
-import { AbortedError, type AIBackend, type GenerateRequest } from './types.js';
+import { AbortedError, type AIBackend, type GenerateRequest, type BackendCapabilities } from './types.js';
 
 export interface RunpodOptions {
   endpointId: string;
@@ -21,6 +22,15 @@ export class RunpodBackend implements AIBackend {
   readonly name = 'runpod';
 
   constructor(private readonly opts: RunpodOptions) {}
+
+  async capabilities(): Promise<BackendCapabilities> {
+    // Same workflow builder as ComfyUI, so the same two profiles.
+    return {
+      profiles: this.opts.fastLora ? ['fast', 'quality'] : ['quality'],
+      maxResolution: MAX_AI_RESOLUTION,
+      maxDenoise: MAX_DENOISE,
+    };
+  }
 
   async generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {
     if (signal.aborted) throw new AbortedError();

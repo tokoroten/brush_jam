@@ -75,6 +75,26 @@ function num(env: NodeJS.ProcessEnv, key: string, fallback: number, rule: Number
   return value;
 }
 
+/**
+ * Per-backend starting values for a room, applied when the operator has not
+ * chosen explicitly. The stream worker is a 4-step LCM worker: 0.7 barely
+ * moves the drawing there, and it is fastest at 768.
+ * See docs/experiments/2026-09-05-stream/REPORT.md.
+ */
+export const STREAM_DEFAULTS = { resolution: 768, denoise: 0.8 } as const;
+
+/**
+ * Apply the backend's own defaults to a config the operator did not pin.
+ * Called once the backend is known, because `auto` only resolves at startup.
+ */
+export function applyBackendDefaults(config: Config, backendName: string, env: NodeJS.ProcessEnv = process.env): Config {
+  if (backendName !== 'stream') return config;
+  const next = { ...config, aiProfile: 'fast' as const };
+  if (env.AI_WINDOW === undefined) next.aiWindow = Math.min(STREAM_DEFAULTS.resolution, config.canvasSize);
+  if (env.AI_DENOISE === undefined) next.aiDenoise = STREAM_DEFAULTS.denoise;
+  return next;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const errors: string[] = [];
   const backendRaw = (env.AI_BACKEND ?? 'auto').toLowerCase();

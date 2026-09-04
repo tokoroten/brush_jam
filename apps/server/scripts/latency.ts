@@ -17,6 +17,8 @@ import type { ServerMessage } from '@brushjam/shared';
 
 interface Options {
   url: string;
+  /** Stream worker to ask about sampling settings, when that is the backend. */
+  workerUrl: string;
   count: number;
   room: string;
   timeoutMs: number;
@@ -25,6 +27,7 @@ interface Options {
 function parseArgs(argv: string[]): Options {
   const opts: Options = {
     url: process.env.BRUSHJAM_URL ?? 'http://127.0.0.1:8787',
+    workerUrl: process.env.STREAM_URL ?? 'http://127.0.0.1:8790',
     count: 10,
     room: `lat${Math.random().toString(36).slice(2, 8)}`,
     timeoutMs: 300_000,
@@ -36,6 +39,7 @@ function parseArgs(argv: string[]): Options {
     else if ((arg === '--n' || arg === '--count') && value) opts.count = Math.max(1, Number(value) || 1);
     else if (arg === '--room' && value) opts.room = value;
     else if (arg === '--timeout' && value) opts.timeoutMs = Math.max(1000, Number(value) || 1000);
+    else if (arg === '--worker' && value) opts.workerUrl = value;
   }
   return opts;
 }
@@ -58,7 +62,31 @@ try {
   console.error('[latency] start a server first, e.g. `pnpm --filter @brushjam/server dev`');
   process.exit(1);
 }
-console.log(`[latency] server ${base}, backend ${health.backend ?? 'unknown'}, ${opts.count} edits, room ${opts.room}`);
+/**
+ * For a stream backend, say how the worker is actually configured: its steps,
+ * guidance, VAE and model decide the number being measured, and none of them
+ * come from this server's config.
+ */
+let workerNote = '';
+async function describeWorker(workerUrl: string): Promise<void> {
+  if (health.backend !== 'stream') return;
+  try {
+    const res = await fetch(`${workerUrl.replace(/\/+$/, '')}/healthz`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return;
+    const w = (await res.json()) as Record<string, unknown>;
+    const parts = ['steps', 'guidance', 'vae', 'model', 'lora']
+      .filter((k) => w[k] !== undefined && w[k] !== '')
+      .map((k) => `${k} ${String(w[k])}`);
+    if (parts.length > 0) workerNote = ` (${parts.join(', ')})`;
+  } catch {
+    /* the worker is optional information, never a reason to fail the run */
+  }
+}
+
+await describeWorker(opts.workerUrl);
+console.log(
+  `[latency] server ${base}, backend ${health.backend ?? 'unknown'}${workerNote}, ${opts.count} edits, room ${opts.room}`,
+);
 
 const wsUrl = `${base.replace(/^http/, 'ws')}/ws/rooms/${opts.room}?name=Latency`;
 const socket = new WebSocket(wsUrl);
@@ -173,7 +201,7 @@ function report(): void {
   const line = (label: string, v: { min: number; median: number; max: number }): string =>
     `[latency] ${label.padEnd(34)} min ${v.min} ms | median ${v.median} ms | max ${v.max} ms`;
   console.log('');
-  console.log(`[latency] backend: ${health.backend ?? 'unknown'}  samples: ${samples.length}`);
+  console.log(`[latency] backend: ${health.backend ?? 'unknown'}${workerNote}  samples: ${samples.length}`);
   // Named for what they actually measure. `latencyMs` from the server is NOT
   // backend-only: it starts before the input render and ends after compositing.
   console.log(line('stroke_end -> pixels on screen', total));

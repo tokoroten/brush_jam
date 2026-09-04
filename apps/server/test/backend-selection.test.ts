@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBackend, PROBE_TIMEOUT_MS } from '../src/ai/backends/index.js';
-import { loadConfig } from '../src/config.js';
+import { ComfyUIBackend, createBackend, MockBackend, PROBE_TIMEOUT_MS, StreamBackend } from '../src/ai/backends/index.js';
+import { applyBackendDefaults, loadConfig } from '../src/config.js';
 
 interface Probes {
   stream?: 'ok' | 'loading' | 'error' | 'hang';
@@ -175,5 +175,91 @@ describe('stream config', () => {
   it('accepts AI_BACKEND=stream and still rejects nonsense', () => {
     expect(config({ AI_BACKEND: 'stream' }).aiBackend).toBe('stream');
     expect(() => config({ AI_BACKEND: 'sideways' })).toThrow(/AI_BACKEND/);
+  });
+});
+
+/**
+ * A room may only offer what the running backend can do. The stream worker
+ * holds one fused LCM LoRA: it has no quality profile at all, and asking for
+ * 14 steps there would silently run 4.
+ */
+describe('backend capabilities', () => {
+  it('comfyui offers both profiles when a LoRA is configured', async () => {
+    const caps = await new ComfyUIBackend({ url: 'http://x', checkpoint: 'c', fastLora: 'lcm.safetensors' }).capabilities();
+    expect(caps.profiles).toEqual(['fast', 'quality']);
+    expect(caps.maxDenoise).toBe(0.95);
+  });
+
+  it('comfyui offers quality only without a LoRA', async () => {
+    const caps = await new ComfyUIBackend({ url: 'http://x', checkpoint: 'c' }).capabilities();
+    expect(caps.profiles).toEqual(['quality']);
+  });
+
+  it('the mock offers both', async () => {
+    expect((await new MockBackend().capabilities()).profiles).toEqual(['fast', 'quality']);
+  });
+
+  it('the stream worker offers fast only, with its own limits', async () => {
+    stub({ stream: 'ok', maxSize: 1024 });
+    const caps = await new StreamBackend({ url: 'http://127.0.0.1:8790' }).capabilities();
+    expect(caps.profiles).toEqual(['fast']);
+    expect(caps.maxResolution).toBe(1024);
+    // no max_denoise reported: fall back to the conservative default
+    expect(caps.maxDenoise).toBe(0.9);
+  });
+
+  it('takes max_denoise from the worker when it reports one', async () => {
+    vi.stubGlobal('fetch', async () =>
+      new Response(JSON.stringify({ ok: true, warm: true, max_size: 768, max_denoise: 0.85 }), { status: 200 }),
+    );
+    const caps = await new StreamBackend({ url: 'http://127.0.0.1:8790' }).capabilities();
+    expect(caps).toMatchObject({ profiles: ['fast'], maxResolution: 768, maxDenoise: 0.85 });
+  });
+
+  it('falls back to safe limits when the worker cannot be reached', async () => {
+    stub({ stream: 'error' });
+    const caps = await new StreamBackend({ url: 'http://127.0.0.1:8790' }).capabilities();
+    expect(caps).toMatchObject({ profiles: ['fast'], maxResolution: 1024, maxDenoise: 0.9 });
+  });
+
+  it('reports the sampling settings the worker publishes', async () => {
+    vi.stubGlobal('fetch', async () =>
+      new Response(
+        JSON.stringify({ ok: true, warm: true, max_size: 1024, steps: 4, guidance: 1.5, vae: 'fp16fix', model: 'sdxl' }),
+        { status: 200 },
+      ),
+    );
+    const health = await new StreamBackend({ url: 'http://127.0.0.1:8790' }).health();
+    expect(health.sampling).toEqual({ steps: 4, guidance: 1.5, vae: 'fp16fix', model: 'sdxl', lora: undefined });
+  });
+});
+
+/** The stream worker's defaults differ from ComfyUI's and must not be guessed. */
+describe('backend defaults', () => {
+  const base = (): ReturnType<typeof loadConfig> => config();
+
+  it('moves a stream server to 768 and denoise 0.8', () => {
+    const c = applyBackendDefaults(base(), 'stream', {} as NodeJS.ProcessEnv);
+    expect(c.aiWindow).toBe(768);
+    expect(c.aiDenoise).toBe(0.8);
+    expect(c.aiProfile).toBe('fast');
+  });
+
+  it('leaves an explicit AI_WINDOW and AI_DENOISE alone', () => {
+    const env = { AI_WINDOW: '512', AI_DENOISE: '0.6' } as NodeJS.ProcessEnv;
+    const c = applyBackendDefaults(loadConfig(env), 'stream', env);
+    expect(c.aiWindow).toBe(512);
+    expect(c.aiDenoise).toBe(0.6);
+  });
+
+  it('never generates larger than the canvas', () => {
+    const env = { CANVAS_SIZE: '512' } as NodeJS.ProcessEnv;
+    expect(applyBackendDefaults(loadConfig(env), 'stream', env).aiWindow).toBe(512);
+  });
+
+  it('leaves comfyui and mock untouched', () => {
+    const before = base();
+    expect(applyBackendDefaults(before, 'comfyui', {} as NodeJS.ProcessEnv)).toBe(before);
+    expect(applyBackendDefaults(before, 'mock', {} as NodeJS.ProcessEnv)).toBe(before);
   });
 });

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { QUALITY_SUFFIX } from '@brushjam/shared';
-import { AbortedError, delay, type AIBackend, type GenerateRequest } from './types.js';
+import { MAX_AI_RESOLUTION, MAX_DENOISE, QUALITY_SUFFIX } from '@brushjam/shared';
+import { AbortedError, delay, type AIBackend, type BackendCapabilities, type GenerateRequest } from './types.js';
 
 export interface ComfyOptions {
   url: string;
@@ -148,6 +148,15 @@ export class ComfyUIBackend implements AIBackend {
 
   private get base(): string {
     return this.opts.url.replace(/\/+$/, '');
+  }
+
+  async capabilities(): Promise<BackendCapabilities> {
+    // Both profiles, unless there is no LoRA to build the fast graph from.
+    return {
+      profiles: this.opts.fastLora ? ['fast', 'quality'] : ['quality'],
+      maxResolution: MAX_AI_RESOLUTION,
+      maxDenoise: MAX_DENOISE,
+    };
   }
 
   /**

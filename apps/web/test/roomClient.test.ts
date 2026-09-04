@@ -125,6 +125,8 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     aiResolutionMax: 1024,
     aiResolutionAdjustable: true,
     aiProfile: 'fast' as const,
+    aiProfiles: ['fast', 'quality'] as const,
+    maxDenoise: 0.95,
     members: [{ userId: 'me', name: 'Me', color: '#fff' }],
     layers: [layer('l1')],
     strokes: [],
@@ -583,5 +585,24 @@ describe('AI profile', () => {
     expect(client.profileLatency.quality).toBe(10_200);
     // and the fast measurement survives the switch
     expect(client.profileLatency.fast).toBe(3700);
+  });
+});
+
+/** The client mirrors what the backend can do so the UI can follow it. */
+describe('backend capabilities', () => {
+  it('takes the supported profiles and the denoise ceiling from the snapshot', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ aiProfiles: ['fast'], maxDenoise: 0.9, aiProfile: 'fast' }));
+    await tick();
+    expect(client.aiProfiles).toEqual(['fast']);
+    expect(client.maxDenoise).toBe(0.9);
+  });
+
+  it('defaults to both profiles before a snapshot arrives', () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    expect(client.aiProfiles).toEqual(['fast', 'quality']);
+    expect(client.maxDenoise).toBe(0.95);
   });
 });

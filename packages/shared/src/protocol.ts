@@ -66,6 +66,13 @@ export interface RoomSnapshot {
   denoise: number;
   /** Speed/quality workflow choice, shared like the prompt. */
   aiProfile: AIProfileName;
+  /**
+   * Profiles the running backend actually has. The stream worker holds one
+   * fused LCM LoRA and offers `fast` only, so the UI must not show `quality`.
+   */
+  aiProfiles: AIProfileName[];
+  /** Largest denoise this backend accepts; the room slider stops here. */
+  maxDenoise: number;
   /** Empty means "use the built-in default list". */
   negativePrompt: string;
   /** Generation size in px; the result is scaled back to the canvas. */

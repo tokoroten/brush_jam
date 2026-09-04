@@ -210,8 +210,34 @@ Switching profiles makes ComfyUI load or unload the LoRA, so the first
 generation after a switch is a few seconds slower; the server logs it rather
 than leaving it looking like a random stall.
 
+### Backend capabilities
+
+A backend declares what it can do (`capabilities()`), probed once at startup,
+and rooms are capped by it: the UI disables a profile the backend does not have
+and stops the denoise slider at its ceiling, and the server refuses anything
+outside it rather than silently substituting.
+
+| backend | profiles | max resolution | max denoise |
+| --- | --- | --- | --- |
+| comfyui / runpod | fast + quality (quality only without a LoRA) | 2048 | 0.95 |
+| stream | **fast only** | worker's `max_size`, else 1024 | worker's `max_denoise`, else 0.9 |
+| mock | fast + quality | 2048 | 0.95 |
+
+The stream worker holds one fused LCM LoRA, so it has no quality mode at all -
+asking it for 14 steps would silently run 4. Its defaults also differ, and the
+server applies them once the backend is known (`auto` only resolves at startup):
+resolution 768 and denoise 0.8, because 0.7 barely moves the drawing at 4 LCM
+steps. An explicit `AI_WINDOW` or `AI_DENOISE` still wins.
+
+```
+pnpm dev:stream    # same as pnpm dev with AI_BACKEND=stream (works on Windows)
+```
+
 **Why these numbers.** Measured on an RTX 3070 8 GB - see
-[docs/experiments/2026-09-05-comfyui/REPORT.md](docs/experiments/2026-09-05-comfyui/REPORT.md).
+[docs/experiments/2026-09-05-comfyui/REPORT.md](docs/experiments/2026-09-05-comfyui/REPORT.md)
+for ComfyUI and
+[docs/experiments/2026-09-05-stream/REPORT.md](docs/experiments/2026-09-05-stream/REPORT.md)
+for the stream worker, which is faster again (768 in ~1.8 s, 1024 in ~3.5 s).
 Denoise 0.5 is a no-op on this checkpoint, 0.65 decorates, 0.8 genuinely
 reinterprets (a noise-pen sky becomes buildings) and 0.9 discards the drawing,
 which is why the default is 0.7. LCM matches the 14-step result up to about 0.65

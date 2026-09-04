@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"pnpm --filter @brushjam/server dev\" \"pnpm --filter @brushjam/web dev\"",
+    "dev:stream": "cross-env AI_BACKEND=stream pnpm dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },

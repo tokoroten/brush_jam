@@ -14,6 +14,7 @@ import {
   removeMember,
   snapshot,
   type RoomState,
+  type RoomLimits,
 } from './room.js';
 import { AICanvas, buildFullMask, buildMask, decodeUpload, forgetImages, renderCropInput } from './raster.js';
 import { validateClientMessage } from './validate.js';
@@ -51,7 +52,7 @@ export class RoomRuntime {
   private pendingImages = 0;
   private pendingImageBytes = 0;
 
-  constructor(roomId: string, backend: AIBackend, private readonly config: Config) {
+  constructor(roomId: string, backend: AIBackend, private readonly config: Config, limits: RoomLimits = {}) {
     this.state = createRoom(
       roomId,
       config.aiDenoise,
@@ -59,6 +60,7 @@ export class RoomRuntime {
       config.aiWindow,
       config.aiMode === 'full',
       config.aiProfile,
+      limits,
     );
     this.scheduler = new AIScheduler(
       {
@@ -316,7 +318,11 @@ export class RoomRegistry {
   private readonly rooms = new Map<string, RoomRuntime>();
   private sweeper: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly backend: AIBackend, private readonly config: Config) {}
+  constructor(
+    private readonly backend: AIBackend,
+    private readonly config: Config,
+    private readonly limits: RoomLimits = {},
+  ) {}
 
   /** Reclaim rooms nobody has been in for a while (each holds a large raster). */
   startSweeper(intervalMs = 15_000): void {
@@ -348,7 +354,7 @@ export class RoomRegistry {
     if (this.atCapacity && this.sweep() === 0 && this.atCapacity) return null;
     let id = shortId(8);
     while (this.rooms.has(id)) id = shortId(8);
-    const room = new RoomRuntime(id, this.backend, this.config);
+    const room = new RoomRuntime(id, this.backend, this.config, this.limits);
     this.rooms.set(id, room);
     return room;
   }
@@ -362,7 +368,7 @@ export class RoomRegistry {
     const existing = this.rooms.get(id);
     if (existing) return existing;
     if (this.atCapacity && this.sweep() === 0 && this.atCapacity) return null;
-    const room = new RoomRuntime(id, this.backend, this.config);
+    const room = new RoomRuntime(id, this.backend, this.config, this.limits);
     this.rooms.set(id, room);
     return room;
   }

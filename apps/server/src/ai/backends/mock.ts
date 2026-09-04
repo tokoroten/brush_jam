@@ -1,5 +1,6 @@
 import { createCanvas, loadImage } from '@napi-rs/canvas';
-import { delay, type AIBackend, type GenerateRequest } from './types.js';
+import { MAX_AI_RESOLUTION, MAX_DENOISE } from '@brushjam/shared';
+import { delay, type AIBackend, type BackendCapabilities, type GenerateRequest } from './types.js';
 
 function hash(s: string): number {
   let h = 2166136261;
@@ -21,6 +22,11 @@ export class MockBackend implements AIBackend {
   readonly name = 'mock';
 
   constructor(private readonly latencyMs = 800) {}
+
+  async capabilities(): Promise<BackendCapabilities> {
+    // The mock stylises rather than samples, so nothing here is a real limit.
+    return { profiles: ['fast', 'quality'], maxResolution: MAX_AI_RESOLUTION, maxDenoise: MAX_DENOISE };
+  }
 
   async generate(req: GenerateRequest, signal: AbortSignal): Promise<Buffer> {
     await delay(this.latencyMs, signal);

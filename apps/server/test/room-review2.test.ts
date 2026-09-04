@@ -550,3 +550,56 @@ describe('AI profile', () => {
     expect(snapshot(state, alice, 'idle', { window: 1024, apply: 1024 }).aiProfile).toBe('fast');
   });
 });
+
+/** A room cannot offer what the running backend does not have. */
+describe('backend capabilities in a room', () => {
+  const streamRoom = (): ReturnType<typeof createRoom> =>
+    createRoom('streamroom', 0.8, 1024, 768, true, 'fast', { profiles: ['fast'], maxDenoise: 0.9 });
+
+  it('publishes the supported profiles and the denoise ceiling', () => {
+    const state = streamRoom();
+    const alice = addMember(state, 'Alice').userId;
+    const snap = snapshot(state, alice, 'idle', { window: 768, apply: 1024 });
+    expect(snap.aiProfiles).toEqual(['fast']);
+    expect(snap.maxDenoise).toBe(0.9);
+  });
+
+  it('refuses a profile the backend does not have', () => {
+    const state = streamRoom();
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', aiProfile: 'quality' });
+    expect(JSON.stringify(out)).toMatch(/only supports the fast profile/);
+    expect(state.aiProfile).toBe('fast');
+  });
+
+  it('refuses a denoise above the backend ceiling', () => {
+    const state = streamRoom();
+    const alice = addMember(state, 'Alice').userId;
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.95 });
+    expect(JSON.stringify(out)).toMatch(/denoise up to 0.9/);
+    expect(state.denoise).toBe(0.8);
+  });
+
+  it('still accepts a denoise at or below the ceiling', () => {
+    const state = streamRoom();
+    const alice = addMember(state, 'Alice').userId;
+    applyClientMessage(state, alice, { t: 'set_ai_settings', denoise: 0.9 });
+    expect(state.denoise).toBe(0.9);
+  });
+
+  it('clamps the starting denoise to the ceiling', () => {
+    const state = createRoom('capped', 0.95, 1024, 768, true, 'fast', { profiles: ['fast'], maxDenoise: 0.85 });
+    expect(state.denoise).toBe(0.85);
+  });
+
+  it('starts on a supported profile even when configured otherwise', () => {
+    const state = createRoom('mismatch', 0.8, 1024, 768, true, 'quality', { profiles: ['fast'], maxDenoise: 0.9 });
+    expect(state.aiProfile).toBe('fast');
+  });
+
+  it('defaults to both profiles when no limits are given', () => {
+    const state = createRoom('plain');
+    expect(state.aiProfiles).toEqual(['fast', 'quality']);
+    expect(state.maxDenoise).toBe(MAX_DENOISE);
+  });
+});

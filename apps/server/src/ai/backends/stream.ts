@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { QUALITY_SUFFIX } from '@brushjam/shared';
-import { AbortedError, type AIBackend, type GenerateRequest } from './types.js';
+
+/** Used when the worker does not report its own limits. */
+export const DEFAULT_STREAM_MAX_RESOLUTION = 1024;
+export const DEFAULT_STREAM_MAX_DENOISE = 0.9;
+import { AbortedError, type AIBackend, type BackendCapabilities, type GenerateRequest } from './types.js';
 
 export interface StreamOptions {
   /** Base URL of apps/stream-worker, e.g. http://127.0.0.1:8790 */
@@ -20,6 +24,15 @@ export interface StreamOptions {
   settleTimeoutMs?: number;
 }
 
+/** Sampling parameters the worker reports, recorded by the experiment scripts. */
+export interface StreamSampling {
+  steps?: number;
+  guidance?: number;
+  vae?: string;
+  model?: string;
+  lora?: string;
+}
+
 export interface StreamHealth {
   ok: boolean;
   /** The model is loaded and has run at least once. */
@@ -31,6 +44,10 @@ export interface StreamHealth {
   backend: string;
   /** Id of the job currently running, when the worker reports one. */
   currentRequestId?: string;
+  /** Largest denoise the worker accepts; absent means it did not say. */
+  maxDenoise?: number;
+  /** Whatever it reports about how it samples: steps, guidance, vae, model. */
+  sampling: StreamSampling;
   /** Why the worker is not usable, for the log line. */
   reason?: string;
 }
@@ -179,6 +196,7 @@ export class StreamBackend implements AIBackend {
       maxSize: 0,
       busy: false,
       backend: '',
+      sampling: {},
       reason,
     });
     try {
@@ -190,22 +208,53 @@ export class StreamBackend implements AIBackend {
         ok?: boolean;
         warm?: boolean;
         max_size?: number;
+        max_denoise?: number;
         busy?: boolean;
         backend?: string;
         current_request_id?: string;
+        steps?: number;
+        guidance?: number;
+        vae?: string;
+        model?: string;
+        lora?: string;
       };
       if (body.ok !== true) return dead('/healthz reported not ok');
+      const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined);
       return {
         ok: true,
         warm: body.warm === true,
-        maxSize: typeof body.max_size === 'number' ? body.max_size : 0,
+        maxSize: num(body.max_size) ?? 0,
+        maxDenoise: num(body.max_denoise),
         busy: body.busy === true,
-        backend: typeof body.backend === 'string' ? body.backend : 'stream',
-        currentRequestId: typeof body.current_request_id === 'string' ? body.current_request_id : undefined,
+        backend: str(body.backend) ?? 'stream',
+        currentRequestId: str(body.current_request_id),
+        sampling: {
+          steps: num(body.steps),
+          guidance: num(body.guidance),
+          vae: str(body.vae),
+          model: str(body.model),
+          lora: str(body.lora),
+        },
       };
     } catch (err) {
       return dead(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /**
+   * One fused LCM LoRA, so there is no quality profile to offer: asking for 14
+   * steps would silently run 4. Limits come from the worker where it reports
+   * them, and from conservative defaults where it does not.
+   */
+  async capabilities(): Promise<BackendCapabilities> {
+    const health = await this.health();
+    return {
+      profiles: ['fast'],
+      maxResolution: health.maxSize > 0 ? health.maxSize : DEFAULT_STREAM_MAX_RESOLUTION,
+      // Above ~0.9 an LCM worker tends to ignore the drawing entirely.
+      maxDenoise: health.maxDenoise ?? DEFAULT_STREAM_MAX_DENOISE,
+    };
   }
 
   /** Cheap reachability probe, mirroring `comfyReachable`. */

@@ -6,6 +6,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { AIBackend } from './ai/backends/index.js';
 import type { Config } from './config.js';
 import { RoomRegistry } from './runtime.js';
+import type { RoomLimits } from './room.js';
 
 const ROOM_ID = /^[a-z0-9]{4,16}$/;
 const SESSION_TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
@@ -67,8 +68,9 @@ export interface BrushJamServer {
   close(): Promise<void>;
 }
 
-export function createBrushJamServer(config: Config, backend: AIBackend): BrushJamServer {
-  const registry = new RoomRegistry(backend, config);
+export function createBrushJamServer(config: Config, backend: AIBackend, limits: RoomLimits = {}): BrushJamServer {
+  // Rooms are capped by what the backend can actually do (probed at startup).
+  const registry = new RoomRegistry(backend, config, limits);
   registry.startSweeper();
   const webDist = config.webDist ?? defaultWebDist();
   const hasWeb = existsSync(path.join(webDist, 'index.html'));

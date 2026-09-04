@@ -18,7 +18,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createCanvas, loadImage, type Canvas } from '@napi-rs/canvas';
 import { DEFAULT_NEGATIVE_PROMPT, renderStrokes, type AIProfileName, type RenderableStroke } from '@brushjam/shared';
-import { createBackend, FAST_CFG } from '../src/ai/backends/index.js';
+import { createBackend, streamHealth, FAST_CFG } from '../src/ai/backends/index.js';
 import { loadConfig } from '../src/config.js';
 import { buildFullMask } from '../src/raster.js';
 
@@ -317,9 +317,9 @@ writeFileSync(path.join(outDir, 'grid.png'), sheet.toBuffer('image/png'));
 // Record what the workflow really used, not what the server config says: in
 // fast mode the graph overrides cfg, and for a non-ComfyUI backend the server's
 // cfg is not used at all. Writing config values there made a run unreproducible.
-const workflow =
-  backend.name === 'comfyui' || backend.name === 'runpod'
-    ? opts.profile === 'fast'
+async function effectiveWorkflow(): Promise<Record<string, unknown>> {
+  if (backend.name === 'comfyui' || backend.name === 'runpod') {
+    return opts.profile === 'fast'
       ? {
           mode: 'fast (LCM)',
           steps: config.aiFastSteps,
@@ -328,8 +328,29 @@ const workflow =
           sampler: 'lcm/sgm_uniform',
           vaeTile: config.aiVaeTile,
         }
-      : { mode: 'normal', steps: config.aiSteps, cfg: config.aiCfg, sampler: 'euler_ancestral/normal', vaeTile: config.aiVaeTile }
-    : { mode: backend.name, note: 'sampling parameters belong to the backend, not to this server config' };
+      : {
+          mode: 'normal',
+          steps: config.aiSteps,
+          cfg: config.aiCfg,
+          sampler: 'euler_ancestral/normal',
+          vaeTile: config.aiVaeTile,
+        };
+  }
+  if (backend.name === 'stream') {
+    // The worker owns its sampling settings, so ask it rather than guess.
+    const health = await streamHealth(config.streamUrl, 3000);
+    return {
+      mode: 'stream worker',
+      url: config.streamUrl,
+      warm: health.warm,
+      maxResolution: health.maxSize || undefined,
+      ...health.sampling,
+    };
+  }
+  return { mode: backend.name, note: 'sampling parameters belong to the backend, not to this server config' };
+}
+
+const workflow = await effectiveWorkflow();
 
 const results = {
   date,

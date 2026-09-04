@@ -36,6 +36,12 @@ export function clampResolution(value: number, max: number): number {
   return Math.min(max, Math.max(MIN_AI_RESOLUTION, Math.min(MAX_AI_RESOLUTION, stepped)));
 }
 
+/** Backend-derived ceilings a room is created with. */
+export interface RoomLimits {
+  profiles?: AIProfileName[];
+  maxDenoise?: number;
+}
+
 export function clampDenoise(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_DENOISE;
   const stepped = Math.round(value / DENOISE_STEP) * DENOISE_STEP;
@@ -69,6 +75,9 @@ export interface RoomState {
   aiResolutionAdjustable: boolean;
   /** Speed/quality workflow, shared by everyone in the room. */
   aiProfile: AIProfileName;
+  /** What the running backend supports; the room cannot leave these. */
+  aiProfiles: AIProfileName[];
+  maxDenoise: number;
   humanRevision: number;
   aiRevision: number;
   layers: Layer[];
@@ -133,17 +142,24 @@ export function createRoom(
   resolution = canvasSize,
   adjustableResolution = true,
   profile: AIProfileName = 'fast',
+  limits: RoomLimits = {},
 ): RoomState {
+  const profiles = limits.profiles?.length ? limits.profiles : [...AI_PROFILES];
+  const maxDenoise = Math.min(limits.maxDenoise ?? MAX_DENOISE, MAX_DENOISE);
+  // A room can only start on a profile the backend has.
+  const startProfile = profiles.includes(profile) ? profile : profiles[0]!;
   return {
     id,
     canvasSize,
     prompt: 'anime style, fantasy town, vibrant colors',
-    denoise: clampDenoise(denoise),
+    denoise: Math.min(clampDenoise(denoise), maxDenoise),
     negativePrompt: '',
     aiResolution: clampResolution(resolution, resolution),
     aiResolutionMax: clampResolution(resolution, resolution),
     aiResolutionAdjustable: adjustableResolution,
-    aiProfile: profile,
+    aiProfile: startProfile,
+    aiProfiles: profiles,
+    maxDenoise,
     humanRevision: 0,
     aiRevision: 0,
     layers: [
@@ -280,6 +296,8 @@ export function snapshot(
     aiResolutionMax: room.aiResolutionMax,
     aiResolutionAdjustable: room.aiResolutionAdjustable,
     aiProfile: room.aiProfile,
+    aiProfiles: room.aiProfiles,
+    maxDenoise: room.maxDenoise,
     members: [...room.members.values()],
     layers: sortedLayers(room),
     strokes: room.strokes,
@@ -581,6 +599,9 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
     case 'set_ai_settings': {
       // Both are room-level, so a change behaves exactly like a prompt change:
       // everyone sees it, and the AI re-runs without anyone having to draw.
+      if (msg.denoise !== undefined && clampDenoise(msg.denoise) > room.maxDenoise) {
+        return refuse(`this backend supports denoise up to ${room.maxDenoise}`);
+      }
       const denoise = msg.denoise === undefined ? room.denoise : clampDenoise(msg.denoise);
       const negativePrompt = msg.negativePrompt === undefined ? room.negativePrompt : msg.negativePrompt.slice(0, MAX_NEGATIVE_PROMPT);
       // In patch mode the generation size is the crop window, so accepting a
@@ -590,6 +611,9 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       }
       if (msg.aiProfile !== undefined && !AI_PROFILES.includes(msg.aiProfile)) {
         return refuse('aiProfile must be fast or quality');
+      }
+      if (msg.aiProfile !== undefined && !room.aiProfiles.includes(msg.aiProfile)) {
+        return refuse(`this backend only supports the ${room.aiProfiles.join(' and ')} profile`);
       }
       const aiProfile = msg.aiProfile ?? room.aiProfile;
       // Switching profile also moves the generation size to that profile's
