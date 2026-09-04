@@ -30,7 +30,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 615 tests across shared / server / web
+pnpm test         # 621 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -68,6 +68,31 @@ wait for the model.
 ```bash
 pnpm dev:stream    # server on :8787, web on :5173, AI_BACKEND=stream
 ```
+
+Or pin it once, in a repo-root `.env` (copy `.env.example`), and use plain
+`pnpm dev`:
+
+```
+AI_BACKEND=stream
+```
+
+`.env` is read at startup and fills gaps only - a variable already in the
+environment wins, so `pnpm dev:stream` still overrides it. Values are never
+logged. The startup log names the source, which is the fastest way to tell what
+a given terminal is actually running:
+
+```
+[brushjam] AI_BACKEND=stream (from the repo-root .env)
+[brushjam] AI_BACKEND=stream (from the environment)
+[brushjam] AI_BACKEND is not set (auto-detecting; put AI_BACKEND=stream in .env to pin it)
+```
+
+**Check that line before debugging anything else.** A `pnpm dev` started in
+another terminal has no `AI_BACKEND` and auto-detects, and every dev stack open
+on this repo restarts together whenever a server file changes - so a mock
+backend appearing right after an edit is usually a second, older stack
+reporting itself, not the one you started. `.env` removes the difference
+between the two commands entirely.
 
 **3. Let other people join.** By default the server binds `127.0.0.1` and Vite
 binds localhost, so nothing outside the machine can reach either. Use:
@@ -178,6 +203,10 @@ apps/web/              Vite + React 19
   until you tick "AI input" in the layer panel.
 
 ## Environment variables
+
+Every variable below can go in a repo-root `.env` (see `.env.example`) instead
+of the command line. The file never overrides a variable that is already set,
+and its values are never logged.
 
 Read from the process environment; a repo-root `.env` is loaded if present (its
 values are never logged and it stays git-ignored).

@@ -176,6 +176,22 @@ export function resolveBackendConfig(
  * script that reports one number and sends another produces an experiment
  * whose caption is a lie, which is how this was wrong twice.
  */
+/** Where a setting's value came from, for the startup log. */
+export type EnvOrigin = 'environment' | '.env' | 'unset';
+
+/**
+ * `process.loadEnvFile` fills gaps and never overwrites, so a real environment
+ * variable still wins over `.env`. Reporting which one supplied AI_BACKEND
+ * turns "why is it mock?" into a one-line answer instead of an investigation:
+ * with several dev stacks open on one repo, the usual cause is a process that
+ * simply never had the variable.
+ */
+export function envOrigin(before: string | undefined, after: string | undefined): EnvOrigin {
+  if (before !== undefined && before !== '') return 'environment';
+  if (after !== undefined && after !== '') return '.env';
+  return 'unset';
+}
+
 export function stepsForProfile(config: Pick<Config, 'aiSteps' | 'aiFastSteps'>, profile: AIProfileName): number {
   return profile === 'fast' ? config.aiFastSteps : config.aiSteps;
 }

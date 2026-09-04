@@ -1,6 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig, stepsForProfile } from '../src/config.js';
+import { ConfigError, envOrigin, loadConfig, stepsForProfile } from '../src/config.js';
 
 const env = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({ ...extra }) as NodeJS.ProcessEnv;
 
@@ -265,5 +267,58 @@ describe('stepsForProfile', () => {
     expect(request).toContain('steps: gridSteps');
     expect(request).not.toContain('config.aiSteps');
     expect(src).toContain('const gridSteps = stepsForProfile(config, opts.profile)');
+  });
+});
+
+/**
+ * Which stack am I looking at? With several dev servers open on one repo the
+ * usual cause of "it picked mock" is a process that never had AI_BACKEND, so
+ * the startup log names where the value came from.
+ */
+describe('envOrigin', () => {
+  it('reports the environment when the variable was already set', () => {
+    expect(envOrigin('stream', 'stream')).toBe('environment');
+  });
+
+  it('reports .env when the file supplied it', () => {
+    expect(envOrigin(undefined, 'stream')).toBe('.env');
+  });
+
+  it('reports unset when neither did', () => {
+    expect(envOrigin(undefined, undefined)).toBe('unset');
+  });
+
+  it('treats an empty environment value as unset, like loadConfig does', () => {
+    expect(envOrigin('', 'stream')).toBe('.env');
+    expect(envOrigin('', '')).toBe('unset');
+  });
+
+  it('still says environment when .env holds a different value', () => {
+    // Node's loader never overwrites, so the environment is what took effect.
+    expect(envOrigin('stream', 'stream')).toBe('environment');
+  });
+});
+
+/**
+ * The precedence the startup log claims, pinned against Node itself: a real
+ * environment variable must beat the file, or `pnpm dev:stream` would be
+ * silently overridden by whatever someone left in .env.
+ */
+describe('.env precedence', () => {
+  it('fills gaps without overwriting the environment', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'brushjam-env-'));
+    const file = path.join(dir, '.env');
+    writeFileSync(file, 'BRUSHJAM_TEST_SET=from_dotenv\nBRUSHJAM_TEST_GAP=from_dotenv\n');
+    process.env.BRUSHJAM_TEST_SET = 'from_environment';
+    delete process.env.BRUSHJAM_TEST_GAP;
+    try {
+      process.loadEnvFile(file);
+      expect(process.env.BRUSHJAM_TEST_SET).toBe('from_environment');
+      expect(process.env.BRUSHJAM_TEST_GAP).toBe('from_dotenv');
+    } finally {
+      delete process.env.BRUSHJAM_TEST_SET;
+      delete process.env.BRUSHJAM_TEST_GAP;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

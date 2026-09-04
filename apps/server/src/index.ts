@@ -2,11 +2,15 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createBackend, type Watcher } from './ai/backends/index.js';
-import { loadConfig, resolveBackendConfig, type Config } from './config.js';
+import { envOrigin, loadConfig, resolveBackendConfig, type Config } from './config.js';
 import { createBrushJamServer } from './server.js';
 
-// Optional repo-root .env (RunPod credentials etc). Never logged.
+// Optional repo-root .env (RunPod credentials, AI_BACKEND, ...). Never logged.
+// Node's loader fills gaps only: a variable already in the environment - from
+// `pnpm dev:stream`, say - keeps its value, so .env is a default, not an
+// override.
 const envFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '.env');
+const backendBefore = process.env.AI_BACKEND;
 if (existsSync(envFile)) {
   try {
     process.loadEnvFile(envFile);
@@ -14,6 +18,7 @@ if (existsSync(envFile)) {
     /* malformed .env is not fatal */
   }
 }
+const backendOrigin = envOrigin(backendBefore, process.env.AI_BACKEND);
 
 let config: Config;
 try {
@@ -63,7 +68,11 @@ onStreamReady = () => void registry.refreshCapabilities();
 const LISTEN_RETRIES = 12;
 const LISTEN_RETRY_MS = 250;
 
+/** The retry's error handler, so each attempt replaces the previous one. */
+let listenErrorHandler: ((err: NodeJS.ErrnoException) => void) | null = null;
+
 function listenWithRetry(attempt = 1): void {
+  if (listenErrorHandler) server.off('error', listenErrorHandler);
   const onError = (err: NodeJS.ErrnoException): void => {
     if (err.code === 'EADDRINUSE' && attempt < LISTEN_RETRIES) {
       console.warn(`[brushjam] port ${config.port} still busy, retrying (${attempt}/${LISTEN_RETRIES})`);
@@ -73,10 +82,28 @@ function listenWithRetry(attempt = 1): void {
     console.error(`[brushjam] ${err.message}`);
     process.exit(1);
   };
+  listenErrorHandler = onError;
   server.once('error', onError);
-  server.listen(config.port, config.host, () => {
-    server.off('error', onError);
+  // The success callback is registered once, not per attempt: passing it to
+  // listen() each retry stacked up 'listening' handlers and warned about a
+  // leak after ten tries.
+  server.listen(config.port, config.host);
+}
+
+function announce(): void {
+  {
+    if (listenErrorHandler) {
+      server.off('error', listenErrorHandler);
+      listenErrorHandler = null;
+    }
     console.log(`[brushjam] server on http://${config.host}:${config.port} (set HOST=0.0.0.0 to expose on the LAN)`);
+    // Named explicitly: a stale terminal or a second dev stack is by far the
+    // most common reason a server is not the backend someone expected.
+    console.log(
+      backendOrigin === 'unset'
+        ? `[brushjam] AI_BACKEND is not set (auto-detecting; put AI_BACKEND=stream in .env to pin it)`
+        : `[brushjam] AI_BACKEND=${config.aiBackend} (from the ${backendOrigin === '.env' ? 'repo-root .env' : 'environment'})`,
+    );
     console.log(`[brushjam] canvas ${config.canvasSize} / ai mode ${config.aiMode}`);
     if (config.aiMode === 'full') {
       const note = config.aiWindow === config.canvasSize ? 'same as canvas' : `resampled from/to ${config.canvasSize}`;
@@ -97,8 +124,10 @@ function listenWithRetry(attempt = 1): void {
     if (config.fastDisabled) {
       console.warn('[brushjam] the fast profile is unavailable: COMFYUI_FAST_LORA is empty, so every room starts on quality');
     }
-  });
+  }
 }
+
+server.once('listening', announce);
 
 listenWithRetry();
 
