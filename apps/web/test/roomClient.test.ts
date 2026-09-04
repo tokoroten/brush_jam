@@ -680,3 +680,53 @@ describe('negative prompt activity', () => {
     expect(client.negativePromptActive).toBe(true);
   });
 });
+
+/**
+ * Review 8 finding B1: after a worker restarts smaller, an open client whose
+ * controls still offer the old profiles just sends requests the server refuses.
+ */
+describe('ai_capabilities', () => {
+  const caps = (extra: Partial<Extract<ServerMessage, { t: 'ai_capabilities' }>> = {}): ServerMessage => ({
+    t: 'ai_capabilities',
+    aiProfiles: ['fast'],
+    maxDenoise: 0.8,
+    aiResolutionMax: 768,
+    negativePromptActive: false,
+    ...extra,
+  });
+
+  it('narrows the controls when the backend loses a profile', async () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.receive(snapshot());
+    await tick();
+    client.receive(caps());
+    await tick();
+    expect(client.aiProfiles).toEqual(['fast']);
+    expect(client.maxDenoise).toBe(0.8);
+    expect(client.aiResolutionMax).toBe(768);
+    expect(client.negativePromptActive).toBe(false);
+  });
+
+  it('widens them again when the backend comes back bigger', async () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.receive(snapshot());
+    await tick();
+    client.receive(caps());
+    await tick();
+    client.receive(caps({ aiProfiles: ['fast', 'quality'], maxDenoise: 0.95, aiResolutionMax: 1024, negativePromptActive: true }));
+    await tick();
+    expect(client.aiProfiles).toEqual(['fast', 'quality']);
+    expect(client.aiResolutionMax).toBe(1024);
+  });
+
+  it('notifies subscribers so the panel re-renders', async () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.receive(snapshot());
+    await tick();
+    let bumps = 0;
+    client.subscribe(() => (bumps += 1));
+    client.receive(caps());
+    await tick();
+    expect(bumps).toBeGreaterThan(0);
+  });
+});

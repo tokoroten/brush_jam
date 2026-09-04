@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig } from '../src/config.js';
+import { ConfigError, loadConfig, stepsForProfile } from '../src/config.js';
 
 const env = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({ ...extra }) as NodeJS.ProcessEnv;
 
@@ -231,5 +232,38 @@ describe('AI profile', () => {
     expect(loadConfig({ COMFYUI_FAST_LORA: 'lcm-lora-sdxl.safetensors' } as NodeJS.ProcessEnv).comfyFastLora).toBe(
       'lcm-lora-sdxl.safetensors',
     );
+  });
+});
+
+/**
+ * Review 8 finding A#5, twice regressed: quality-grid recorded one step count
+ * and sent another, so a grid captioned "4 steps" was actually a 14-step run.
+ * One function answers the question for both.
+ */
+describe('stepsForProfile', () => {
+  const cfg = loadConfig({ AI_STEPS: '14', AI_FAST_STEPS: '4' } as NodeJS.ProcessEnv);
+
+  it('gives the fast profile its own step count', () => {
+    expect(stepsForProfile(cfg, 'fast')).toBe(4);
+  });
+
+  it('gives quality the full count', () => {
+    expect(stepsForProfile(cfg, 'quality')).toBe(14);
+  });
+
+  it('follows a custom AI_FAST_STEPS', () => {
+    const custom = loadConfig({ AI_STEPS: '20', AI_FAST_STEPS: '8' } as NodeJS.ProcessEnv);
+    expect(stepsForProfile(custom, 'fast')).toBe(8);
+    expect(stepsForProfile(custom, 'quality')).toBe(20);
+  });
+
+  it('is what quality-grid sends AND records', () => {
+    // Guarding the exact regression: the generate() call must not reach for
+    // config.aiSteps behind the recorded value's back.
+    const src = readFileSync(new URL('../scripts/quality-grid.ts', import.meta.url), 'utf8');
+    const request = src.slice(src.indexOf('backend.generate('), src.indexOf('controller.signal'));
+    expect(request).toContain('steps: gridSteps');
+    expect(request).not.toContain('config.aiSteps');
+    expect(src).toContain('const gridSteps = stepsForProfile(config, opts.profile)');
   });
 });

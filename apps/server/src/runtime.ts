@@ -2,7 +2,7 @@ import { intersectRect, type Rect, type ServerMessage } from '@brushjam/shared';
 import type { WebSocket } from 'ws';
 import type { Config } from './config.js';
 import { AIScheduler, type MaskHandle, type RenderJob } from './ai/scheduler.js';
-import type { AIBackend } from './ai/backends/index.js';
+import type { AIBackend, Watcher } from './ai/backends/index.js';
 import { shortId } from './ids.js';
 import { checkImage } from './imageInfo.js';
 import {
@@ -294,6 +294,11 @@ export class RoomRuntime {
    * max_size, or came back at all). Clamp the room into the new limits, tell
    * everyone, and let the AI re-run at the corrected size.
    */
+  /** The backend is usable again: drop the error state and run what is owed. */
+  retryNow(): void {
+    this.scheduler.retryNow();
+  }
+
   applyLimits(limits: RoomLimits): void {
     const profiles = limits.profiles?.length ? limits.profiles : this.state.aiProfiles;
     const maxDenoise = limits.maxDenoise ?? this.state.maxDenoise;
@@ -316,6 +321,15 @@ export class RoomRuntime {
       before.denoise !== this.state.denoise ||
       before.resolution !== this.state.aiResolution ||
       before.profile !== this.state.aiProfile;
+    // Capabilities first: a client that clamps its own controls before the new
+    // settings arrive shows a consistent panel either way round.
+    this.broadcast({
+      t: 'ai_capabilities',
+      aiProfiles: [...this.state.aiProfiles],
+      maxDenoise: this.state.maxDenoise,
+      aiResolutionMax: this.state.aiResolutionMax,
+      negativePromptActive: this.state.negativeActive[this.state.aiProfile] !== false,
+    });
     this.broadcast({
       t: 'ai_settings_changed',
       denoise: this.state.denoise,
@@ -373,6 +387,7 @@ export class RoomRegistry {
   private readonly rooms = new Map<string, RoomRuntime>();
   private sweeper: ReturnType<typeof setInterval> | null = null;
   private capabilityTimer: ReturnType<typeof setInterval> | null = null;
+  private backendWatcher: Watcher | null = null;
   private refreshing: Promise<void> | null = null;
   private limits: RoomLimits;
 
@@ -409,6 +424,9 @@ export class RoomRegistry {
           maxResolution,
           negativePromptActive: caps.negativePromptActive,
         };
+        // A probe that answered at all means the backend is up. Rooms that gave
+        // up while it was down get another go, whether or not the limits moved.
+        this.retryAll();
         if (sameLimits(this.limits, next)) return;
         console.log(
           `[ai] backend limits changed: ${next.profiles?.join('/')} up to ${next.maxResolution} at denoise <= ${next.maxDenoise}`,
@@ -496,8 +514,27 @@ export class RoomRegistry {
   dispose(): void {
     if (this.sweeper) clearInterval(this.sweeper);
     this.sweeper = null;
+    // An embedded or test server is disposed while the process lives on, so a
+    // surviving probe timer would keep polling a backend nobody is using.
+    this.stopCapabilityWatch();
+    this.backendWatcher?.stop();
+    this.backendWatcher = null;
     for (const room of this.rooms.values()) room.dispose();
     this.rooms.clear();
+  }
+
+  /**
+   * The backend became usable again. Every room that is owed a generation runs
+   * it now, rather than waiting for someone to draw a second time.
+   */
+  retryAll(): void {
+    for (const room of this.rooms.values()) room.retryNow();
+  }
+
+  /** Stopped on dispose: a startup watcher must not outlive the registry. */
+  watchBackend(watcher: Watcher): void {
+    this.backendWatcher?.stop();
+    this.backendWatcher = watcher;
   }
 
   get size(): number {

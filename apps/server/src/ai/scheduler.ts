@@ -34,6 +34,20 @@ export interface RenderJob {
   render(crop: Rect, size: number): Promise<Buffer>;
 }
 
+/**
+ * A refusal, not a failure: the backend understood the request and said no, so
+ * repeating it unchanged cannot work. Everything else - a refused connection, a
+ * timeout, a 5xx, a worker still loading - is transient by definition and must
+ * stay retryable, or a room that was drawn in before the worker was up would
+ * owe its work forever.
+ */
+export function isPermanentError(message: string): boolean {
+  if (/timed out|timeout|abort|econnrefused|econnreset|enotfound|socket hang up|fetch failed|not answering|no answer|not warm|\b5\d\d\b/i.test(message)) {
+    return false;
+  }
+  return /out of range|too large|too small|max_size|not supported|unsupported|invalid|malformed|\b4\d\d\b/i.test(message);
+}
+
 const rectKey = (r: Rect): string => `${r.x},${r.y},${r.width},${r.height}`;
 
 export interface SchedulerHost {
@@ -232,14 +246,18 @@ export class AIScheduler {
       return;
     }
     const region = this.dirty[this.dirty.length - 1]!;
-    const crop = chooseCrop(region, this.opts.window, this.opts.canvasSize ?? CANVAS_SIZE);
+    // Captured before the crop so the whole request - crop, mask, render and
+    // size - uses one window (beginJob is synchronous and side-effect free).
+    // The window has to come from the job, not from the constructor: when a
+    // worker restarts smaller the room is clamped, and a scheduler still asking
+    // for the old size would 400 on every retry forever.
+    const job = this.host.beginJob();
+    const window = job.resolution ?? this.opts.window;
+    const crop = chooseCrop(region, window, this.opts.canvasSize ?? CANVAS_SIZE);
     // Centred on the region, not on the crop: a region against a canvas edge must
     // still fall inside the repainted area or it would never be consumed.
-    const apply = applyRectFor(crop, this.opts.apply, region);
-    // Captured before the mask so the mask uses the same settings the request
-    // will carry (beginJob is synchronous and side-effect free).
-    const job = this.host.beginJob();
-    const mask = this.host.buildMask([...this.dirty], crop, this.opts.window, apply);
+    const apply = applyRectFor(crop, Math.min(this.opts.apply, window), region);
+    const mask = this.host.buildMask([...this.dirty], crop, window, apply);
     if (mask.empty) {
       this.dirty = this.dirty.filter((r) => r !== region);
       this.setState('idle');
@@ -262,7 +280,7 @@ export class AIScheduler {
     }, this.opts.watchdogMs ?? 180_000);
 
     try {
-      const imagePng = await job.render(crop, this.opts.window);
+      const imagePng = await job.render(crop, window);
       const patch = await this.backend.generate(
         {
           prompt: job.prompt,
@@ -270,7 +288,7 @@ export class AIScheduler {
           negativePrompt: job.negativePrompt?.trim() ? job.negativePrompt : DEFAULT_NEGATIVE_PROMPT,
           imagePng,
           maskPng: mask.png,
-          size: this.opts.window,
+          size: window,
           denoise: job.denoise ?? this.opts.denoise,
           steps: this.stepsFor(job.profile),
           profile: job.profile ?? 'quality',
@@ -449,8 +467,26 @@ export class AIScheduler {
   private noteError(message: string): void {
     this.repeatedError = this.lastError === message ? this.repeatedError + 1 : 1;
     this.lastError = message;
-    if (this.repeatedError >= (this.opts.maxRepeatedErrors ?? 2)) this.stuckOn = message;
+    // Only a request the backend REFUSED is worth giving up on. A worker that
+    // is down answers with the same connection error every time, and treating
+    // that as permanent left work owed until someone drew again.
+    if (this.repeatedError >= (this.opts.maxRepeatedErrors ?? 2) && isPermanentError(message)) {
+      this.stuckOn = message;
+    }
     this.host.onError?.(message, this.repeatedError);
+  }
+
+  /**
+   * The backend became usable again (a worker finished loading, or came back).
+   * Forget the error state and run if anything is still owed.
+   */
+  retryNow(): void {
+    this.clearStuck();
+    // Both floors have to go: the failed run pushed the debounce out too, and
+    // the point of this call is that the wait is over.
+    this.backoffUntil = 0;
+    this.notBefore = 0;
+    if (this.full ? this.changed || this.pending : this.dirty.length > 0) this.schedule(0);
   }
 
   /** Any real change (an edit, a settings change, new limits) unsticks it. */

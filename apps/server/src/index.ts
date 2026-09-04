@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createBackend } from './ai/backends/index.js';
+import { createBackend, type Watcher } from './ai/backends/index.js';
 import { loadConfig, resolveBackendConfig, type Config } from './config.js';
 import { createBrushJamServer } from './server.js';
 
@@ -23,7 +23,20 @@ try {
   process.exit(1);
 }
 
-const backend = await createBackend(config);
+/**
+ * The registry does not exist yet when the backend is built, so the late-worker
+ * watcher talks to it through this: re-probe the limits and let every room that
+ * gave up while the worker was down run what it owes.
+ */
+let watcher: Watcher | null = null;
+let onStreamReady: (() => void) | null = null;
+
+const backend = await createBackend(config, console.log, {
+  onWatcher: (w) => {
+    watcher = w;
+  },
+  onStreamReady: () => onStreamReady?.(),
+});
 // The chosen backend gets the last word on the defaults (`auto` only resolves
 // here) and on what a room may ask for at all.
 const capabilities = await backend.capabilities();
@@ -33,12 +46,14 @@ try {
   console.error(`[brushjam] ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
-const { server, close } = createBrushJamServer(config, backend, {
+const { server, registry, close } = createBrushJamServer(config, backend, {
   profiles: capabilities.profiles,
   maxDenoise: capabilities.maxDenoise,
   maxResolution: config.maxResolution,
   negativePromptActive: capabilities.negativePromptActive,
 });
+if (watcher) registry.watchBackend(watcher);
+onStreamReady = () => void registry.refreshCapabilities();
 
 /**
  * A watch restart can begin before the previous process has actually released

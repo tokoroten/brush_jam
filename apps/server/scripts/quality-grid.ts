@@ -19,7 +19,7 @@ import path from 'node:path';
 import { createCanvas, loadImage, type Canvas } from '@napi-rs/canvas';
 import { DEFAULT_NEGATIVE_PROMPT, renderStrokes, type AIProfileName, type RenderableStroke } from '@brushjam/shared';
 import { createBackend, fastProfile, streamHealth, FAST_CFG } from '../src/ai/backends/index.js';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, stepsForProfile } from '../src/config.js';
 import { buildFullMask } from '../src/raster.js';
 
 const DRAW_SIZE = 1024;
@@ -216,7 +216,7 @@ const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')
 const outDir = path.join(opts.out, date);
 mkdirSync(outDir, { recursive: true });
 
-const gridSteps = opts.profile === 'fast' ? config.aiFastSteps : config.aiSteps;
+const gridSteps = stepsForProfile(config, opts.profile);
 // The same profile selection the workflow builder uses, so the recorded cfg and
 // sampler are the ones that really ran (DMD2 is cfg 1.0, not 1.5).
 const gridProfile = opts.profile === 'fast' ? fastProfile(config.comfyFastLora) : null;
@@ -259,7 +259,9 @@ for (const key of opts.drawings) {
           maskPng: mask.png,
           size: opts.res,
           denoise,
-          steps: config.aiSteps,
+          // The number the report records, not the server default: sending 14
+          // while captioning the grid "4 steps" makes the run unreproducible.
+          steps: gridSteps,
           seed: SEED,
           profile: opts.profile,
           tag: `grid-${key}-${denoise}`,

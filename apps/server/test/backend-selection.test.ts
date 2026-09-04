@@ -417,3 +417,52 @@ describe('waiting for a stream worker that is not up yet', () => {
     expect(probes).toBe(0);
   });
 });
+
+/**
+ * An explicit backend is a deployment decision, and quietly serving mock
+ * instead produces a room that looks like it works and generates nothing real.
+ * Nothing about the worker's state may change which backend is returned.
+ */
+describe('an explicit AI_BACKEND is never overridden', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  for (const stream of ['ok', 'loading', 'error', 'hang'] as const) {
+    it(`selects stream when the worker probe is "${stream}"`, async () => {
+      stub({ stream, comfy: 'ok' });
+      const backend = await createBackend(config({ AI_BACKEND: 'stream' }), () => {});
+      expect(backend.name).toBe('stream');
+    });
+  }
+
+  it('selects stream even when ComfyUI is up and the worker is down', async () => {
+    stub({ stream: 'error', comfy: 'ok' });
+    const logs: string[] = [];
+    const backend = await createBackend(config({ AI_BACKEND: 'stream' }), (m) => logs.push(m));
+    expect(backend.name).toBe('stream');
+    expect(logs.join(NL)).not.toMatch(/backend: mock|backend: comfyui/);
+  });
+
+  it('selects stream with an empty COMFYUI_FAST_LORA, keeping the fast profile', async () => {
+    // Review 8 finding B6: the ComfyUI LoRA has nothing to say about a worker
+    // that has its own fused in, and demoting to quality asks stream for a
+    // profile it does not have.
+    stub({ stream: 'ok' });
+    const cfg = config({ AI_BACKEND: 'stream', COMFYUI_FAST_LORA: '', AI_PROFILE: 'fast' });
+    expect(cfg.aiProfile).toBe('fast');
+    expect(cfg.fastDisabled).toBe(false);
+    expect((await createBackend(cfg, () => {})).name).toBe('stream');
+  });
+
+  it('still demotes to quality for ComfyUI itself, which needs the LoRA', () => {
+    const cfg = config({ AI_BACKEND: 'comfyui', COMFYUI_FAST_LORA: '', AI_PROFILE: 'fast' });
+    expect(cfg.aiProfile).toBe('quality');
+    expect(cfg.fastDisabled).toBe(true);
+  });
+
+  it('names the setting when it falls back to mock, so "why mock?" is answerable', async () => {
+    stub({ stream: 'error', comfy: 'error' });
+    const logs: string[] = [];
+    expect((await createBackend(config(), (m) => logs.push(m))).name).toBe('mock');
+    expect(logs.join(NL)).toContain('AI_BACKEND=auto');
+  });
+});

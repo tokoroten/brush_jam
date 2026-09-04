@@ -1,4 +1,5 @@
 import { createCanvas } from '@napi-rs/canvas';
+import type { ServerMessage } from '@brushjam/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MockBackend } from '../src/ai/backends/index.js';
 import type { BackendCapabilities } from '../src/ai/backends/types.js';
@@ -29,6 +30,18 @@ afterEach(() => {
 });
 
 /** Finding B4: header validation is a preflight; the file must really decode. */
+/** Enough of a ws socket for the runtime: it only sends and checks state. */
+class FakeSocket {
+  readonly sent: string[] = [];
+  readyState = 1;
+  send(data: string): void {
+    this.sent.push(data);
+  }
+  close(): void {
+    this.readyState = 3;
+  }
+}
+
 describe('upload decoding', () => {
   it('accepts a real image', async () => {
     const room = new RoomRuntime('decode1', backend, config);
@@ -245,17 +258,6 @@ describe('dirty region clipping', () => {
  */
 describe('backend limits changing under a live room', () => {
   /** Enough of a socket for join(): the room only ever sends to it. */
-  class FakeSocket {
-    readonly sent: string[] = [];
-    readyState = 1;
-    send(data: string): void {
-      this.sent.push(data);
-    }
-    close(): void {
-      this.readyState = 3;
-    }
-  }
-
   function room(): RoomRuntime {
     const config = loadConfig({ AI_BACKEND: 'mock', CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
     return new RoomRuntime('limits', new MockBackend(1), config, {
@@ -415,5 +417,95 @@ describe('negative prompt activity through the registry', () => {
     backend.active = { fast: true, quality: true };
     await registry.refreshCapabilities();
     expect(room.state.negativeActive.fast).toBe(true);
+  });
+});
+
+/**
+ * Review 8 findings B1 and B8: a client whose controls still offer a profile
+ * the backend lost sends requests the server refuses, and a disposed registry
+ * must not keep probing.
+ */
+describe('capabilities reach open clients', () => {
+  function room(): RoomRuntime {
+    const config = loadConfig({ AI_BACKEND: 'mock', CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+    return new RoomRuntime('caps', new MockBackend(1), config, {
+      profiles: ['fast', 'quality'],
+      maxDenoise: 0.95,
+      maxResolution: 1024,
+    });
+  }
+
+  const sent = (rt: RoomRuntime, socket: FakeSocket): ServerMessage[] =>
+    socket.sent.map((raw) => JSON.parse(raw) as ServerMessage);
+
+  it('broadcasts the new capabilities, not just the clamped settings', () => {
+    const rt = room();
+    const socket = new FakeSocket();
+    rt.join(socket as never, 'Alice', 'tok-a');
+    socket.sent.length = 0;
+
+    rt.applyLimits({ profiles: ['fast'], maxDenoise: 0.8, maxResolution: 768 });
+
+    const caps = sent(rt, socket).find((m) => m.t === 'ai_capabilities');
+    expect(caps).toMatchObject({
+      aiProfiles: ['fast'],
+      maxDenoise: 0.8,
+      aiResolutionMax: 768,
+    });
+  });
+
+  it('sends the capabilities before the settings, so the panel is never inconsistent', () => {
+    const rt = room();
+    const socket = new FakeSocket();
+    rt.join(socket as never, 'Alice', 'tok-a');
+    socket.sent.length = 0;
+
+    rt.applyLimits({ profiles: ['fast'], maxDenoise: 0.8, maxResolution: 768 });
+
+    const kinds = sent(rt, socket).map((m) => m.t);
+    expect(kinds.indexOf('ai_capabilities')).toBeLessThan(kinds.indexOf('ai_settings_changed'));
+  });
+
+  it('announces a ceiling that went back up as well as one that came down', () => {
+    const rt = room();
+    const socket = new FakeSocket();
+    rt.join(socket as never, 'Alice', 'tok-a');
+    rt.applyLimits({ profiles: ['fast'], maxDenoise: 0.8, maxResolution: 512 });
+    socket.sent.length = 0;
+
+    rt.applyLimits({ profiles: ['fast', 'quality'], maxDenoise: 0.95, maxResolution: 1024 });
+
+    const caps = sent(rt, socket).find((m) => m.t === 'ai_capabilities');
+    expect(caps).toMatchObject({ aiProfiles: ['fast', 'quality'], aiResolutionMax: 1024 });
+  });
+
+  it('stops the capability timer and the backend watcher when disposed', () => {
+    const cfg = loadConfig({ AI_BACKEND: 'mock' } as NodeJS.ProcessEnv);
+    const registry = new RoomRegistry(new MockBackend(1), cfg);
+    let stopped = false;
+    registry.watchBackend({ stop: () => (stopped = true) });
+    registry.startCapabilityWatch(5);
+
+    registry.dispose();
+
+    expect(stopped).toBe(true);
+    // starting it again must be possible, which is only true if it was cleared
+    registry.startCapabilityWatch(5);
+    registry.dispose();
+  });
+
+  it('runs owed work in every room once the backend answers again', async () => {
+    const cfg = loadConfig({ AI_BACKEND: 'mock', CANVAS_SIZE: '1024' } as NodeJS.ProcessEnv);
+    const registry = new RoomRegistry(new MockBackend(1), cfg);
+    const a = registry.ensure('retrya')!;
+    const b = registry.ensure('retryb')!;
+    let retried = 0;
+    a.retryNow = (): void => void (retried += 1);
+    b.retryNow = (): void => void (retried += 1);
+
+    await registry.refreshCapabilities();
+
+    expect(retried).toBe(2);
+    registry.dispose();
   });
 });

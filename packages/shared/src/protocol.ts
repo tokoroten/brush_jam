@@ -151,6 +151,18 @@ export type ServerMessage =
       aiProfile: AIProfileName;
       negativePromptActive: boolean;
     }
+  /**
+   * What the backend can do, when that changes under a live room - a worker
+   * restarting smaller, or appearing at all. Without it an open client keeps
+   * offering controls the server will now refuse.
+   */
+  | {
+      t: 'ai_capabilities';
+      aiProfiles: AIProfileName[];
+      maxDenoise: number;
+      aiResolutionMax: number;
+      negativePromptActive: boolean;
+    }
   | { t: 'ai_status'; state: AIState; forRevision: number; message?: string; latencyMs?: number }
   | {
       t: 'ai_result';

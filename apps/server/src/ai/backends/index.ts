@@ -33,7 +33,7 @@ export interface Watcher {
  */
 export function watchForStreamWorker(
   url: string,
-  opts: { log?: (m: string) => void; intervalMs?: number } = {},
+  opts: { log?: (m: string) => void; intervalMs?: number; onReady?: () => void } = {},
 ): Watcher {
   const log = opts.log ?? console.log;
   const timer = setInterval(() => {
@@ -45,6 +45,8 @@ export function watchForStreamWorker(
           ? `[ai] stream worker is up at ${url}; generations will use it from now on`
           : `[ai] stream worker is up at ${url} but still loading its model; the first request will wait`,
       );
+      // Anyone who drew while it was down is owed a generation.
+      opts.onReady?.();
     });
   }, opts.intervalMs ?? STREAM_RETRY_MS);
   // A background probe must never be the reason the process stays alive.
@@ -53,7 +55,19 @@ export function watchForStreamWorker(
   return { stop };
 }
 
-export async function createBackend(config: Config, log: (m: string) => void = console.log): Promise<AIBackend> {
+/** Lets the caller own the late-worker watcher and react when it fires. */
+export interface BackendHooks {
+  /** Receives the watcher so it can be stopped with the server. */
+  onWatcher?: (watcher: Watcher) => void;
+  /** The worker that was missing at startup is now answering. */
+  onStreamReady?: () => void;
+}
+
+export async function createBackend(
+  config: Config,
+  log: (m: string) => void = console.log,
+  hooks: BackendHooks = {},
+): Promise<AIBackend> {
   const comfy = (): AIBackend =>
     new ComfyUIBackend({
       url: config.comfyUrl,
@@ -91,7 +105,11 @@ export async function createBackend(config: Config, log: (m: string) => void = c
       log(`[ai] start it with: cd apps/stream-worker && uv run stream-worker   (~40 s to warm up)`);
       // Nothing else to do here: the room will work the moment it appears, so
       // keep looking rather than making someone restart the server.
-      watchForStreamWorker(config.streamUrl, { log });
+      const watcher = watchForStreamWorker(config.streamUrl, {
+        log,
+        onReady: hooks.onStreamReady,
+      });
+      hooks.onWatcher?.(watcher);
     } else if (!health.warm) log('[ai] warning: stream worker is reachable but not warm; the first request will load the model');
     else if (health.maxSize > 0 && health.maxSize < config.aiWindow) {
       log(`[ai] warning: stream worker max_size ${health.maxSize} is below AI_WINDOW ${config.aiWindow}; requests will be refused`);
@@ -129,6 +147,8 @@ export async function createBackend(config: Config, log: (m: string) => void = c
     log(`[ai] backend: comfyui at ${config.comfyUrl} (auto-detected: ${why})`);
     return comfy();
   }
-  log(`[ai] backend: mock - ComfyUI (${config.comfyUrl}) did not answer`);
+  // Name the setting that led here: "why is it mock?" is almost always an
+  // AI_BACKEND that never reached this process, and the log should say so.
+  log(`[ai] backend: mock - ComfyUI (${config.comfyUrl}) did not answer (AI_BACKEND=${config.aiBackend})`);
   return new MockBackend();
 }

@@ -456,6 +456,12 @@ export class RoomClient {
         this.layers = msg.layers;
         this.humanRevision = msg.humanRevision;
         break;
+      case 'ai_capabilities':
+        this.aiProfiles = msg.aiProfiles;
+        this.maxDenoise = msg.maxDenoise;
+        this.aiResolutionMax = msg.aiResolutionMax;
+        this.negativePromptActive = msg.negativePromptActive;
+        break;
       case 'ai_settings_changed':
         this.denoise = msg.denoise;
         this.negativePrompt = msg.negativePrompt;

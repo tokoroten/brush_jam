@@ -171,6 +171,15 @@ export function resolveBackendConfig(
   return next;
 }
 
+/**
+ * How many sampler steps a profile runs. The scheduler has the same rule; a
+ * script that reports one number and sends another produces an experiment
+ * whose caption is a lie, which is how this was wrong twice.
+ */
+export function stepsForProfile(config: Pick<Config, 'aiSteps' | 'aiFastSteps'>, profile: AIProfileName): number {
+  return profile === 'fast' ? config.aiFastSteps : config.aiSteps;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const errors: string[] = [];
   const backendRaw = (env.AI_BACKEND ?? 'auto').toLowerCase();
@@ -195,7 +204,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const requested: AIProfileName = profileRaw === 'quality' ? 'quality' : 'fast';
   const fastRequested = requested === 'fast';
-  const fast = fastRequested && fastLora !== '';
+  // COMFYUI_FAST_LORA is a fact about the ComfyUI graph, so it can only demote
+  // a backend that builds one. The stream worker has its LoRA fused in and is
+  // fast-only; letting an empty COMFYUI_FAST_LORA turn AI_PROFILE=fast into
+  // quality there produced a room asking for a profile the worker refuses.
+  // `auto` may still resolve to ComfyUI, so it keeps the old behaviour;
+  // resolveBackendConfig() corrects it once the backend is actually known.
+  const loraDecides = backendRaw === 'comfyui' || backendRaw === 'runpod' || backendRaw === 'auto';
+  const fast = fastRequested && (!loraDecides || fastLora !== '');
   const profile: AIProfileName = fast ? 'fast' : 'quality';
 
   const explicit: ExplicitEnv = {

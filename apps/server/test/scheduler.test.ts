@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_NEGATIVE_PROMPT, type Rect, type ServerMessage } from '@brushjam/shared';
-import { AIScheduler, type MaskHandle, type SchedulerHost } from '../src/ai/scheduler.js';
+import { AIScheduler, isPermanentError, type MaskHandle, type SchedulerHost } from '../src/ai/scheduler.js';
 import { AbortedError, type AIBackend, type GenerateRequest, type BackendCapabilities } from '../src/ai/backends/index.js';
 
 class FakeBackend implements AIBackend {
@@ -856,6 +856,153 @@ describe('ai_result metadata', () => {
     await backend.finish();
     const result = emitted.find((m) => m.t === 'ai_result');
     expect(result).toMatchObject({ profile: 'fast', aiGeneration: 1 });
+    s.stop();
+  });
+});
+
+/**
+ * Review 8 finding B3: a worker that is not up yet answers with the same
+ * connection error every time. Calling that permanent left the work owed until
+ * someone drew again - exactly what happens when you open the app during the
+ * worker's 40-second model load.
+ */
+describe('transient versus permanent errors', () => {
+  it('classifies refusals as permanent', () => {
+    expect(isPermanentError('stream worker /generate failed: 400 size 1024 out of range [256, 768]')).toBe(true);
+    expect(isPermanentError('this profile is not supported')).toBe(true);
+    expect(isPermanentError('worker returned 512x512, expected 1024x1024')).toBe(false);
+    expect(isPermanentError('malformed base64 in worker response')).toBe(true);
+  });
+
+  it('classifies being unable to reach the backend as transient', () => {
+    expect(isPermanentError('fetch failed')).toBe(false);
+    expect(isPermanentError('connect ECONNREFUSED 127.0.0.1:8790')).toBe(false);
+    expect(isPermanentError('generation timed out after 180000 ms')).toBe(false);
+    expect(isPermanentError('stream worker /generate failed: 503 model still loading')).toBe(false);
+    expect(isPermanentError('stream worker is not answering')).toBe(false);
+  });
+
+  describe('in the scheduler', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    class Unreachable implements AIBackend {
+      readonly name = 'down';
+      calls = 0;
+      up = false;
+      async capabilities(): Promise<BackendCapabilities> {
+        return { profiles: ['fast', 'quality'], maxResolution: 768, maxDenoise: 0.9, negativePromptActive: { fast: true, quality: true } };
+      }
+      async generate(): Promise<Buffer> {
+        this.calls += 1;
+        if (!this.up) throw new Error('connect ECONNREFUSED 127.0.0.1:8790');
+        return Buffer.from('patch');
+      }
+    }
+
+    it('keeps retrying a worker that is down instead of giving up after two', async () => {
+      const { host } = makeHost();
+      const backend = new Unreachable();
+      const s = new AIScheduler(host, backend, { ...opts, errorBackoffMs: 100 });
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(backend.calls).toBeGreaterThan(2);
+      s.stop();
+    });
+
+    it('runs the owed work as soon as the backend comes back', async () => {
+      const { host } = makeHost();
+      const backend = new Unreachable();
+      const s = new AIScheduler(host, backend, { ...opts, errorBackoffMs: 10_000 });
+      s.markDirty([R(2000, 2000)]);
+      await vi.advanceTimersByTimeAsync(1000);
+      const during = backend.calls;
+      expect(during).toBeGreaterThan(0);
+
+      backend.up = true;
+      s.retryNow();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(backend.calls).toBeGreaterThan(during);
+      s.stop();
+    });
+
+    it('retryNow does nothing in a room with no owed work', async () => {
+      const { host } = makeHost();
+      const backend = new Unreachable();
+      const s = new AIScheduler(host, backend, { ...opts, errorBackoffMs: 100 });
+      s.retryNow();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(backend.calls).toBe(0);
+      s.stop();
+    });
+  });
+});
+
+/**
+ * Review 8 finding B2: patch mode used the constructor-time window, so a room
+ * clamped after a worker restarted smaller went on asking for the old size and
+ * 400ed forever. The window must come from the captured job, like everything
+ * else about the request.
+ */
+describe('patch mode follows the room resolution', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('sends the size the room was clamped to, not the one it started with', async () => {
+    const { host, settings, renderSizes, masks } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    settings.resolution = 512;
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    await backend.finish();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(backend.calls[0]!.size).toBe(512);
+    // the crop, the render and the mask all agree with it, or the patch would
+    // land in the wrong place
+    expect(renderSizes[0]!.size).toBe(512);
+    expect(renderSizes[0]!.rect.width).toBe(512);
+    expect(masks[0]!.crop.width).toBe(512);
+    s.stop();
+  });
+
+  it('keeps the apply rect inside the smaller window', async () => {
+    const { host, settings, masks } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    settings.resolution = 512;
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    // apply is configured at 768, which cannot fit inside a 512 crop
+    expect(masks[0]!.apply.width).toBeLessThanOrEqual(512);
+    s.stop();
+  });
+
+  it('falls back to the configured window when the room says nothing', async () => {
+    const { host, renderSizes } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(renderSizes[0]!.size).toBe(1024);
+    s.stop();
+  });
+
+  it('picks up a new size on the next run without being restarted', async () => {
+    const { host, settings, renderSizes } = makeHost();
+    const backend = new FakeBackend();
+    const s = new AIScheduler(host, backend, opts);
+    s.markDirty([R(2000, 2000)]);
+    await vi.advanceTimersByTimeAsync(500);
+    await backend.finish();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(renderSizes[0]!.size).toBe(1024);
+
+    settings.resolution = 768;
+    s.markDirty([R(2400, 2400)]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(renderSizes[1]!.size).toBe(768);
     s.stop();
   });
 });
