@@ -1,6 +1,6 @@
 import { useEffect, useRef, type JSX } from 'react';
 import { renderStrokes, worldToScreen, type Camera } from '@brushjam/shared';
-import { scratchCanvas } from './raster.js';
+import { drawHumanFrame } from './raster.js';
 import type { RoomClient } from './roomClient.js';
 
 export interface StageViewProps {
@@ -54,35 +54,8 @@ export function StageView(props: StageViewProps): JSX.Element {
       ctx.scale(cam.zoom, cam.zoom);
       ctx.imageSmoothingEnabled = cam.zoom < 1;
 
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, client.canvasSize, client.canvasSize);
-
       if (kind === 'human') {
-        for (const layer of client.orderedLayers) {
-          if (!layer.visible) continue;
-          const raster = client.layerCanvases.get(layer.id);
-          if (!raster) continue;
-          ctx.globalAlpha = layer.opacity;
-          ctx.drawImage(raster, 0, 0);
-        }
-        ctx.globalAlpha = 1;
-        for (const [id, live] of client.live) {
-          const owner = client.findLayer(live.init.layerId);
-          const dx = owner?.offsetX ?? 0;
-          const dy = owner?.offsetY ?? 0;
-          if (live.init.tool === 'noise') {
-            // Incremental raster: noise is visible while the pointer is down
-            // without re-hashing the whole stroke every frame.
-            const raster = client.previewRaster(id);
-            if (raster) ctx.drawImage(raster, dx, dy);
-            continue;
-          }
-          renderStrokes(ctx as unknown as never, [{ ...live.init, points: live.points }], {
-            offsetX: -dx,
-            offsetY: -dy,
-            createCanvas: (w, h) => scratchCanvas(w, h) as never,
-          });
-        }
+        drawHumanFrame(ctx, client);
       } else {
         ctx.drawImage(client.aiCanvas, 0, 0);
       }

@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import type { ServerMessage } from '@brushjam/shared';
 import { MockBackend } from '../src/ai/backends/index.js';
 import { loadConfig } from '../src/config.js';
-import { createBrushJamServer, type BrushJamServer } from '../src/server.js';
+import { createBrushJamServer, type BrushJamServer, sweepHeartbeats, HEARTBEAT_MS, HEARTBEAT_MISSES } from '../src/server.js';
 
 let app: BrushJamServer;
 let port = 0;
@@ -313,5 +313,79 @@ describe('draw layer offsets over the wire', () => {
     alice.close();
     bob.close();
     late.close();
+  });
+});
+
+/**
+ * Review 10 finding 7: a laptop that closes its lid or leaves Wi-Fi never
+ * sends a close frame, so without a heartbeat its avatar stays in the member
+ * list and its cursor sits where it stopped for the rest of the session.
+ */
+describe('websocket heartbeat', () => {
+  class HeartSocket {
+    pings = 0;
+    terminated = false;
+    constructor(readonly answers = true) {}
+    ping(): void {
+      this.pings += 1;
+    }
+    terminate(): void {
+      this.terminated = true;
+    }
+  }
+
+  /** A round, plus the pong a live browser sends back automatically. */
+  function round(sockets: HeartSocket[], alive: Map<HeartSocket, number>): void {
+    sweepHeartbeats(sockets, alive);
+    for (const s of sockets) if (s.answers && !s.terminated) alive.set(s, 0);
+  }
+
+  it('keeps pinging a socket that answers, forever', () => {
+    const live = new HeartSocket(true);
+    const alive = new Map<HeartSocket, number>();
+    for (let i = 0; i < 10; i++) round([live], alive);
+    expect(live.pings).toBe(10);
+    expect(live.terminated).toBe(false);
+  });
+
+  it('terminates a socket after two missed pongs', () => {
+    const dead = new HeartSocket(false);
+    const alive = new Map<HeartSocket, number>();
+    round([dead], alive);
+    expect(dead.terminated).toBe(false);
+    round([dead], alive);
+    expect(dead.terminated).toBe(false);
+    // two pings outstanding: it has had its chances
+    round([dead], alive);
+    expect(dead.terminated).toBe(true);
+    expect(dead.pings).toBe(2);
+  });
+
+  it('does not terminate a live socket sharing the room with a dead one', () => {
+    const live = new HeartSocket(true);
+    const dead = new HeartSocket(false);
+    const alive = new Map<HeartSocket, number>();
+    for (let i = 0; i < 4; i++) round([live, dead], alive);
+    expect(dead.terminated).toBe(true);
+    expect(live.terminated).toBe(false);
+  });
+
+  it('terminates a socket whose ping throws', () => {
+    const broken = {
+      ping(): void {
+        throw new Error('socket is not open');
+      },
+      terminated: false,
+      terminate(): void {
+        this.terminated = true;
+      },
+    };
+    sweepHeartbeats([broken], new Map());
+    expect(broken.terminated).toBe(true);
+  });
+
+  it('pings every 30 s and gives up after 2 misses', () => {
+    expect(HEARTBEAT_MS).toBe(30_000);
+    expect(HEARTBEAT_MISSES).toBe(2);
   });
 });

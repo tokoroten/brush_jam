@@ -14,6 +14,43 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 /** One frame is never legitimately larger than this (points are batched, not streamed). */
 const MAX_WS_PAYLOAD = 1024 * 1024;
 
+/** How often each socket is pinged, and how many silences end it. */
+export const HEARTBEAT_MS = 30_000;
+export const HEARTBEAT_MISSES = 2;
+
+/** Just enough of a ws socket to be pinged and given up on. */
+export interface HeartbeatSocket {
+  ping(): void;
+  terminate(): void;
+}
+
+/**
+ * One heartbeat round. A socket that has not answered HEARTBEAT_MISSES pings
+ * in a row is gone - a closed laptop lid sends no close frame, and without
+ * this its avatar stays in the member list for the rest of the session.
+ */
+export function sweepHeartbeats<T extends HeartbeatSocket>(
+  clients: Iterable<T>,
+  alive: { get(s: T): number | undefined; set(s: T, n: number): void },
+  misses = HEARTBEAT_MISSES,
+): void {
+  for (const client of clients) {
+    const missed = alive.get(client) ?? 0;
+    if (missed >= misses) {
+      // Terminate, not close: a socket this quiet will not answer a closing
+      // handshake either. The close event still fires, so cleanup runs.
+      client.terminate();
+      continue;
+    }
+    alive.set(client, missed + 1);
+    try {
+      client.ping();
+    } catch {
+      client.terminate();
+    }
+  }
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -151,6 +188,14 @@ export function createBrushJamServer(config: Config, backend: AIBackend, limits:
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
 
+  // A laptop that closes its lid or leaves Wi-Fi never sends a close frame, so
+  // without this its avatar sits in the member list for the rest of the
+  // session and its cursor stops where it stopped. Browsers answer ping
+  // automatically, so nothing is needed on the client.
+  const alive = new WeakMap<HeartbeatSocket, number>();
+  const heartbeat = setInterval(() => sweepHeartbeats(wss.clients, alive), HEARTBEAT_MS);
+  heartbeat.unref?.();
+
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const match = /^\/ws\/rooms\/([a-z0-9]{4,16})$/.exec(url.pathname);
@@ -168,7 +213,13 @@ export function createBrushJamServer(config: Config, backend: AIBackend, limits:
       const rawToken = url.searchParams.get('token') ?? '';
       const token = SESSION_TOKEN.test(rawToken) ? rawToken : undefined;
       const userId = room.join(ws, url.searchParams.get('name') ?? '', token);
-      ws.on('message', (data) => room.handle(userId, data.toString()));
+      alive.set(ws, 0);
+      ws.on('pong', () => alive.set(ws, 0));
+      // Any traffic at all proves the socket is alive, not just a pong.
+      ws.on('message', (data) => {
+        alive.set(ws, 0);
+        room.handle(userId, data.toString());
+      });
       ws.on('close', () => room.leave(userId, ws));
       ws.on('error', () => room.leave(userId, ws));
     });
@@ -179,6 +230,7 @@ export function createBrushJamServer(config: Config, backend: AIBackend, limits:
     registry,
     close: () =>
       new Promise<void>((resolve) => {
+        clearInterval(heartbeat);
         registry.dispose();
         wss.close();
         for (const client of wss.clients) client.terminate();

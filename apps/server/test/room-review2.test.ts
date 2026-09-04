@@ -703,3 +703,81 @@ describe('negative prompt activity', () => {
     expect(state.negativePrompt).toBe('blurry');
   });
 });
+
+/**
+ * Review 10 finding 2: a stroke in progress was aimed at where the layer was.
+ * Committing it after someone moved the layer would put its early points in
+ * one coordinate system and its later ones in another.
+ */
+describe('moving a draw layer while someone is drawing on it', () => {
+  function room(): { state: ReturnType<typeof createRoom>; alice: string; bob: string; layerId: string } {
+    const state = createRoom('moveroom');
+    const alice = addMember(state, 'Alice').userId;
+    const bob = addMember(state, 'Bob').userId;
+    return { state, alice, bob, layerId: state.layers[0]!.id };
+  }
+
+  const startStroke = (state: ReturnType<typeof createRoom>, userId: string, layerId: string, id: string): void => {
+    applyClientMessage(state, userId, {
+      t: 'stroke_start',
+      stroke: { id, layerId, tool: 'pen', color: '#fff', width: 4, points: [{ x: 10, y: 10 }] },
+    });
+  };
+
+  it('cancels a pending stroke on the layer that moved', () => {
+    const { state, alice, bob, layerId } = room();
+    startStroke(state, alice, layerId, 'sA');
+    const out = applyClientMessage(state, bob, { t: 'layer_update', id: layerId, patch: { offsetX: 120 } });
+    const cancels = out.broadcast.filter((m) => m.t === 'stroke_cancel');
+    expect(cancels).toHaveLength(1);
+    expect(JSON.stringify(cancels[0])).toMatch(/layer moved/);
+    expect(state.pending.size).toBe(0);
+  });
+
+  it('cancels every drawer on that layer, not just one', () => {
+    const { state, alice, bob, layerId } = room();
+    startStroke(state, alice, layerId, 'sA');
+    startStroke(state, bob, layerId, 'sB');
+    const out = applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetY: -40 } });
+    expect(out.broadcast.filter((m) => m.t === 'stroke_cancel')).toHaveLength(2);
+  });
+
+  it('leaves strokes on other layers alone', () => {
+    const { state, alice, bob } = room();
+    const created = applyClientMessage(state, alice, { t: 'layer_create', layer: { kind: 'draw' } });
+    const other = state.layers.find((l) => l.id !== state.layers[0]!.id)!;
+    expect(created.broadcast.length).toBeGreaterThan(0);
+    startStroke(state, alice, state.layers[0]!.id, 'sA');
+    const out = applyClientMessage(state, bob, { t: 'layer_update', id: other.id, patch: { offsetX: 60 } });
+    expect(out.broadcast.filter((m) => m.t === 'stroke_cancel')).toHaveLength(0);
+    expect(state.pending.size).toBe(1);
+  });
+
+  it('does not cancel anything when the offset did not actually change', () => {
+    const { state, alice, bob, layerId } = room();
+    applyClientMessage(state, bob, { t: 'layer_update', id: layerId, patch: { offsetX: 100 } });
+    startStroke(state, alice, layerId, 'sA');
+    const out = applyClientMessage(state, bob, { t: 'layer_update', id: layerId, patch: { offsetX: 100 } });
+    expect(out.broadcast.filter((m) => m.t === 'stroke_cancel')).toHaveLength(0);
+    expect(state.pending.size).toBe(1);
+  });
+
+  it('does not cancel for a rename or an opacity change', () => {
+    const { state, alice, bob, layerId } = room();
+    startStroke(state, alice, layerId, 'sA');
+    const renamed = applyClientMessage(state, bob, { t: 'layer_update', id: layerId, patch: { name: 'Sky' } });
+    const faded = applyClientMessage(state, bob, { t: 'layer_update', id: layerId, patch: { opacity: 0.5 } });
+    expect(renamed.broadcast.filter((m) => m.t === 'stroke_cancel')).toHaveLength(0);
+    expect(faded.broadcast.filter((m) => m.t === 'stroke_cancel')).toHaveLength(0);
+    expect(state.pending.size).toBe(1);
+  });
+
+  it('a cancelled stroke cannot then be committed', () => {
+    const { state, alice, bob, layerId } = room();
+    startStroke(state, alice, layerId, 'sA');
+    applyClientMessage(state, bob, { t: 'layer_update', id: layerId, patch: { offsetX: 120 } });
+    const out = applyClientMessage(state, alice, { t: 'stroke_end', strokeId: 'sA', points: [{ x: 10, y: 10 }] });
+    expect(out.broadcast.filter((m) => m.t === 'stroke_committed')).toHaveLength(0);
+    expect(state.strokes).toHaveLength(0);
+  });
+});

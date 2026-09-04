@@ -1,4 +1,4 @@
-import { CANVAS_SIZE, renderStrokes, type Layer, type RenderableStroke, type Stroke } from '@brushjam/shared';
+import { CANVAS_SIZE, renderStrokes, type Layer, type Point, type RenderableStroke, type Stroke } from '@brushjam/shared';
 
 /** Temp canvases for the noise pen; kept here so both renderers share it. */
 let scratchFactory = (width: number, height: number): HTMLCanvasElement => {
@@ -80,6 +80,87 @@ export function drawStrokeSegment(canvas: HTMLCanvasElement, stroke: RenderableS
     bounds: { width: canvas.width, height: canvas.height },
     createCanvas: (w, h) => scratchCanvas(w, h) as never,
   });
+}
+
+/**
+ * One canvas reused for compositing a layer plus its in-progress strokes. A
+ * fresh 4096-square canvas per layer per frame is not affordable, and this is
+ * only ever used synchronously inside one drawHumanFrame() call.
+ */
+let frameScratch: HTMLCanvasElement | null = null;
+function layerScratch(size: number): HTMLCanvasElement {
+  if (!frameScratch || frameScratch.width !== size || frameScratch.height !== size) {
+    frameScratch = scratchCanvas(size, size);
+  }
+  const ctx = ctxOf(frameScratch);
+  ctx.clearRect(0, 0, size, size);
+  return frameScratch;
+}
+
+/** What drawHumanFrame needs from the room; a subset of RoomClient. */
+export interface HumanFrameModel {
+  canvasSize: number;
+  orderedLayers: readonly Layer[];
+  layerCanvases: ReadonlyMap<string, HTMLCanvasElement>;
+  live: ReadonlyMap<string, { init: RenderableStroke & { layerId: string }; points: Point[] }>;
+  previewRaster(id: string): HTMLCanvasElement | null;
+}
+
+/**
+ * The human canvas: every visible layer in order, with each drawer's
+ * in-progress stroke composited INTO its own layer rather than on top of the
+ * stack. Drawing live strokes last was wrong in two visible ways: a live
+ * eraser punched through every layer to the page background instead of erasing
+ * its own layer, and a stroke on a lower layer appeared above the layers that
+ * should cover it. Both resolve the moment the stroke is committed, which made
+ * the canvas appear to jump.
+ */
+export function drawHumanFrame(ctx: CanvasRenderingContext2D, model: HumanFrameModel): void {
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, model.canvasSize, model.canvasSize);
+
+  type LiveEntry = [string, { init: RenderableStroke & { layerId: string }; points: Point[] }];
+  const liveByLayer = new Map<string, LiveEntry[]>();
+  for (const entry of model.live) {
+    const layerId = entry[1].init.layerId;
+    const list = liveByLayer.get(layerId);
+    if (list) list.push(entry);
+    else liveByLayer.set(layerId, [entry]);
+  }
+
+  for (const layer of model.orderedLayers) {
+    if (!layer.visible) continue;
+    const raster = model.layerCanvases.get(layer.id);
+    const lives = liveByLayer.get(layer.id) ?? [];
+    if (lives.length === 0) {
+      if (!raster) continue;
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(raster, 0, 0);
+      continue;
+    }
+
+    const scratch = layerScratch(model.canvasSize);
+    const sctx = ctxOf(scratch);
+    if (raster) sctx.drawImage(raster, 0, 0);
+    const dx = layer.offsetX ?? 0;
+    const dy = layer.offsetY ?? 0;
+    for (const [id, live] of lives) {
+      if (live.init.tool === 'noise') {
+        const preview = model.previewRaster(id);
+        if (preview) sctx.drawImage(preview, dx, dy);
+        continue;
+      }
+      renderStrokes(sctx as unknown as never, [{ ...live.init, points: live.points } as never], {
+        offsetX: -dx,
+        offsetY: -dy,
+        bounds: { width: scratch.width, height: scratch.height },
+        createCanvas: (w, h) => scratchCanvas(w, h) as never,
+      });
+    }
+    ctx.globalAlpha = layer.opacity;
+    ctx.drawImage(scratch, 0, 0);
+  }
+  ctx.globalAlpha = 1;
 }
 
 export const ASSET_TIMEOUT_MS = 10_000;

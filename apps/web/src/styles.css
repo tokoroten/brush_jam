@@ -57,3 +57,9 @@ header .hint { font-size: 11px; white-space: nowrap; }
   .stages { flex-direction: column; }
   .layers { width: auto; flex: 1 1 auto; border-left: none; border-top: 1px solid #272b32; }
 }
+.invite { flex: 0 1 20rem; min-width: 8rem; font-size: 11px; color: #9aa3b0; }
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); top: 3rem; z-index: 20;
+  max-width: 32rem; padding: 8px 12px; border-radius: 6px; cursor: pointer;
+  background: #3a2226; border: 1px solid #7d3b45; color: #f2c8cd; font-size: 12px;
+}

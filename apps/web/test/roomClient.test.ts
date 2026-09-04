@@ -730,3 +730,123 @@ describe('ai_capabilities', () => {
     expect(bumps).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Review 10 finding 4: a room where people try several reference photos held
+ * every one of them, fully decoded, in every browser for the whole session.
+ */
+describe('reference image retention', () => {
+  const ref = (id: string, imageId: string): Layer => layer(id, { kind: 'reference', imageId, order: 1 });
+
+  it('keeps the image a layer still references', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ layers: [layer('l1'), ref('l2', 'img-a')] }));
+    await tick();
+    loader.resolve('images/img-a');
+    await tick();
+    expect(client.images.has('img-a')).toBe(true);
+  });
+
+  it('drops the image when its layer is deleted', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ layers: [layer('l1'), ref('l2', 'img-a')] }));
+    await tick();
+    loader.resolve('images/img-a');
+    await tick();
+    expect(client.images.has('img-a')).toBe(true);
+
+    client.receive({ t: 'layer_deleted', id: 'l2', humanRevision: 2 });
+    await tick();
+    expect(client.images.has('img-a')).toBe(false);
+  });
+
+  it('drops images no longer referenced after a snapshot replaces the room', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ layers: [layer('l1'), ref('l2', 'img-a')] }));
+    await tick();
+    loader.resolve('images/img-a');
+    await tick();
+
+    // a fresh snapshot in which that reference is gone
+    client.receive(snapshot({ layers: [layer('l1')] }));
+    await tick();
+    expect(client.images.has('img-a')).toBe(false);
+    expect(client.images.size).toBe(0);
+  });
+
+  it('drops the old image when a layer is repointed at a different one', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ layers: [layer('l1'), ref('l2', 'img-a')] }));
+    await tick();
+    loader.resolve('images/img-a');
+    await tick();
+
+    client.receive({ t: 'layer_updated', layer: ref('l2', 'img-b'), humanRevision: 3 });
+    await tick();
+    expect(client.images.has('img-a')).toBe(false);
+  });
+
+  it('keeps an image two layers share until both are gone', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot({ layers: [ref('l1', 'img-a'), ref('l2', 'img-a')] }));
+    await tick();
+    loader.resolve('images/img-a');
+    await tick();
+
+    client.receive({ t: 'layer_deleted', id: 'l2', humanRevision: 2 });
+    await tick();
+    expect(client.images.has('img-a')).toBe(true);
+
+    client.receive({ t: 'layer_deleted', id: 'l1', humanRevision: 3 });
+    await tick();
+    expect(client.images.has('img-a')).toBe(false);
+  });
+});
+
+/** Review 10 finding 6: a refusal nobody can see may as well not be sent. */
+describe('action errors', () => {
+  it('starts with nothing to show', () => {
+    expect(new RoomClient('r1', 'Me', makeLoader().deps).actionError).toBeNull();
+  });
+
+  it('surfaces a server error message as a toast', async () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.receive(snapshot());
+    await tick();
+    client.receive({ t: 'error', message: 'layer is locked' });
+    await tick();
+    expect(client.actionError?.message).toBe('layer is locked');
+  });
+
+  it('notifies subscribers so the toast appears without another event', async () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.receive(snapshot());
+    await tick();
+    let bumps = 0;
+    client.subscribe(() => (bumps += 1));
+    client.noteActionError('paste failed: server said 413');
+    expect(bumps).toBeGreaterThan(0);
+    expect(client.actionError?.message).toContain('413');
+  });
+
+  it('can be cleared, and clearing twice is harmless', () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.noteActionError('boom');
+    client.clearActionError();
+    expect(client.actionError).toBeNull();
+    client.clearActionError();
+    expect(client.actionError).toBeNull();
+  });
+
+  it('replaces an older error rather than queueing', () => {
+    const client = new RoomClient('r1', 'Me', makeLoader().deps);
+    client.noteActionError('first');
+    client.noteActionError('second');
+    expect(client.actionError?.message).toBe('second');
+  });
+});

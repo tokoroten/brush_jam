@@ -252,6 +252,23 @@ export class RoomClient {
     return [...this.layers].sort((a, b) => a.order - b.order);
   }
 
+  /**
+   * Something the user tried did not happen: a refused message, a failed
+   * paste. Held with a timestamp so the UI can hide it again on its own.
+   */
+  actionError: { message: string; at: number } | null = null;
+
+  noteActionError(message: string): void {
+    this.actionError = { message, at: Date.now() };
+    this.bump();
+  }
+
+  clearActionError(): void {
+    if (!this.actionError) return;
+    this.actionError = null;
+    this.bump();
+  }
+
   findLayer(id: string): Layer | undefined {
     return this.layers.find((l) => l.id === id);
   }
@@ -274,6 +291,28 @@ export class RoomClient {
         /* the layer simply stays blank; a later snapshot retries */
       })
       .finally(() => this.loading.delete(imageId));
+  }
+
+  /**
+   * Drop decoded images no layer references any more. A room where people try
+   * several reference photos otherwise holds every one of them, fully decoded,
+   * in every browser for the rest of the session - tens of megabytes each.
+   * Clearing `src` is what actually lets the browser release the bitmap.
+   */
+  private pruneImages(): void {
+    const wanted = new Set<string>();
+    for (const layer of this.layers) if (layer.imageId) wanted.add(layer.imageId);
+    for (const [id, img] of this.images) {
+      if (wanted.has(id)) continue;
+      this.images.delete(id);
+      try {
+        img.src = '';
+      } catch {
+        /* a stub image in a test may not accept it; dropping the ref is enough */
+      }
+    }
+    // A load still in flight for a layer that is gone has nothing to paint.
+    for (const id of this.loading) if (!wanted.has(id)) this.loading.delete(id);
   }
 
   /** Re-pull the authoritative AI raster, outside the ordered queue. */
@@ -362,6 +401,7 @@ export class RoomClient {
         this.previews.clear();
         this.cursors.clear();
         this.layerCanvases.clear();
+        this.pruneImages();
         for (const layer of s.layers) {
           if (layer.imageId) this.requestImage(layer.imageId);
           this.repaint(layer);
@@ -443,6 +483,10 @@ export class RoomClient {
         break;
       case 'layer_updated':
         this.layers = this.layers.map((l) => (l.id === msg.layer.id ? msg.layer : l));
+        // A layer can be repointed at a different image; the old one may now
+        // be referenced by nobody.
+        if (msg.layer.imageId) this.requestImage(msg.layer.imageId);
+        this.pruneImages();
         this.repaint(msg.layer);
         this.humanRevision = msg.humanRevision;
         break;
@@ -450,6 +494,7 @@ export class RoomClient {
         this.layers = this.layers.filter((l) => l.id !== msg.id);
         this.strokes = this.strokes.filter((s) => s.layerId !== msg.id);
         this.layerCanvases.delete(msg.id);
+        this.pruneImages();
         this.humanRevision = msg.humanRevision;
         break;
       case 'layers_reordered':
@@ -505,6 +550,9 @@ export class RoomClient {
       }
       case 'error':
         this.aiMessage = msg.message;
+        // Also surfaced as a toast: a refusal buried in the AI status line was
+        // invisible to whoever caused it.
+        this.noteActionError(msg.message);
         break;
       default:
         break;

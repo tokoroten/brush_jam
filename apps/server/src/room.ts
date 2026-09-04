@@ -281,13 +281,13 @@ export function expirePendingStrokes(room: RoomState, now = Date.now(), idleMs =
   return cancels;
 }
 
-/** Cancels every pending stroke on a layer (used when the layer disappears). */
-function cancelPendingOnLayer(room: RoomState, layerId: string): ServerMessage[] {
+/** Cancels every pending stroke on a layer (the layer disappeared, or moved). */
+function cancelPendingOnLayer(room: RoomState, layerId: string, reason = 'layer removed'): ServerMessage[] {
   const cancels: ServerMessage[] = [];
   for (const [strokeId, p] of room.pending) {
     if (p.init.layerId !== layerId) continue;
     room.pending.delete(strokeId);
-    cancels.push({ t: 'stroke_cancel', userId: p.userId, strokeId, reason: 'layer removed' });
+    cancels.push({ t: 'stroke_cancel', userId: p.userId, strokeId, reason });
   }
   return cancels;
 }
@@ -559,11 +559,14 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (typeof patch.visible === 'boolean') setRender('visible', patch.visible);
       if (finite(patch.opacity)) setRender('opacity', clamp(patch.opacity, 0, 1));
       if (typeof patch.includeInAI === 'boolean' && layer.kind === 'reference') setRender('includeInAI', patch.includeInAI);
+      let offsetMoved = false;
       if (layer.kind === 'draw') {
         // Offsets move existing strokes; the log keeps its original coordinates.
         const limit = 2 * CANVAS_SIZE;
+        const before = { x: layer.offsetX ?? 0, y: layer.offsetY ?? 0 };
         if (finite(patch.offsetX)) setRender('offsetX', clamp(patch.offsetX, -limit, limit));
         if (finite(patch.offsetY)) setRender('offsetY', clamp(patch.offsetY, -limit, limit));
+        offsetMoved = (layer.offsetX ?? 0) !== before.x || (layer.offsetY ?? 0) !== before.y;
       }
       if (layer.kind === 'reference') {
         if (finite(patch.x)) setRender('x', patch.x);
@@ -575,8 +578,14 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       const after = layerDirty(room, layer);
       // Turning "AI input" off still has to repaint where the layer used to be.
       const affectsAI = rendersDifferently && (wasIncludedInAI || layer.includeInAI);
+      // A stroke in progress was aimed at where the layer WAS. Committing it
+      // after the move would place its early points in one coordinate system
+      // and its later ones in another, which no amount of clever maths can
+      // repair afterwards - so the stroke is cancelled and the drawer starts
+      // it again against the layer where it now is.
+      const cancels = offsetMoved ? cancelPendingOnLayer(room, layer.id, 'layer moved') : [];
       return {
-        broadcast: [{ t: 'layer_updated', layer, humanRevision: room.humanRevision }],
+        broadcast: [{ t: 'layer_updated', layer, humanRevision: room.humanRevision }, ...cancels],
         relay: [],
         dirty: affectsAI ? [...before, ...after] : [],
       };

@@ -31,6 +31,27 @@ import {
   type BrushSizes,
   type SizedTool,
 } from './brushSize.js';
+import { browserCopyDeps, copyText } from './clipboard.js';
+
+/**
+ * What a pointer press means. Extracted so the one rule that is easy to get
+ * wrong is testable: the AI canvas is a view of what the model made, and
+ * drawing into it used to accept the stroke, show a preview, and then lose it
+ * at the next AI result - which reads as the app eating your work.
+ */
+export function pointerIntent(input: {
+  viewOnly: boolean;
+  button: number;
+  space: boolean;
+  shift: boolean;
+  tool: 'pen' | 'eraser' | 'noise' | 'move';
+}): 'pan' | 'move' | 'draw' {
+  if (input.viewOnly || input.button === 1 || input.space || input.shift) return 'pan';
+  return input.tool === 'move' ? 'move' : 'draw';
+}
+
+/** How long an action error stays on screen. */
+const ACTION_ERROR_MS = 5000;
 
 /**
  * Shown instead of letting someone type into a box the sampler will not read:
@@ -93,6 +114,10 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const [promptDraft, setPromptDraft] = useState('');
   const [promptDirty, setPromptDirty] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Read once per render rather than at module scope: jsdom and SSR have no
+  // location, and the value has to follow whatever address the page was opened
+  // with (a LAN IP, if the invite is to work for anyone else).
+  const inviteUrl = typeof location === 'undefined' ? '' : location.href;
   const [advanced, setAdvanced] = useState(false);
   const [denoiseDraft, setDenoiseDraft] = useState<number | null>(null);
   const [negativeDraft, setNegativeDraft] = useState<string | null>(null);
@@ -214,16 +239,17 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   }, [client.canvasSize]);
 
   // --- drawing --------------------------------------------------------------
-  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>): void => {
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>, viewOnly = false): void => {
     e.currentTarget.setPointerCapture(e.pointerId);
     const screen = { x: e.clientX, y: e.clientY };
     const world = toWorld(e);
 
-    if (e.button === 1 || spaceRef.current || e.shiftKey) {
+    const intent = pointerIntent({ viewOnly, button: e.button, space: spaceRef.current, shift: e.shiftKey, tool });
+    if (intent === 'pan') {
       dragRef.current = { kind: 'pan', lastScreen: screen, sentPoints: 0, lastChunkAt: 0 };
       return;
     }
-    if (tool === 'move') {
+    if (intent === 'move') {
       // Topmost reference under the pointer wins; otherwise the selected one,
       // which is what makes a freshly pasted image draggable straight away.
       const target = pickMovableLayer(
@@ -352,15 +378,33 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       const file = item?.getAsFile();
       if (!file) return;
       e.preventDefault();
-      const { blob, width: w, height: h } = await downscaleBlob(file, pasteLimit(client.canvasSize));
-      const res = await fetch(`/rooms/${roomId}/images`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: blob });
-      if (!res.ok) return;
-      const stored = (await res.json()) as { imageId: string };
-      const at = pastePlacement({ x: camera.centerX, y: camera.centerY }, { width: w, height: h }, client.canvasSize);
-      // Select it and switch to move, so the very next drag moves the paste.
-      pastedImageId.current = stored.imageId;
-      setTool('move');
-      client.send({ t: 'layer_create', layer: { kind: 'reference', imageId: stored.imageId, x: at.x, y: at.y, scale: 1 } });
+      // Checked before the upload, not after: the server would accept the
+      // image, store it, and then refuse the layer, leaving an orphan.
+      if (client.layers.length >= MAX_LAYERS) {
+        client.noteActionError(`paste failed: this room already has the maximum of ${MAX_LAYERS} layers`);
+        return;
+      }
+      try {
+        const { blob, width: w, height: h } = await downscaleBlob(file, pasteLimit(client.canvasSize));
+        const res = await fetch(`/rooms/${roomId}/images`, {
+          method: 'POST',
+          headers: { 'content-type': 'image/png' },
+          body: blob,
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          client.noteActionError(`paste failed: ${body?.error ?? `server said ${res.status}`}`);
+          return;
+        }
+        const stored = (await res.json()) as { imageId: string };
+        const at = pastePlacement({ x: camera.centerX, y: camera.centerY }, { width: w, height: h }, client.canvasSize);
+        // Select it and switch to move, so the very next drag moves the paste.
+        pastedImageId.current = stored.imageId;
+        setTool('move');
+        client.send({ t: 'layer_create', layer: { kind: 'reference', imageId: stored.imageId, x: at.x, y: at.y, scale: 1 } });
+      } catch (err) {
+        client.noteActionError(`paste failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     },
     [camera.centerX, camera.centerY, client, roomId],
   );
@@ -402,10 +446,24 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             : 'AI idle';
 
   const copyInvite = async (): Promise<void> => {
-    await navigator.clipboard.writeText(location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    const ok = await copyText(location.href, browserCopyDeps());
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      return;
+    }
+    // The URL is on screen next to the button, so there is always a way.
+    client.noteActionError('could not copy automatically - select the URL and copy it');
   };
+
+  // The toast hides itself; the client keeps the message so a late subscriber
+  // still sees it, and clearing goes through the client so every view agrees.
+  const actionError = client.actionError;
+  useEffect(() => {
+    if (!actionError) return;
+    const timer = setTimeout(() => client.clearActionError(), ACTION_ERROR_MS);
+    return () => clearTimeout(timer);
+  }, [actionError, client]);
 
   return (
     <div className="room">
@@ -413,6 +471,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         <strong>Brush Jam</strong>
         <span className="roomid">room {roomId}</span>
         <button onClick={() => void copyInvite()}>{copied ? 'Copied!' : 'Copy invite URL'}</button>
+        <input className="invite" readOnly value={inviteUrl} onFocus={(e) => e.currentTarget.select()} title={inviteUrl} />
         <div className="members">
           {client.members.map((m) => (
             <span key={m.userId} className="chip" style={{ borderColor: m.color, color: m.color }}>
@@ -529,6 +588,12 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         <span className="zoom">{Math.round(camera.zoom * 100)}%</span>
       </div>
 
+      {actionError ? (
+        <div className="toast" role="status" onClick={() => client.clearActionError()}>
+          {actionError.message}
+        </div>
+      ) : null}
+
       <div className="body">
         <div className="stages">
           <div className="stage-wrap">
@@ -549,7 +614,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               camera={camera}
               kind="ai"
               label="AI canvas"
-              onPointerDown={onPointerDown}
+              onPointerDown={(e) => onPointerDown(e, true)}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onWheel={onWheel}
