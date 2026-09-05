@@ -51,24 +51,47 @@ class H(BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
         return TOKEN and parse_qs(urlparse(self.path).query).get("token", [""])[0] == TOKEN
 
+    def drain(self, n):
+        """Read the body we are about to refuse.
+
+        Replying without reading it resets the connection, and the client sees
+        a socket error instead of the status we sent.
+        """
+        while n > 0:
+            chunk = self.rfile.read(min(1 << 20, n))
+            if not chunk:
+                break
+            n -= len(chunk)
+
     def do_PUT(self):
-        n = int(self.headers.get("content-length") or 0)
+        raw = self.headers.get("content-length")
+        try:
+            n = int(raw)
+            if n < 0:
+                raise ValueError(raw)
+        except (TypeError, ValueError):
+            n = None
         if not self.path.startswith("/upload") or not self.ok_token():
-            # Drain first: replying to an unread body resets the connection and
-            # the client sees a socket error instead of the 403.
-            while n > 0:
-                chunk = self.rfile.read(min(1 << 20, n))
-                if not chunk:
-                    break
-                n -= len(chunk)
+            self.drain(n or 0)
             return self.reply(403, "forbidden")
+        if n is None:
+            # Distinct from "forbidden" on purpose: a chunked body and a bad
+            # token are very different problems and used to look identical.
+            return self.reply(
+                411 if raw is None else 400,
+                "the upload needs a valid Content-Length; a chunked body cannot be stored",
+            )
+        got = 0
         with open(TGZ + ".part", "wb") as f:
-            while n > 0:
-                chunk = self.rfile.read(min(1 << 20, n))
+            while got < n:
+                chunk = self.rfile.read(min(1 << 20, n - got))
                 if not chunk:
                     break
                 f.write(chunk)
-                n -= len(chunk)
+                got += len(chunk)
+        if got != n:
+            os.remove(TGZ + ".part")
+            return self.reply(400, "the upload was cut short (%d of %d bytes)" % (got, n))
         os.replace(TGZ + ".part", TGZ)
         # The boot loop re-extracts the newer tarball once the server is down.
         stop_server()

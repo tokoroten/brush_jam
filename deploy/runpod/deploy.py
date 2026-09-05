@@ -197,7 +197,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
         sys.exit(f"{POD_FILE} already exists; use `upload` for new code, or --force for a second pod")
     tarball = build_tarball()
     token = secrets.token_urlsafe(24)
-    print(f"creating a pod ({GPU_TYPE}, SECURE)")
+    print(f"creating a pod ({GPU_TYPE}, SECURE)", flush=True)
     pod = api(
         env,
         "POST",
@@ -219,9 +219,9 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     )
     pod_id = pod["id"]
     POD_FILE.write_text(json.dumps({"id": pod_id, "token": token}, indent=2), encoding="utf-8")
-    print(f"pod {pod_id} created ({pod.get('costPerHr', '?')} $/hr); .pod written")
+    print(f"pod {pod_id} created ({pod.get('costPerHr', '?')} $/hr); .pod written", flush=True)
 
-    print("waiting for the receiver to answer (a cold machine takes a few minutes)")
+    print("waiting for the receiver to answer (a cold machine takes a few minutes)", flush=True)
     deadline = time.time() + args.wait
     while time.time() < deadline:
         try:
@@ -238,17 +238,43 @@ def cmd_deploy(args: argparse.Namespace) -> None:
 
 
 def upload(pod_id: str, token: str, tarball: Path) -> None:
-    size = tarball.stat().st_size
-    print(f"uploading {size / 1e6:.1f} MB")
-    with tarball.open("rb") as handle:
-        req = urllib.request.Request(
-            f"{proxy(pod_id, 8788)}/upload?token={token}",
-            data=handle,
-            method="PUT",
-            headers={"content-type": "application/octet-stream", "content-length": str(size)},
-        )
-        with urllib.request.urlopen(req, timeout=600) as response:
-            print(f"receiver: {response.read().decode().strip()}")
+    # Bytes, not the file object: urllib sends a file body chunked, and a
+    # chunked PUT never reaches the receiver with a length it can store (the
+    # proxy refuses it outright). The tarball is under a megabyte.
+    body = tarball.read_bytes()
+    print(f"uploading {len(body) / 1e6:.1f} MB", flush=True)
+    req = urllib.request.Request(
+        f"{proxy(pod_id, 8788)}/upload?token={token}",
+        data=body,
+        method="PUT",
+        headers={"content-type": "application/octet-stream", "content-length": str(len(body))},
+    )
+    with urllib.request.urlopen(req, timeout=600) as response:
+        print(f"receiver: {response.read().decode().strip()}", flush=True)
+
+
+def watch_boot(pod_id: str, timeout: float) -> bool:
+    """Print each phase change until the server answers /healthz."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        try:
+            status = json.loads(get(proxy(pod_id, 8788) + "/status", timeout=15))
+        except Exception as err:
+            if last != f"unreachable: {err}":
+                last = f"unreachable: {err}"
+                print(f"  {last}", flush=True)
+            time.sleep(5)
+            continue
+        if status.get("server_healthy"):
+            print("  server_healthy", flush=True)
+            return True
+        phase = f"{status.get('phase')} (app={status.get('app_present')}, checkpoint={status.get('checkpoint_present')})"
+        if phase != last:
+            print(f"  {phase}", flush=True)
+            last = phase
+        time.sleep(10)
+    return False
 
 
 def cmd_upload(_args: argparse.Namespace) -> None:
@@ -325,6 +351,7 @@ def main(argv: Optional[list] = None) -> int:
     p = sub.add_parser("deploy", help="create the pod and upload the code")
     p.add_argument("--name", default="brushjam")
     p.add_argument("--wait", type=float, default=900, help="seconds to wait for the receiver")
+    p.add_argument("--boot-wait", type=float, default=1800, help="seconds to wait for the first model load")
     p.add_argument("--force", action="store_true", help="deploy even though .pod exists")
     p.set_defaults(func=cmd_deploy)
 
@@ -347,6 +374,12 @@ def main(argv: Optional[list] = None) -> int:
     p = sub.add_parser("terminate", help="destroy the pod and its volume")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_terminate)
+
+    # Piped output is block-buffered, which makes a 15-minute deploy look hung.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
 
     args = parser.parse_args(argv)
     args.func(args)

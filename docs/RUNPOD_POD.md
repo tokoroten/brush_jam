@@ -46,7 +46,9 @@ uv run --project apps/brushjam python deploy/runpod/deploy.py start       # brin
 uv run --project apps/brushjam python deploy/runpod/deploy.py terminate --yes   # destroy pod AND volume
 ```
 
-`deploy` writes `deploy/runpod/.pod` (pod id + upload token, gitignored); every
+`deploy` polls `/status` after the upload and prints each boot phase until the
+server answers `/healthz`, so `log -f` is only needed for detail. It writes
+`deploy/runpod/.pod` (pod id + upload token, gitignored); every
 other command reads it. Local checks, no pod needed:
 `python deploy/runpod/test_deploy.py`.
 
@@ -91,6 +93,12 @@ cycle skips straight to the model load.
 - **One GPU, one generation at a time.** The server's own admission control
   handles the queue; expect ~1.5–2 s per edit at fast/768 and ~9 s at
   quality/1024 on a 3070, faster on a 4090.
+- **Uploads must carry a Content-Length.** A chunked PUT cannot be stored, so
+  the receiver answers 411 (no length) or 400 (unparseable, or a body cut
+  short) rather than the 403 it uses for a bad token. `deploy.py` sends the
+  tarball as bytes for this reason - urllib sends a file object chunked.
+- **The receiver is written by `dockerStartCmd`, not by the tarball.** Changing
+  `receiver.py` needs a new pod; `upload` only replaces the server code.
 - **The receiver is the attack surface.** It is token-gated (a 24-byte urlsafe
   token, new per deploy) and only accepts `PUT /upload`, `GET /log`,
   `GET /status`. `boot.log` and `/status` never contain a secret. Anyone with
