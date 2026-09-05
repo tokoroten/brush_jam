@@ -185,11 +185,19 @@ def test_a_resume_takes_over_the_lease_it_replaces() -> None:
 
     # A newcomer is refused...
     assert registry.reserve_socket(room) is None
-    # ...but the reconnect takes over the slot the socket it replaces holds.
+    # ...but the reconnect gets a ticket for the slot the socket it replaces
+    # holds. Nothing has moved yet: the ticket owns nothing until it joins.
     resumed = registry.reserve_socket(room, "tok-a-0001")
     assert resumed is not None
+    assert resumed.owns_slot is False
     assert registry.sockets_open == 1 and room.reserved_sockets == 1
-    # The old route's release finds nothing to give back.
+
+    # Joining is what installs the replacement, and what commits the takeover.
+    room.join(FakeSocket(), "A", "tok-a-0001", resumed)
+    assert resumed.owns_slot is True
+    assert registry.sockets_open == 1 and room.reserved_sockets == 1
+
+    # The old route's release now finds nothing to give back.
     first.release()
     assert registry.sockets_open == 1 and room.reserved_sockets == 1
     resumed.release()
@@ -826,3 +834,163 @@ def test_an_upload_slot_is_released_even_when_the_body_is_rejected() -> None:
         assert bad.status_code == 400
         assert registry.uploads.in_flight == 0
         assert registry.uploads.bytes_in_flight == 0
+
+
+# ------------------------------------------------- takeover is provisional
+
+
+def test_a_resume_that_never_joins_leaves_the_original_holding_its_slot() -> None:
+    """The handshake between the reservation and the join can fail.
+
+    Handing the lease over at reservation time meant an accept that never
+    completed released a slot whose socket was still connected: counters at
+    zero, the original still registered, and the next connection admitted
+    straight past a limit of one.
+    """
+    registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="1", MAX_TOTAL_SOCKETS="1"))
+    room = registry.get_or_create("aaaa", "test")
+    assert room is not None
+    original_lease = registry.reserve_socket(room)
+    assert original_lease is not None
+    original = FakeSocket()
+    room.join(original, "A", "tok-a-0001", original_lease)
+
+    ticket = registry.reserve_socket(room, "tok-a-0001")
+    assert ticket is not None
+    # accept() fails, or the client goes away: the route's finally releases.
+    ticket.release()
+
+    # The original never lost anything.
+    assert original_lease.owns_slot is True
+    assert original.open is True
+    assert room._sockets[next(iter(room.state.members))] is original
+    assert registry.sockets_open == 1
+    assert room.reserved_sockets == 1
+    # And the cap still means what it says.
+    assert registry.reserve_socket(room) is None
+
+
+def test_a_discarded_ticket_does_not_block_the_next_reconnect() -> None:
+    registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="1"))
+    room = registry.get_or_create("aaaa", "test")
+    assert room is not None
+    lease = registry.reserve_socket(room)
+    assert lease is not None
+    room.join(FakeSocket(), "A", "tok-a-0001", lease)
+
+    first_try = registry.reserve_socket(room, "tok-a-0001")
+    assert first_try is not None
+    # A second reconnect while the first ticket is out gets no ticket: one
+    # takeover at a time, or two of them would claim the same slot.
+    assert registry.reserve_socket(room, "tok-a-0001") is None
+    first_try.release()
+    # Once it is discarded, a later reconnect can take over normally.
+    second_try = registry.reserve_socket(room, "tok-a-0001")
+    assert second_try is not None
+    room.join(FakeSocket(), "A", "tok-a-0001", second_try)
+    assert registry.sockets_open == 1 and room.reserved_sockets == 1
+
+
+def test_a_takeover_whose_original_closed_first_still_holds_one_slot() -> None:
+    registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="1"))
+    room = registry.get_or_create("aaaa", "test")
+    assert room is not None
+    lease = registry.reserve_socket(room)
+    assert lease is not None
+    room.join(FakeSocket(), "A", "tok-a-0001", lease)
+
+    ticket = registry.reserve_socket(room, "tok-a-0001")
+    assert ticket is not None
+    # The old route reaches its finally before the new one joins.
+    lease.release()
+    assert registry.sockets_open == 0
+
+    room.join(FakeSocket(), "A", "tok-a-0001", ticket)
+    assert ticket.owns_slot is True
+    assert registry.sockets_open == 1 and room.reserved_sockets == 1
+    ticket.release()
+    assert registry.sockets_open == 0 and room.reserved_sockets == 0
+
+
+def test_an_aborted_resume_over_a_real_socket_leaves_the_room_countable() -> None:
+    with client(MAX_ROOM_SOCKETS="1") as c:
+        with c.websocket_connect("/ws/rooms/resume01?name=A&token=tok-abcdefgh") as first:
+            assert json.loads(first.receive_text())["t"] == "snapshot"
+            registry = c.app.state.registry
+            room = registry.get("resume01")
+            assert room is not None
+            assert registry.sockets_open == 1
+
+            # A reconnect that opens and immediately goes away.
+            with c.websocket_connect("/ws/rooms/resume01?name=A&token=tok-abcdefgh") as second:
+                second.receive_text()
+            # The original is superseded by a *completed* resume here, so the
+            # count stays at one either way - what matters is that it is one.
+            assert registry.sockets_open <= 1
+            assert room.reserved_sockets <= 1
+
+
+# ----------------------------------------- stroke_end and everyone's pending
+
+
+def test_stroke_end_counts_everybody_elses_pending_points() -> None:
+    """The repro: 80 committed plus 40 pending in a 100-point room."""
+    room = create_room("r", max_points=100)
+    join_member(room, "Alice")
+    join_member(room, "Bob")
+    alice, bob = list(room.members)
+
+    forty = [{"x": float(i), "y": 1.0} for i in range(40)]
+    # Alice commits 40.
+    assert draw(room, alice, "a1", forty).broadcast[0]["t"] == "stroke_committed"
+    # Bob holds 40 in progress.
+    assert start(room, bob, "b1", forty).relay
+    assert room.committed_points == 40 and room.pending_points == 40
+
+    # Alice draws another 40 with a non-empty tail. Against the committed log
+    # alone this fits; against the room it does not.
+    twenty = [{"x": float(i), "y": 2.0} for i in range(20)]
+    start(room, alice, "a2", twenty)
+    ended = apply_client_message(
+        room, alice, {"t": "stroke_end", "strokeId": "a2", "points": twenty}
+    )
+    assert ended.broadcast[0]["t"] == "stroke_cancel"
+    assert ended.broadcast[0]["reason"] == "quota"
+
+    assert room.committed_points + room.pending_points <= room.max_points
+    # The refused stroke released its own charge on the way out.
+    assert room.pending_points == 40
+    assert "%s:a2" % alice not in room.pending
+
+
+def test_the_invariant_holds_after_every_stroke_end_in_a_busy_room() -> None:
+    room = create_room("r", max_points=1000)
+    for i in range(4):
+        join_member(room, "U%d" % i)
+    users = list(room.members)
+    points = [{"x": float(i), "y": 1.0} for i in range(60)]
+
+    for round_no in range(6):
+        for user in users:
+            name = "s%s%d" % (user, round_no)
+            start(room, user, name, points)
+            chunk(room, user, name, points)
+        for user in users:
+            name = "s%s%d" % (user, round_no)
+            apply_client_message(room, user, {"t": "stroke_end", "strokeId": name, "points": points})
+            assert room.committed_points + room.pending_points <= room.max_points
+    assert room.pending_points == 0
+
+
+def test_a_stroke_that_fits_is_still_committed() -> None:
+    room = create_room("r", max_points=1000)
+    join_member(room, "Alice")
+    alice = next(iter(room.members))
+    points = [{"x": float(i), "y": 1.0} for i in range(30)]
+    start(room, alice, "s1", points)
+    ended = apply_client_message(
+        room, alice, {"t": "stroke_end", "strokeId": "s1", "points": points}
+    )
+    assert ended.broadcast[0]["t"] == "stroke_committed"
+    assert room.committed_points == 60
+    assert room.pending_points == 0

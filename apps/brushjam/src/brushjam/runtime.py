@@ -264,9 +264,14 @@ class RoomRuntime:
         member = join_member(self.state, name, token)
         user_id = member["userId"]
         previous = self._sockets.get(user_id)
-        # Install first, revoke second.
+        # Install first, revoke second - and take the lease over at the same
+        # moment, so a handshake that failed before this point left the socket
+        # it was replacing holding its own slot.
         self._sockets[user_id] = socket
         if lease is not None:
+            commit = getattr(lease, "commit", None)
+            if callable(commit):
+                commit()
             self._leases[user_id] = lease
         else:
             self._leases.pop(user_id, None)
@@ -727,47 +732,87 @@ class SocketReservation:
     only one of them may.
 
     A reconnect does not take a second claim. It takes over the one the socket
-    it replaces already holds - `hand_over` neuters the old lease and returns a
-    new one for the same slot - so the counters never move, and the old route's
-    eventual `release` finds nothing to give back. Skipping the check while
-    still incrementing, which is what this replaced, let one valid token raise
-    a limit of 1 to 21.
+    it replaces already holds - but only once it has actually replaced it. The
+    ticket a reconnect gets owns nothing and changes no counters until
+    `commit`, because everything between the reservation and the join can
+    fail: an accept that never completes used to release a lease whose
+    original socket was still connected, leaving that socket counted by
+    nobody and the cap bypassed.
     """
 
-    __slots__ = ("_registry", "_room", "_released", "_counted")
+    __slots__ = ("_registry", "_room", "_released", "_owns", "_supersedes", "_takeover_pending")
 
     def __init__(
-        self, registry: "RoomRegistry", room: "RoomRuntime", counted: bool = True
+        self,
+        registry: "RoomRegistry",
+        room: "RoomRuntime",
+        owns: bool = True,
+        supersedes: Optional["SocketReservation"] = None,
     ) -> None:
         self._registry = registry
         self._room = room
         self._released = False
-        #: False only for a lease handed over from another reservation: the
-        #: slot was counted once, by whoever took it first.
-        self._counted = counted
+        #: Whether this reservation currently holds a counted slot.
+        self._owns = owns
+        #: The lease this one will take over when it commits.
+        self._supersedes = supersedes
+        #: A takeover ticket is out against this lease; a second reconnect must
+        #: not be handed the same one.
+        self._takeover_pending = False
 
     @property
     def released(self) -> bool:
         return self._released
 
     @property
+    def owns_slot(self) -> bool:
+        return self._owns and not self._released
+
+    @property
     def room(self) -> "RoomRuntime":
         return self._room
 
-    def hand_over(self) -> Optional["SocketReservation"]:
-        """Pass this exact slot to a replacement connection."""
-        if self._released:
+    def ticket(self) -> Optional["SocketReservation"]:
+        """A provisional claim on this lease's slot.
+
+        Nothing moves yet. The original socket keeps its lease, the counters
+        keep their values, and if the replacement never arrives the ticket is
+        simply discarded.
+        """
+        if self._released or self._takeover_pending:
             return None
-        self._released = True  # the old route's release is now a no-op
-        return SocketReservation(self._registry, self._room, counted=False)
+        self._takeover_pending = True
+        return SocketReservation(self._registry, self._room, owns=False, supersedes=self)
+
+    def commit(self) -> None:
+        """The replacement is installed; take the slot over for real."""
+        old = self._supersedes
+        self._supersedes = None
+        if old is None:
+            return
+        old._takeover_pending = False
+        if old._released:
+            # The socket we replaced closed first and already gave its slot
+            # back. Take one now - unconditionally, because this connection is
+            # past the point where it could be refused, and it is replacing an
+            # identity that had one.
+            self._registry._take_reservation(self._room)
+        else:
+            old._released = True  # the old route's release is now a no-op
+        self._owns = True
 
     def release(self) -> None:
         if self._released:
             return
         self._released = True
-        # An uncounted lease still owns the slot; releasing it gives back the
-        # increment whoever took it first made.
-        self._registry._release_reservation(self._room)
+        if self._supersedes is not None:
+            # A takeover that never committed. The original keeps its lease and
+            # its slot; this ticket was never counted.
+            self._supersedes._takeover_pending = False
+            self._supersedes = None
+            return
+        if self._owns:
+            self._registry._release_reservation(self._room)
 
 
 def same_limits(a: RoomLimits, b: RoomLimits) -> bool:
@@ -847,9 +892,9 @@ class RoomRegistry:
         """
         existing = room.lease_for_token(token)
         if existing is not None:
-            handed = existing.hand_over()
-            if handed is not None:
-                return handed
+            ticket = existing.ticket()
+            if ticket is not None:
+                return ticket
         if self._sockets_open >= self.config.max_total_sockets:
             return None
         if room.reserved_sockets >= self.config.max_room_sockets:
@@ -861,6 +906,12 @@ class RoomRegistry:
     def _release_reservation(self, room: "RoomRuntime") -> None:
         self._sockets_open = max(0, self._sockets_open - 1)
         room.reserved_sockets = max(0, room.reserved_sockets - 1)
+
+    def _take_reservation(self, room: "RoomRuntime") -> None:
+        """An unchecked increment, for a takeover whose original had already
+        released. The identity being replaced held a slot; this one does now."""
+        self._sockets_open += 1
+        room.reserved_sockets += 1
 
     def can_accept_socket(self, room: "RoomRuntime") -> Optional[str]:
         """Why a socket could not be accepted right now, or None. Advisory:

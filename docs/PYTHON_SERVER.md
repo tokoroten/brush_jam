@@ -150,9 +150,10 @@ unknown id, and a link nobody has opened yet - goes through one rate-limited
 `create_named`; `get` is the lookup that creates nothing. Socket capacity is
 one synchronous reservation taken before the handshake's first await, so
 concurrent connections cannot all pass the same check. A reconnect does not
-take a second slot and does not skip the check either: it takes over the exact
-lease held by the socket it replaces, so the counters never move and the old
-route's release finds nothing to give back. A room is never swept while a
+take a second slot and does not skip the check either: it gets a ticket for the
+exact lease held by the socket it replaces, and that ticket owns nothing until
+the join installs the replacement. Everything between the reservation and the
+join can fail, and until it succeeds the original socket keeps its slot. A room is never swept while a
 handshake holds a slot in it.
 
 One more thing is process-wide rather than per-room: **generation admission**.

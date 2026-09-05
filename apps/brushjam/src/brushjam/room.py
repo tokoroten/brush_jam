@@ -629,34 +629,38 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         p = room.pending.get(stroke_id)
         if p is None:
             return _empty()
-        # The points stop being pending here whatever happens next: they are
-        # either committed below, or refused and gone.
-        drop_pending(room, stroke_id)
+
+        def _end(reason: str) -> ApplyResult:
+            """Every way this stroke ends without committing."""
+            drop_pending(room, stroke_id)
+            return ApplyResult(
+                broadcast=[
+                    {
+                        "t": "stroke_cancel",
+                        "userId": user_id,
+                        "strokeId": stroke_id,
+                        "reason": reason,
+                    }
+                ]
+            )
+
         layer = find_layer(room, p.init["layerId"])
         if layer is None or layer["kind"] != "draw":
-            return ApplyResult(
-                broadcast=[
-                    {
-                        "t": "stroke_cancel",
-                        "userId": user_id,
-                        "strokeId": stroke_id,
-                        "reason": "layer removed",
-                    }
-                ]
-            )
+            return _end("layer removed")
         # The layer may have been locked while this stroke was being drawn.
         if layer["locked"]:
-            return ApplyResult(
-                broadcast=[
-                    {
-                        "t": "stroke_cancel",
-                        "userId": user_id,
-                        "strokeId": stroke_id,
-                        "reason": "layer locked",
-                    }
-                ]
-            )
+            return _end("layer locked")
+
         tail = _sanitize_points(msg.get("points"), room.canvas_size)
+        # The tail has never been charged, and this stroke's own points still
+        # are. Everyone else's pending points count too: checking only against
+        # the committed log let a 100-point room hold 80 committed and 40
+        # pending at once.
+        if room_is_full(room, len(tail)):
+            return _end("quota")
+        # Past the check: the stroke's points stop being pending here, whether
+        # they are committed below or refused for another reason.
+        drop_pending(room, stroke_id)
         p.points.extend(tail)
         if len(p.points) == 0 or len(p.points) > MAX_STROKE_POINTS:
             return ApplyResult(
@@ -683,14 +687,14 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         }
         added_bytes = stroke_snapshot_bytes(stroke)
         if (
-            room.committed_points + len(p.points) > room.max_points
+            room.committed_points + room.pending_points + len(p.points) > room.max_points
             or room.snapshot_bytes + added_bytes > room.max_snapshot_bytes
         ):
             # The room is full. Cancelling is the honest answer: the client
             # drops its optimistic preview instead of showing a stroke the
             # server does not have. Nothing has been mutated at this point -
-            # not the log, not the revision. (The pending entry is already
-            # gone, which is what ends the stroke.)
+            # not the log, not the revision, and the pending charge is already
+            # released, which is what ends the stroke.
             return ApplyResult(
                 broadcast=[
                     {
