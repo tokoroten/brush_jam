@@ -65,7 +65,10 @@ class Config:
     stream_timeout_ms: int = 120_000
     stream_auto: bool = False
     comfy_url: str = "http://127.0.0.1:8188"
-    comfy_checkpoint: str = "waiNSFWIllustrious_v150.safetensors"
+    #: The checkpoint *name* as ComfyUI knows it. No default: it is whatever
+    #: that installation happens to have, and guessing produces a workflow it
+    #: refuses at generation time rather than at startup.
+    comfy_checkpoint: str = ""
     canvas_size: int = 1024
     ai_mode: str = "full"
     ai_window: int = 768
@@ -221,7 +224,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
             _num(env, "STREAM_TIMEOUT_MS", 120_000, min=1000, max=3_600_000, integer=True, errors=errors)
         ),
         stream_auto=_flag(env.get("AI_STREAM_AUTO")),
-        comfy_checkpoint=env.get("COMFYUI_CHECKPOINT") or "waiNSFWIllustrious_v150.safetensors",
+        comfy_checkpoint=env.get("COMFYUI_CHECKPOINT") or "",
         canvas_size=int(
             _num(env, "CANVAS_SIZE", 1024, min=512, max=4096, integer=True, multiple_of=64, errors=errors)
         ),

@@ -11,7 +11,7 @@ set -euo pipefail
 WORKSPACE="${WORKSPACE_DIR:-/workspace}"
 APP="$WORKSPACE/app/apps/brushjam"
 MODELS="$WORKSPACE/models"
-CHECKPOINT="${INPROC_CHECKPOINT:-$MODELS/checkpoints/waiNSFWIllustrious_v150.safetensors}"
+CHECKPOINT="${INPROC_CHECKPOINT:-$MODELS/checkpoints/sdxl-checkpoint.safetensors}"
 CIVITAI_VERSION="${CIVITAI_VERSION:-2167369}"
 MIN_CHECKPOINT_BYTES=6000000000
 

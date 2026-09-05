@@ -74,7 +74,7 @@ other command reads it. Local checks, no pod needed:
 | Volume | 40 GB at `/workspace` (survives stop/start) |
 | Container disk | 20 GB |
 | Ports | `8787/http` (the game), `8788/http` (the receiver) |
-| Env | `AI_BACKEND=inproc`, `HOST=0.0.0.0`, `PORT=8787`, `HF_HOME=/workspace/hf`, `INPROC_CHECKPOINT=/workspace/models/checkpoints/waiNSFWIllustrious_v150.safetensors`, `INPROC_LORA_DIR=/workspace/models/loras`, `ROOM_CREATE_PER_MIN=60`, plus the three secrets |
+| Env | `AI_BACKEND=inproc`, `HOST=0.0.0.0`, `PORT=8787`, `HF_HOME=/workspace/hf`, `INPROC_CHECKPOINT=/workspace/models/checkpoints/sdxl-checkpoint.safetensors`, `INPROC_LORA_DIR=/workspace/models/loras`, `ROOM_CREATE_PER_MIN=60`, plus the three secrets |
 
 **`ROOM_CREATE_PER_MIN=60` is deliberate.** The RunPod proxy terminates TLS, so
 every player arrives from one client IP and the per-IP room-creation limit
@@ -91,7 +91,7 @@ would lock everyone out after the first few rooms.
 | `extract` | tarball landed |
 | `uv` | installing uv |
 | `deps` | `uv sync --extra inproc` (torch cu124, ~3 GB) |
-| `checkpoint` | Civitai model 827184 / version 2167369 → `waiNSFWIllustrious_v150.safetensors` (~7 GB, retried once, rejected if under 6 GB — a Civitai auth failure is a small HTML page with HTTP 200) |
+| `checkpoint` | Civitai version `CIVITAI_VERSION` (default 2167369, an Illustrious-class SDXL) → `sdxl-checkpoint.safetensors` (~7 GB, retried once, rejected under 6 GB — a Civitai auth failure is a small HTML page with HTTP 200) |
 | `server` | `uv run brushjam`; the DMD2 LoRA and the fp16-fix VAE are fetched by the pipeline itself into `HF_HOME`, then the model loads (~30 s) |
 
 `status` reports `server_healthy: true` when `/healthz` answers. The URL to send
@@ -114,6 +114,9 @@ model load.
   (`brushjam-deploy/1.0`) on every proxied call, and anything else talking to
   the pod has to as well. The failure is indistinguishable from a rejected
   upload token, so check this first.
+- **A pod created before the checkpoint was renamed** has the file under its
+  old name on the volume. Set `INPROC_CHECKPOINT` in that pod's env to the old
+  path rather than letting it download seven gigabytes again.
 - **The receiver only accepts the real app.** A body under 10 KB is refused
   before a byte is written, and one that is not a gzip archive listing
   `bootstrap.sh` is refused before anything is replaced or signalled. An empty

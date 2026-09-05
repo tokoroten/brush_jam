@@ -4,6 +4,9 @@
 > `apps/server`, which has been replaced by the single Python process in
 > `apps/brushjam` and deleted. The design it describes is still the design;
 > only the file paths have moved. See [`PYTHON_SERVER.md`](PYTHON_SERVER.md).
+>
+> References here and in `STREAM_WORKER.md` to `BRUSHJAM_CONTEXT.md` are to the
+> project's private concept document, which is not published.
 
 Derived from `BRUSHJAM_CONTEXT.md` §23 phases 1–3 and §26. Everything here is MVP scope. Nothing marked Post-MVP in the context doc is to be built.
 

@@ -14,3 +14,9 @@ smoke-out/
 deploy/runpod/.pod
 deploy/runpod/app.tgz
 models/
+
+# Not published: the concept document and the experiment images (the reports
+# that reference them stay).
+docs/BRUSHJAM_CONTEXT.md
+docs/experiments/**/*.png
+docs/experiments/**/*.jpg

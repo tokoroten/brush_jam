@@ -13,8 +13,9 @@ Why diffusers and not StreamDiffusion: see `docs/STREAM_WORKER.md`.
 
 ## Install
 
-Requires `uv`, an NVIDIA GPU with CUDA 12.x drivers, and the checkpoint at
-`E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors`.
+Requires `uv`, an NVIDIA GPU with CUDA 12.x drivers, and an SDXL checkpoint.
+`STREAM_CHECKPOINT` says where it is; there is no default, because the file is
+6-7 GB and lives wherever you keep such things.
 
 ```bash
 cd apps/stream-worker
@@ -24,7 +25,7 @@ uv sync --extra dev --python 3.10
 `torch` comes from the PyTorch CUDA 12.4 index (pinned in `pyproject.toml`);
 plain PyPI would install the CPU build on Windows.
 
-The LCM LoRA is downloaded on first run into `E:\ComfyUI\models\loras`
+The LCM LoRA is downloaded on first run into `STREAM_LORA_DIR` (`./models/loras`)
 (`lcm-lora-sdxl.safetensors`, ~394 MB) so ComfyUI can use the exact same file.
 `HF_TOKEN` from the repo-root `.env` is used if the download needs auth.
 
@@ -134,8 +135,8 @@ Notes on the contract:
 | --- | --- | --- |
 | `STREAM_HOST` | `127.0.0.1` | bind address |
 | `STREAM_PORT` | `8790` | port |
-| `STREAM_CHECKPOINT` | `E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors` | single-file SDXL checkpoint |
-| `STREAM_LORA_DIR` | `E:\ComfyUI\models\loras` | where the LoRA is kept (shared with ComfyUI) |
+| `STREAM_CHECKPOINT` | *(required)* | single-file SDXL checkpoint |
+| `STREAM_LORA_DIR` | `./models/loras` | where the LoRA is downloaded to |
 | `STREAM_LORA` | `dmd2` | `dmd2` or `lcm`. DMD2 is 1384 ms vs LCM's 1798 ms at 768, reinterprets a denoise step earlier, and retains line weight better (`docs/experiments/2026-09-05-stream/REPORT.md` section 8). |
 | `STREAM_STEPS` | `4` | default steps |
 | `STREAM_GUIDANCE` | `1.0` | CFG. `1.0` means CFG is off: ~22% faster end-to-end (the UNet is about half a 768 request) and free with `dmd2`, which is guidance-distilled. **`negative_prompt` has no effect at 1.0** — `/healthz` reports `negative_prompt_active: false` so the UI can say so. Set `1.5` to turn it back on (+27% latency). With `STREAM_LORA=lcm`, CFG 1.0 also makes line art fade badly at denoise 0.8+. |
