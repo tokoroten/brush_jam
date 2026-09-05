@@ -111,6 +111,29 @@ Everything in the README's table still applies. In addition:
 | `INPROC_DRY_RUN` | `0` | serve the whole contract with no model (CI) |
 | `INPROC_NO_PRELOAD` | `0` | load on the first generation instead of at startup |
 
+Capacity, all of it reachable by an unauthenticated client and therefore
+enforced before anything is allocated:
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `ROOM_CREATE_PER_MIN` | `10` | room creations per client address, token bucket |
+| `UNJOINED_ROOM_TTL_MS` | `300000` | how long a room nobody joined holds its slot |
+| `MAX_ROOM_SOCKETS` | `16` | sockets in one room (every join rebroadcasts the member list) |
+| `MAX_TOTAL_SOCKETS` | `256` | sockets in the process |
+| `MAX_ROOM_POINTS` | `2000000` | aggregate committed points in one room |
+| `ROOM_IDLE_MS` | `1800000` | how long an empty room keeps its rasters |
+
+`MAX_ROOM_POINTS` is the one that matters: the stroke count alone was never a
+bound, because 20,000 strokes of 50,000 points is a billion point dicts and the
+whole log is serialised into every joiner's snapshot. Past it, `stroke_end` is
+cancelled with a reason rather than committed.
+
+One more thing is process-wide rather than per-room: **generation admission**.
+Every room shares one FIFO slot, acquired *before* rasterising, so N active
+rooms cannot allocate N supersampled rasters and then queue for a GPU that
+serves one at a time. The watchdog starts at admission, never before it - a run
+that timed out while queueing would retry, turning one backlog into two.
+
 Each falls back to the `STREAM_*` name of the same setting, so an existing
 `.env` written for the worker keeps working.
 
