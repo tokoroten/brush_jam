@@ -64,6 +64,12 @@ class SocketConnection:
         self._buffered = 0
         self._open = True
         self._revoked = False
+        #: While held, frames are kept aside rather than queued. A join needs
+        #: this: its snapshot is serialised off the loop, and anything
+        #: broadcast during that await has to arrive *after* the snapshot, not
+        #: instead of it.
+        self._held = True
+        self._buffer: "list[str]" = []
         self._writer = asyncio.ensure_future(self._pump())
 
     @property
@@ -77,8 +83,39 @@ class SocketConnection:
     def send_text(self, data: str) -> None:
         if not self._open:
             return
+        if self._held:
+            self._buffered += len(data)
+            self._buffer.append(data)
+            return
         self._buffered += len(data)
         self._queue.put_nowait(data)
+
+    def release(self, first: Optional[str] = None) -> None:
+        """Stop holding: `first` goes out ahead of everything buffered.
+
+        That ordering is the whole point. `first` is the join snapshot, which
+        the protocol says arrives before any event; the buffer is what was
+        broadcast while it was being built, which must arrive after it rather
+        than be dropped.
+        """
+        if not self._held:
+            if first is not None:
+                self.send_text(first)
+            return
+        self._held = False
+        pending, self._buffer = self._buffer, []
+        if not self._open:
+            self._buffered -= sum(len(item) for item in pending)
+            return
+        if first is not None:
+            self._buffered += len(first)
+            self._queue.put_nowait(first)
+        for item in pending:
+            self._queue.put_nowait(item)
+
+    @property
+    def held(self) -> bool:
+        return self._held
 
     def close_now(self) -> None:
         if not self._open:
@@ -96,6 +133,8 @@ class SocketConnection:
         """
         self._open = False
         self._revoked = True
+        self._held = False
+        self._buffer = []
         self._buffered = 0
         while not self._queue.empty():
             try:
@@ -158,6 +197,12 @@ def prebuild_full_masks(config: Config) -> None:
     for size in sorted(sizes):
         if size > 0:
             build_full_mask(int(size))
+
+
+def _client_of(scope: Any) -> str:
+    """The address a request or a WebSocket came from, for rate limiting."""
+    client = getattr(scope, "client", None)
+    return getattr(client, "host", None) or "unknown"
 
 
 def _contained(candidate: Path, root: Path) -> bool:
@@ -224,18 +269,14 @@ def create_app(
     @app.post("/api/rooms")
     async def create_room_route(request: Request) -> Response:
         # Unauthenticated, and each success reserves one of a small number of
-        # room slots, so it is rate limited per client address.
-        client = request.client.host if request.client else "unknown"
-        if not registry.allow_create(client):
-            return JSONResponse(
-                {"error": "too many rooms created from here; try again shortly"},
-                status_code=429,
-                headers={"retry-after": "60"},
-            )
-        room = registry.create()
+        # room slots. `create` rate limits per client address, as every path
+        # that can bring a room into existence does.
+        room = registry.create(_client_of(request))
         if room is None:
             return JSONResponse(
-                {"error": "the server is holding too many rooms right now"}, status_code=429
+                {"error": "no room right now; too many rooms, or too many from here"},
+                status_code=429,
+                headers={"retry-after": "60"},
             )
         return JSONResponse({"roomId": room.state.id})
 
@@ -290,10 +331,14 @@ def create_app(
             body.extend(chunk)
             if len(body) > MAX_IMAGE_BYTES:
                 return JSONResponse({"error": "image too large"}, status_code=413)
-        target = registry.ensure(room_id)
+        # An upload to an id nobody has opened yet creates the room, so it is
+        # rate limited exactly like a POST to /api/rooms.
+        target = registry.get_or_create(room_id, _client_of(request))
         if target is None:
             return JSONResponse(
-                {"error": "the server is holding too many rooms right now"}, status_code=429
+                {"error": "no room right now; too many rooms, or too many from here"},
+                status_code=429,
+                headers={"retry-after": "60"},
             )
         stored = await target.add_image(bytes(body), mime)
         if "error" in stored:
@@ -319,27 +364,38 @@ def create_app(
         if not ROOM_ID.match(room_id):
             await socket.close(code=1008)
             return
-        room = registry.ensure(room_id)
-        if room is None:
-            await socket.accept()
-            await socket.close(code=1013, reason="server is holding too many rooms")
-            return
-        # Capacity is decided before anything is constructed or joined, so a
-        # refusal allocates nothing and leaves membership untouched.
-        refusal = registry.can_accept_socket(room)
-        if refusal is not None:
-            await socket.accept()
-            await socket.close(code=1013, reason=refusal)
-            return
-        await socket.accept()
         raw_token = socket.query_params.get("token") or ""
         token = raw_token if SESSION_TOKEN.match(raw_token) else None
-        connection = SocketConnection(socket)
-        registry.note_socket_open()
-        user_id = await room.join_async(
-            connection, socket.query_params.get("name") or "", token
-        )
+
+        room = registry.get(room_id)
+        if room is None:
+            # A link to a room that does not exist yet creates it - at the same
+            # rate as any other creation, and *before* a socket is accepted, so
+            # a refused connection cannot have spent a room slot.
+            room = registry.create_named(room_id, _client_of(socket))
+            if room is None:
+                await socket.accept()
+                await socket.close(code=1013, reason="no room right now")
+                return
+
+        # One synchronous check-and-take, before the first await: two
+        # handshakes that both passed a check before either incremented would
+        # both be admitted. A reconnect that replaces a socket already here
+        # needs no slot.
+        reservation = registry.reserve_socket(room, resume=room.resumes_existing_socket(token))
+        if reservation is None:
+            await socket.accept()
+            await socket.close(code=1013, reason=registry.can_accept_socket(room) or "full")
+            return
+
+        connection: Optional[SocketConnection] = None
+        user_id: Optional[str] = None
         try:
+            await socket.accept()
+            connection = SocketConnection(socket)
+            user_id = await room.join_async(
+                connection, socket.query_params.get("name") or "", token
+            )
             while True:
                 data = await socket.receive_text()
                 if len(data) > MAX_WS_PAYLOAD:
@@ -350,10 +406,17 @@ def create_app(
             pass
         except Exception:
             log.debug("[room %s] socket error", room_id, exc_info=True)
+            # A join that never finished must not leave a member nobody can
+            # reach, or a slot nobody will give back.
+            if connection is not None:
+                room.rollback_join(user_id, connection)
+                user_id = None
         finally:
-            registry.note_socket_closed()
-            room.leave(user_id, connection)
-            await connection.aclose()
+            reservation.release()
+            if user_id is not None and connection is not None:
+                room.leave(user_id, connection)
+            if connection is not None:
+                await connection.aclose()
 
     if has_web:
 

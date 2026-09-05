@@ -132,7 +132,7 @@ async def test_dirty_regions_are_clipped_to_the_canvas() -> None:
 
 def test_a_room_is_reclaimed_once_it_has_been_empty_long_enough() -> None:
     registry = RoomRegistry(MockBackend(0), config(ROOM_IDLE_MS="10000"))
-    room = registry.create()
+    room = registry.create("test")
     assert room is not None
     assert registry.sweep(now_ms()) == 0
     assert registry.sweep(now_ms() + 10_001) == 1
@@ -140,15 +140,16 @@ def test_a_room_is_reclaimed_once_it_has_been_empty_long_enough() -> None:
 
 
 def test_rooms_are_created_on_demand_and_capped() -> None:
-    registry = RoomRegistry(MockBackend(0), config())
-    same = registry.ensure("shared01")
-    assert same is registry.ensure("shared01")
+    # A high creation rate: this test is about the room table, not the limiter.
+    registry = RoomRegistry(MockBackend(0), config(ROOM_CREATE_PER_MIN="10000"))
+    same = registry.get_or_create("shared01", "test")
+    assert same is registry.get_or_create("shared01", "test")
     for i in range(MAX_ROOMS - 1):
-        assert registry.create() is not None
+        assert registry.create("test") is not None
     assert registry.size == MAX_ROOMS
     # Every room is fresh (lastActiveAt is now), so nothing can be swept.
-    assert registry.create() is None
-    assert registry.ensure("brandnew") is None
+    assert registry.create("test") is None
+    assert registry.get_or_create("brandnew", "test") is None
 
 
 async def test_capabilities_are_pushed_into_live_rooms() -> None:
@@ -166,7 +167,7 @@ async def test_capabilities_are_pushed_into_live_rooms() -> None:
         config(),
         RoomLimits(profiles=["fast", "quality"], max_denoise=0.95, max_resolution=1024),
     )
-    room = registry.ensure("live0001")
+    room = registry.get_or_create("live0001", "test")
     assert room is not None
     socket = FakeSocket()
     room.join(socket, "Alice")

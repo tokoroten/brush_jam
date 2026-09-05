@@ -88,8 +88,12 @@ class Config:
     #: Room creations allowed per client address per minute.
     room_create_per_min: int = 10
     #: Aggregate committed points a single room will hold. 20,000 strokes of
-    #: 50,000 points each is a billion point dicts; this is the real ceiling.
+    #: 50,000 points each is a billion point dicts.
     max_room_points: int = 2_000_000
+    #: What a room's stroke log may be estimated to serialise to. This is the
+    #: limit that decides whether the room stays joinable at all, so its
+    #: ceiling is below the 8 MiB outbound frame cap, not merely near it.
+    max_room_snapshot_bytes: int = 6 * 1024 * 1024
     runpod_endpoint_id: str = ""
     runpod_api_key: str = ""
     runpod_timeout_ms: int = 300_000
@@ -265,7 +269,20 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
             _num(env, "ROOM_CREATE_PER_MIN", 10, min=1, max=10_000, integer=True, errors=errors)
         ),
         max_room_points=int(
-            _num(env, "MAX_ROOM_POINTS", 2_000_000, min=10_000, max=200_000_000, integer=True, errors=errors)
+            _num(env, "MAX_ROOM_POINTS", 2_000_000, min=10_000, max=5_000_000, integer=True, errors=errors)
+        ),
+        max_room_snapshot_bytes=int(
+            _num(
+                env,
+                "MAX_ROOM_SNAPSHOT_BYTES",
+                6 * 1024 * 1024,
+                min=64 * 1024,
+                # Below the 8 MiB outbound cap with room for the rest of the
+                # snapshot: past it the room is one nobody can join.
+                max=7 * 1024 * 1024,
+                integer=True,
+                errors=errors,
+            )
         ),
         runpod_endpoint_id=env.get("RUNPOD_ENDPOINT_ID") or "",
         runpod_api_key=env.get("RUNPOD_API_KEY") or "",

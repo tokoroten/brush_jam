@@ -98,8 +98,8 @@ async def test_every_room_in_a_registry_shares_one_admission() -> None:
     from brushjam.runtime import RoomRegistry
 
     registry = RoomRegistry(MockBackend(), config())
-    one = registry.ensure("aaaa")
-    two = registry.ensure("bbbb")
+    one = registry.get_or_create("aaaa", "test")
+    two = registry.get_or_create("bbbb", "test")
     assert one is not None and two is not None
     assert one.scheduler.opts.admission is two.scheduler.opts.admission
     assert one.scheduler.opts.admission is registry.admission

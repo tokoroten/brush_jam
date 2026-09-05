@@ -7,6 +7,7 @@ here awaits, so a render can never observe a half-applied message.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -48,9 +49,24 @@ MAX_PENDING_PER_USER = 4
 #: Upper bound on a room's committed stroke log (snapshots are sent in full).
 MAX_STROKES_PER_ROOM = 20_000
 #: Aggregate committed points in one room. The stroke count alone is not a
-#: bound: 20,000 strokes of 50,000 points is a billion point dicts, and the
-#: whole log is serialised into every joiner's snapshot.
+#: bound: 20,000 strokes of 50,000 points is a billion point dicts.
 MAX_ROOM_POINTS = 2_000_000
+#: What the log is estimated to serialise to, which is the limit that actually
+#: matters: past the outbound frame cap the room is one nobody can join or
+#: resume into, so it must never be reachable. Sized below MAX_BUFFERED_BYTES
+#: (8 MiB) with room for the rest of the snapshot.
+MAX_ROOM_SNAPSHOT_BYTES = 6 * 1024 * 1024
+def stroke_snapshot_bytes(stroke: Stroke) -> int:
+    """Exactly what this stroke adds to a snapshot, plus its separating comma.
+
+    Measured rather than estimated. A per-point constant cannot be both safe
+    and useful here: points are clamped but not rounded, so one client sending
+    `1.2345678901234567` serialises to nearly three times what a well-behaved
+    one does, and an estimate large enough to bound that would shrink an
+    ordinary session's log to a fraction of the budget. The strokes this runs
+    on are small - it is one `dumps` of one stroke at commit time.
+    """
+    return len(json.dumps(stroke, separators=(",", ":"))) + 1
 
 MAX_SESSIONS = 64
 
@@ -195,6 +211,10 @@ class RoomState:
     committed_points: int = 0
     #: This room's aggregate point ceiling (the config value at creation).
     max_points: int = MAX_ROOM_POINTS
+    #: Estimated serialised size of the committed stroke log.
+    snapshot_bytes: int = 0
+    #: Ceiling for the above (the config value at creation).
+    max_snapshot_bytes: int = MAX_ROOM_SNAPSHOT_BYTES
 
 
 @dataclass
@@ -243,6 +263,7 @@ def create_room(
     profile: str = "fast",
     limits: Optional[RoomLimits] = None,
     max_points: int = MAX_ROOM_POINTS,
+    max_snapshot_bytes: int = MAX_ROOM_SNAPSHOT_BYTES,
 ) -> RoomState:
     limits = limits or RoomLimits()
     resolution = canvas_size if resolution is None else resolution
@@ -282,6 +303,7 @@ def create_room(
         created_at=now,
         last_active_at=now,
         max_points=max(1, int(max_points)),
+        max_snapshot_bytes=max(1024, int(max_snapshot_bytes)),
     )
 
 
@@ -391,6 +413,13 @@ def find_layer(room: RoomState, layer_id: str) -> Optional[Layer]:
 
 
 def snapshot(room: RoomState, you_user_id: str, ai_state: str, ai: Dict[str, Any]) -> RoomSnapshot:
+    """A detached copy of the room.
+
+    Every container is copied, because this is serialised on a worker thread
+    while the event loop keeps mutating the room: a live `strokes` list or a
+    live layer dict would either raise mid-`dumps` or produce a snapshot whose
+    contents disagree with the `humanRevision` beside them.
+    """
     return {
         "roomId": room.id,
         "youUserId": you_user_id,
@@ -410,9 +439,11 @@ def snapshot(room: RoomState, you_user_id: str, ai_state: str, ai: Dict[str, Any
         "aiProfiles": list(room.ai_profiles),
         "maxDenoise": room.max_denoise,
         "negativePromptActive": room.negative_active.get(room.ai_profile, True) is not False,
-        "members": list(room.members.values()),
-        "layers": sorted_layers(room),
-        "strokes": room.strokes,
+        "members": [dict(m) for m in room.members.values()],
+        "layers": [dict(l) for l in sorted_layers(room)],
+        # The stroke dicts themselves are never mutated after they are
+        # committed; the list they live in is appended to constantly.
+        "strokes": list(room.strokes),
         "undone": list(room.undone),
         "aiState": ai_state,
     }
@@ -589,21 +620,6 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
                     }
                 ]
             )
-        if room.committed_points + len(p.points) > room.max_points:
-            # The room is full. Cancelling is the honest answer: the client
-            # drops its optimistic preview instead of showing a stroke the
-            # server does not have. (The pending entry is already gone.)
-            return ApplyResult(
-                broadcast=[
-                    {
-                        "t": "stroke_cancel",
-                        "userId": user_id,
-                        "strokeId": stroke_id,
-                        "reason": "room stroke limit reached",
-                    }
-                ]
-            )
-        room.human_revision += 1
         stroke: Stroke = {
             "id": stroke_id,
             "userId": user_id,
@@ -613,11 +629,33 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             "width": p.init["width"],
             "alpha": p.init.get("alpha", DEFAULT_STROKE_ALPHA),
             "points": p.points,
-            "revision": room.human_revision,
+            "revision": room.human_revision + 1,
             "bbox": stroke_bbox(p.points, p.init["width"]),
         }
+        added_bytes = stroke_snapshot_bytes(stroke)
+        if (
+            room.committed_points + len(p.points) > room.max_points
+            or room.snapshot_bytes + added_bytes > room.max_snapshot_bytes
+        ):
+            # The room is full. Cancelling is the honest answer: the client
+            # drops its optimistic preview instead of showing a stroke the
+            # server does not have. Nothing has been mutated at this point -
+            # not the log, not the revision. (The pending entry is already
+            # gone, which is what ends the stroke.)
+            return ApplyResult(
+                broadcast=[
+                    {
+                        "t": "stroke_cancel",
+                        "userId": user_id,
+                        "strokeId": stroke_id,
+                        "reason": "quota",
+                    }
+                ]
+            )
+        room.human_revision += 1
         room.strokes.append(stroke)
         room.committed_points += len(p.points)
+        room.snapshot_bytes += added_bytes
         return ApplyResult(
             broadcast=[
                 {"t": "stroke_committed", "stroke": stroke, "humanRevision": room.human_revision}
@@ -668,6 +706,7 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         u = union_rects(visible)
         room.strokes = [s for s in room.strokes if s["layerId"] != layer["id"]]
         room.committed_points -= sum(len(s["points"]) for s in removed)
+        room.snapshot_bytes -= sum(stroke_snapshot_bytes(s) for s in removed)
         for s in removed:
             room.undone.discard(s["id"])
         cancels = _cancel_pending_on_layer(room, layer["id"])
@@ -806,10 +845,14 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         dirty = _layer_dirty(room, layer)
         cancels = _cancel_pending_on_layer(room, layer["id"])
         room.layers = [l for l in room.layers if l["id"] != layer["id"]]
-        for s in room.strokes:
-            if s["layerId"] == layer["id"]:
-                room.undone.discard(s["id"])
+        dropped = [s for s in room.strokes if s["layerId"] == layer["id"]]
+        for s in dropped:
+            room.undone.discard(s["id"])
         room.strokes = [s for s in room.strokes if s["layerId"] != layer["id"]]
+        # Deleting a layer gives its budget back: those strokes are gone from
+        # the log and from every future snapshot.
+        room.committed_points -= sum(len(s["points"]) for s in dropped)
+        room.snapshot_bytes -= sum(stroke_snapshot_bytes(s) for s in dropped)
         room.human_revision += 1
         return ApplyResult(
             broadcast=[

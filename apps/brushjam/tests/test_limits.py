@@ -6,8 +6,9 @@ the assertions are about what the server refuses, not about what it manages.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pytest
 from starlette.testclient import TestClient
@@ -65,6 +66,32 @@ class FakeSocket:
         return [json.loads(s)["t"] for s in self.sent]
 
 
+class HoldingSocket(FakeSocket):
+    """A FakeSocket with the real connection's hold/release behaviour."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._held = True
+        self._buffer: List[str] = []
+
+    def send_text(self, data: str) -> None:
+        if self._held:
+            self._buffer.append(data)
+            return
+        self.sent.append(data)
+
+    def release(self, first: Optional[str] = None) -> None:
+        if not self._held:
+            if first is not None:
+                self.sent.append(first)
+            return
+        self._held = False
+        if first is not None:
+            self.sent.append(first)
+        self.sent.extend(self._buffer)
+        self._buffer = []
+
+
 # ------------------------------------------------------------- room creation
 
 
@@ -94,7 +121,7 @@ def test_one_client_cannot_spend_the_budget_of_another() -> None:
 def test_a_room_nobody_joined_is_reclaimed_quickly() -> None:
     cfg = config(UNJOINED_ROOM_TTL_MS="1000", ROOM_IDLE_MS="600000")
     registry = RoomRegistry(MockBackend(), cfg)
-    room = registry.create()
+    room = registry.create("test")
     assert room is not None
     created = room.state.created_at
     # Still inside the grace period.
@@ -107,7 +134,7 @@ def test_a_room_nobody_joined_is_reclaimed_quickly() -> None:
 def test_a_room_someone_joined_keeps_the_longer_idle_life() -> None:
     cfg = config(UNJOINED_ROOM_TTL_MS="1000", ROOM_IDLE_MS="600000")
     registry = RoomRegistry(MockBackend(), cfg)
-    room = registry.create()
+    room = registry.create("test")
     assert room is not None
     room.join(FakeSocket(), "Alice")
     assert registry.sweep(room.state.created_at + 2000) == 0
@@ -118,23 +145,61 @@ def test_a_room_someone_joined_keeps_the_longer_idle_life() -> None:
 
 def test_a_room_refuses_sockets_past_its_member_cap() -> None:
     registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="2"))
-    room = registry.ensure("aaaa")
+    room = registry.get_or_create("aaaa", "test")
     assert room is not None
-    assert registry.can_accept_socket(room) is None
+    # A live socket holds its reservation for its whole life, so two joined
+    # members are two reservations.
+    assert registry.reserve_socket(room) is not None
     room.join(FakeSocket(), "A")
+    assert registry.reserve_socket(room) is not None
     room.join(FakeSocket(), "B")
+    assert registry.reserve_socket(room) is None
     assert registry.can_accept_socket(room) == "this room is full"
+
+
+def test_pending_handshakes_count_against_the_room_cap() -> None:
+    """Reservations are taken before the first await, so N concurrent
+    handshakes at the cap admit exactly the cap."""
+    registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="3"))
+    room = registry.get_or_create("aaaa", "test")
+    assert room is not None
+    taken = [registry.reserve_socket(room) for _ in range(8)]
+    assert sum(1 for t in taken if t is not None) == 3
+    assert room.reserved_sockets == 3
+    # Idempotent release: the route finally, a revoke and a failed join all
+    # want to give the same slot back.
+    first = next(t for t in taken if t is not None)
+    first.release()
+    first.release()
+    assert room.reserved_sockets == 2
+    assert registry.sockets_open == 2
+
+
+def test_a_resume_is_admitted_even_when_the_room_is_full() -> None:
+    registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="1"))
+    room = registry.get_or_create("aaaa", "test")
+    assert room is not None
+    reservation = registry.reserve_socket(room)
+    assert reservation is not None
+    room.join(FakeSocket(), "A", "tok-a-0001")
+    assert room.resumes_existing_socket("tok-a-0001") is True
+    # A newcomer is refused...
+    assert registry.reserve_socket(room) is None
+    # ...but the reconnect replaces a socket that is already counted.
+    assert registry.reserve_socket(room, resume=True) is not None
 
 
 def test_the_process_refuses_sockets_past_the_global_cap() -> None:
     registry = RoomRegistry(MockBackend(), config(MAX_TOTAL_SOCKETS="2"))
-    room = registry.ensure("aaaa")
+    room = registry.get_or_create("aaaa", "test")
     assert room is not None
-    registry.note_socket_open()
-    registry.note_socket_open()
+    first = registry.reserve_socket(room)
+    second = registry.reserve_socket(room)
+    assert first is not None and second is not None
+    assert registry.reserve_socket(room) is None
     assert registry.can_accept_socket(room) == "the server is holding too many connections"
-    registry.note_socket_closed()
-    assert registry.can_accept_socket(room) is None
+    second.release()
+    assert registry.reserve_socket(room) is not None
 
 
 def test_the_socket_cap_is_enforced_over_a_real_connection() -> None:
@@ -183,10 +248,79 @@ def test_a_room_refuses_strokes_past_its_aggregate_point_quota() -> None:
 
     second = draw(room, user, "s2", points)
     assert second.broadcast[0]["t"] == "stroke_cancel"
-    assert second.broadcast[0]["reason"] == "room stroke limit reached"
+    assert second.broadcast[0]["reason"] == "quota"
     # Refused means refused: nothing committed, no revision spent.
     assert len(room.strokes) == 1
     assert room.committed_points == 30
+
+
+def test_a_room_refuses_strokes_past_its_snapshot_byte_budget() -> None:
+    """The budget that decides whether the room stays joinable at all.
+
+    A room may not accumulate a log that serialises past the outbound frame
+    cap: every later join and every reconnect would be refused.
+    """
+    from brushjam.room import stroke_snapshot_bytes
+
+    points = [{"x": float(i), "y": 1.0} for i in range(100)]
+    probe = create_room("probe", max_points=10_000_000)
+    join_member(probe, "Probe")
+    draw(probe, next(iter(probe.members)), "p1", points)
+    one_stroke = probe.snapshot_bytes
+    assert one_stroke == stroke_snapshot_bytes(probe.strokes[0])
+
+    room = create_room("r", max_points=10_000_000, max_snapshot_bytes=one_stroke + 10)
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+
+    assert draw(room, user, "s1", points).broadcast[0]["t"] == "stroke_committed"
+    assert room.snapshot_bytes == one_stroke
+    refused = draw(room, user, "s2", points)
+    assert refused.broadcast[0]["t"] == "stroke_cancel"
+    assert refused.broadcast[0]["reason"] == "quota"
+    assert len(room.strokes) == 1
+
+
+def test_a_full_room_still_serialises_under_the_outbound_cap() -> None:
+    """The estimate has to be an over-estimate, or the budget is decorative."""
+    import json
+
+    from brushjam.room import snapshot
+    from brushjam.runtime import MAX_BUFFERED_BYTES
+
+    room = create_room("r", max_points=5_000_000)
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    # Fill to the byte budget with realistic strokes.
+    points = [{"x": 1234.5, "y": 6789.25, "p": 0.5} for _ in range(2000)]
+    n = 0
+    while draw(room, user, f"s{n}", points).broadcast[0]["t"] == "stroke_committed":
+        n += 1
+        assert n < 500, "the budget never refused a stroke"
+    assert n > 10
+    data = json.dumps(
+        snapshot(room, user, "idle", {"window": 768, "apply": 768, "canvasSize": 1024}),
+        separators=(",", ":"),
+    )
+    assert len(data) <= room.max_snapshot_bytes, "the accounting under-counts"
+    assert len(data) < MAX_BUFFERED_BYTES
+
+
+def test_deleting_a_layer_gives_the_budget_back() -> None:
+    room = create_room("r")
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    apply_client_message(
+        room, user, {"t": "layer_create", "layer": {"kind": "draw", "name": "Two"}}
+    )
+    second = room.layers[-1]["id"]
+    layer = room.layers[0]["id"]
+    draw(room, user, "s1", [{"x": float(i), "y": 1.0} for i in range(30)])
+    assert room.snapshot_bytes > 0
+    assert second != layer
+    apply_client_message(room, user, {"t": "layer_delete", "id": layer})
+    assert room.committed_points == 0
+    assert room.snapshot_bytes == 0
 
 
 def test_clearing_a_layer_gives_the_quota_back() -> None:
@@ -197,6 +331,7 @@ def test_clearing_a_layer_gives_the_quota_back() -> None:
     assert room.committed_points == 30
     apply_client_message(room, user, {"t": "clear_layer", "layerId": room.layers[0]["id"]})
     assert room.committed_points == 0
+    assert room.snapshot_bytes == 0
 
 
 def test_a_snapshot_too_large_to_send_refuses_the_join() -> None:
@@ -275,3 +410,158 @@ async def test_a_superseded_socket_loses_its_identity_immediately() -> None:
         new,
     )
     assert len(room.state.strokes) == before + 1
+
+
+# ------------------------------------------------ creation, every entry point
+
+
+def test_a_websocket_to_an_unknown_room_is_rate_limited_too() -> None:
+    """The POST is not the only way to make a room; the link is the usual way."""
+    with client(ROOM_CREATE_PER_MIN="2") as c:
+        with c.websocket_connect("/ws/rooms/wsroom01?name=A") as first:
+            assert json.loads(first.receive_text())["t"] == "snapshot"
+        with c.websocket_connect("/ws/rooms/wsroom02?name=A") as second:
+            assert json.loads(second.receive_text())["t"] == "snapshot"
+        with pytest.raises(Exception):
+            with c.websocket_connect("/ws/rooms/wsroom03?name=A") as third:
+                third.receive_text()
+
+
+def test_an_upload_to_an_unknown_room_is_rate_limited_too() -> None:
+    from PIL import Image
+
+    from brushjam.raster import to_png
+
+    body = to_png(Image.new("RGB", (8, 8), (1, 2, 3)))
+    headers = {"content-type": "image/png"}
+    with client(ROOM_CREATE_PER_MIN="1") as c:
+        first = c.post("/rooms/uproom001/images", content=body, headers=headers)
+        second = c.post("/rooms/uproom002/images", content=body, headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
+def test_get_never_creates_a_room() -> None:
+    registry = RoomRegistry(MockBackend(), config())
+    assert registry.get("nothing1") is None
+    assert registry.size == 0
+
+
+def test_a_refused_connection_does_not_leave_a_room_behind() -> None:
+    """Capacity is decided before the room is made, so a rejected socket
+    cannot have spent one of the 64 room slots."""
+    with client(ROOM_CREATE_PER_MIN="1") as c:
+        with c.websocket_connect("/ws/rooms/allowed1?name=A") as ok:
+            ok.receive_text()
+            with pytest.raises(Exception):
+                with c.websocket_connect("/ws/rooms/refused1?name=B") as no:
+                    no.receive_text()
+        rooms = c.get("/healthz").json()["rooms"]
+    assert rooms == 1
+
+
+def test_a_connection_that_never_joined_does_not_extend_the_room_lifetime() -> None:
+    cfg = config(UNJOINED_ROOM_TTL_MS="1000", ROOM_IDLE_MS="600000")
+    registry = RoomRegistry(MockBackend(), cfg)
+    room = registry.create_named("aaaa", "test")
+    assert room is not None
+    # A socket that took a reservation but never completed a join.
+    reservation = registry.reserve_socket(room)
+    assert reservation is not None
+    reservation.release()
+    assert room.ever_joined is False
+    assert registry.sweep(room.state.created_at + 2000) == 1
+
+
+def test_the_rate_limiter_is_bounded_by_address_count() -> None:
+    from brushjam.runtime import MAX_RATE_BUCKETS
+
+    registry = RoomRegistry(MockBackend(), config(ROOM_CREATE_PER_MIN="1"))
+    now = 1000.0
+    for i in range(5000):
+        address = "10.0.%d.%d" % (i // 256, i % 256)
+        # Twice each: the second is refused, and the refused path has to prune
+        # as well or the table grows on exactly the traffic that matters.
+        registry.allow_create(address, now)
+        registry.allow_create(address, now)
+    assert len(registry._create_buckets) <= MAX_RATE_BUCKETS
+
+
+def test_a_refilled_bucket_is_dropped_rather_than_kept_forever() -> None:
+    registry = RoomRegistry(MockBackend(), config(ROOM_CREATE_PER_MIN="10"))
+    for i in range(100):
+        registry.allow_create("1.0.0.%d" % i, 0.0)
+    assert len(registry._create_buckets) == 100
+    # A minute later every one of them has refilled, and a full bucket says
+    # nothing a fresh one would not.
+    registry.allow_create("2.2.2.2", 120.0)
+    assert len(registry._create_buckets) == 1
+
+
+# ------------------------------------------- join ordering and join failures
+
+
+async def test_a_broadcast_during_serialisation_arrives_after_the_snapshot() -> None:
+    """The snapshot is first, and nothing sent while it was being built is
+    lost - it is delivered behind it, in order."""
+    room = RoomRuntime("order", MockBackend(), config())
+    room.join(FakeSocket(), "Bob")
+
+    socket = HoldingSocket()
+    join = asyncio.ensure_future(room.join_async(socket, "Alice"))
+    await asyncio.sleep(0)  # the join is now inside its threaded dumps
+    room.broadcast({"t": "prompt_changed", "prompt": "during", "humanRevision": 1})
+    room.broadcast({"t": "clear_applied", "layerId": "L0", "humanRevision": 2})
+    await join
+
+    types = socket.types()
+    assert types[0] == "snapshot"
+    assert types[1:3] == ["prompt_changed", "clear_applied"]
+
+
+async def test_a_join_that_fails_leaves_no_member_and_no_reservation() -> None:
+    registry = RoomRegistry(MockBackend(), config())
+    room = registry.create_named("failjoin", "test")
+    assert room is not None
+    reservation = registry.reserve_socket(room)
+    assert reservation is not None
+
+    class Exploding(FakeSocket):
+        def send_text(self, data: str) -> None:
+            raise RuntimeError("transport gone")
+
+    socket = Exploding()
+    user_id = None
+    try:
+        user_id = await room.join_async(socket, "Alice")
+    except Exception:
+        pass
+    finally:
+        room.rollback_join(user_id, socket)
+        reservation.release()
+
+    assert room.member_count == 0
+    assert room.state.members == {}
+    assert registry.sockets_open == 0
+    assert room.reserved_sockets == 0
+
+
+async def test_an_old_socket_leaving_during_a_resume_keeps_the_member() -> None:
+    """The gap this closes: the old route reaching leave() used to find no
+    mapping and remove the member the new socket had just resumed."""
+    room = RoomRuntime("gap", MockBackend(), config())
+    old = FakeSocket()
+    user_id = room.join(old, "Alice", "tok-gap-0001")
+    room.handle(user_id, a_stroke(room, "mid"), old)
+    assert room.state.pending
+
+    new = HoldingSocket()
+    join = asyncio.ensure_future(room.join_async(new, "Alice", "tok-gap-0001"))
+    await asyncio.sleep(0)
+    # The old route notices its socket closed, mid-resume.
+    room.leave(user_id, old)
+    await join
+
+    assert user_id in room.state.members, "the resumed member was removed"
+    assert room.member_count == 1
+    assert room.state.pending, "the resumed user's in-progress stroke was cancelled"
