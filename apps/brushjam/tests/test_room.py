@@ -272,3 +272,58 @@ def test_clamp_denoise(value: float, expected: float) -> None:
 )
 def test_clamp_resolution(value: float, maximum: int, expected: int) -> None:
     assert clamp_resolution(value, maximum) == expected
+
+
+def test_a_refused_locked_layer_update_changes_nothing() -> None:
+    """`{locked: true, offsetX: 10}` used to lock the layer and then refuse.
+
+    The refusal carries no revision and no broadcast, so every client kept
+    believing the layer was unlocked while the server had locked it.
+    """
+    room = create_room("r")
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    layer = room.layers[0]
+    before_revision = room.human_revision
+
+    result = apply_client_message(
+        room,
+        user,
+        {"t": "layer_update", "id": layer["id"], "patch": {"locked": True, "offsetX": 10}},
+    )
+    assert result.to_sender and result.to_sender[0]["message"] == "layer is locked"
+    assert layer["locked"] is False, "a refused patch must not lock the layer"
+    assert (layer.get("offsetX") or 0) == 0
+    assert room.human_revision == before_revision
+    assert result.broadcast == []
+
+
+def test_unlocking_and_moving_in_one_update_is_still_allowed() -> None:
+    room = create_room("r")
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    layer = room.layers[0]
+    layer["locked"] = True
+
+    apply_client_message(
+        room,
+        user,
+        {"t": "layer_update", "id": layer["id"], "patch": {"locked": False, "offsetX": 12}},
+    )
+    assert layer["locked"] is False
+    assert layer["offsetX"] == 12
+
+
+def test_a_locked_layer_still_refuses_a_transform_on_its_own() -> None:
+    room = create_room("r")
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    layer = room.layers[0]
+    layer["locked"] = True
+
+    result = apply_client_message(
+        room, user, {"t": "layer_update", "id": layer["id"], "patch": {"offsetX": 12}}
+    )
+    assert result.to_sender[0]["message"] == "layer is locked"
+    assert (layer.get("offsetX") or 0) == 0
+

@@ -23,6 +23,8 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .ai.backends import AIBackend, MockBackend
 from .config import Config
+from .constants import AI_RESOLUTIONS
+from .raster import build_full_mask
 from .room import RoomLimits
 from .runtime import MAX_BUFFERED_BYTES, RoomRegistry
 
@@ -147,6 +149,24 @@ class SocketConnection:
                 self._writer.cancel()
 
 
+def prebuild_full_masks(config: Config) -> None:
+    """Every generation size a room can ask for, built once at startup."""
+    sizes = {config.ai_window, config.canvas_size}
+    sizes.update(s for s in AI_RESOLUTIONS if s <= config.canvas_size)
+    if config.max_resolution:
+        sizes.add(config.max_resolution)
+    for size in sorted(sizes):
+        if size > 0:
+            build_full_mask(int(size))
+
+
+def _contained(candidate: Path, root: Path) -> bool:
+    try:
+        return candidate == root or candidate.relative_to(root) is not None
+    except ValueError:
+        return False
+
+
 def default_web_dist() -> Path:
     """The built client: `static/` inside the package (what scripts/build_web.py
     fills), else the repo's apps/web/dist for a dev checkout."""
@@ -174,6 +194,9 @@ def create_app(
         loader = None
         if config.inproc_preload and hasattr(backend, "load"):
             loader = asyncio.ensure_future(backend.load())
+        # Build the full-canvas masks now, off the loop: the first generation at
+        # a size would otherwise PNG-encode one while every room's sockets wait.
+        await asyncio.to_thread(prebuild_full_masks, config)
         try:
             yield
         finally:

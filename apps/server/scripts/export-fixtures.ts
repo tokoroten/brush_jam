@@ -14,7 +14,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fnv1a, noiseRGB, type ClientMessage } from '@brushjam/shared';
+import { fnv1a, noiseRGB, renderStrokes, type ClientMessage } from '@brushjam/shared';
 import { validateClientMessage } from '../src/validate.js';
 import {
   applyClientMessage,
@@ -164,6 +164,116 @@ function noiseFixture(): unknown {
   };
 }
 
+// ---------------------------------------------------------- noise placement
+
+/**
+ * Where a noise stroke's hash is addressed from, taken from the REAL shared
+ * renderer rather than transcribed.
+ *
+ * `renderStrokes` is driven with a canvas stub that reports every pixel as
+ * covered, so the noise loop runs over the whole temp raster and the first
+ * pixel it writes is `noiseHash(seed, worldX, worldY)` - the origin this
+ * fixture exists to pin down. Coverage and antialiasing are not the subject
+ * and are deliberately faked; the origin is not.
+ *
+ * Fractional layer offsets are the interesting case: the renderer keeps the
+ * temp origin unrounded and applies `Math.round` to it, so a server that
+ * floors first hashes from the previous world pixel.
+ */
+function noisePlacementFixture(): unknown {
+  interface Recorded {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    firstPixel: [number, number, number];
+  }
+
+  // The temp canvas the noise pen creates is the one whose pixels matter; the
+  // target only reports where it was drawn.
+  let tempData: number[] = [];
+
+  const makeCtx = (width: number, height: number, record: null | ((r: Recorded) => void)): any => ({
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, arc() {},
+    stroke() {}, fill() {},
+    globalCompositeOperation: 'source-over',
+    globalAlpha: 1,
+    strokeStyle: '', fillStyle: '', lineWidth: 1, lineCap: '', lineJoin: '',
+    canvas: { width, height },
+    getImageData(_x: number, _y: number, w: number, h: number) {
+      // Everything covered: the noise loop skips fully transparent pixels, and
+      // what is being captured is which world pixel it starts from.
+      tempData = new Array(w * h * 4).fill(0);
+      for (let i = 3; i < tempData.length; i += 4) tempData[i] = 255;
+      return { data: tempData };
+    },
+    putImageData() {},
+    drawImage(_image: never, dx: number, dy: number) {
+      if (record === null) return;
+      record({
+        left: dx,
+        top: dy,
+        width,
+        height,
+        firstPixel: [tempData[0] ?? 0, tempData[1] ?? 0, tempData[2] ?? 0],
+      });
+    },
+  });
+
+  const cases: unknown[] = [];
+  const offsets = [0, 0.5, -0.5, 0.25, -0.25, 1, 2.5, -3.5];
+  const strokes = [
+    { id: 'noise-a', tool: 'noise' as const, color: '#000000', width: 12, points: [{ x: 40, y: 40 }, { x: 90, y: 70 }] },
+    { id: 'noise-b', tool: 'noise' as const, color: '#000000', width: 7, points: [{ x: 41.5, y: 40.5 }, { x: 61.5, y: 80.5 }] },
+    { id: 'ある', tool: 'noise' as const, color: '#000000', width: 24, points: [{ x: 10, y: 10 }, { x: 200, y: 190 }] },
+    // Starts off the top-left corner, so the temp box is clamped to -pad and
+    // the origin becomes fractional under a fractional offset. That is the
+    // only way to reach an exact .5, where Math.round and Python's
+    // ties-to-even round() disagree.
+    { id: 'noise-clipped', tool: 'noise' as const, color: '#000000', width: 7, points: [{ x: -30, y: -30 }, { x: 20, y: 25 }] },
+  ];
+  const bounds = { width: 256, height: 256 };
+
+  for (const stroke of strokes) {
+    for (const offsetX of offsets) {
+      for (const offsetY of offsets) {
+        let recorded: Recorded | null = null;
+        const target = makeCtx(bounds.width, bounds.height, (r) => (recorded = r));
+        renderStrokes(target as never, [stroke], {
+          offsetX,
+          offsetY,
+          bounds,
+          createCanvas: (w: number, h: number) => ({
+            width: w,
+            height: h,
+            getContext: () => makeCtx(w, h, null),
+          } as never),
+        });
+        if (recorded === null) continue;
+        const r = recorded as Recorded;
+        cases.push({
+          strokeId: stroke.id,
+          seed: fnv1a(stroke.id),
+          width: stroke.width,
+          points: stroke.points,
+          offsetX,
+          offsetY,
+          bounds,
+          // What the renderer actually used, unrounded.
+          logicalLeft: r.left,
+          logicalTop: r.top,
+          tempWidth: r.width,
+          tempHeight: r.height,
+          // noiseHash at the temp origin, i.e. the world pixel the stroke's
+          // noise starts from. This is the value a port must reproduce.
+          originRGB: r.firstPixel,
+        });
+      }
+    }
+  }
+  return { cases };
+}
+
 // ----------------------------------------------------------------- reducer
 
 /**
@@ -294,6 +404,7 @@ mkdirSync(OUT_DIR, { recursive: true });
 const files: [string, unknown][] = [
   ['protocol-samples.json', protocolFixture()],
   ['noise-samples.json', noiseFixture()],
+  ['noise-placement.json', noisePlacementFixture()],
   ['reducer-trace.json', reducerFixture()],
 ];
 for (const [name, body] of files) {

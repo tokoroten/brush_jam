@@ -376,6 +376,25 @@ describe('locked layer transforms', () => {
     expect(state.layers[0]).toMatchObject({ locked: false, offsetX: 300 });
   });
 
+  it('leaves the layer untouched when it refuses', () => {
+    // `{locked: true, offsetX}` used to lock the layer and *then* refuse. The
+    // refusal carries no revision and no broadcast, so every client went on
+    // believing the layer was unlocked while the server had locked it.
+    const { state, alice, layerId } = room();
+    const revision = state.humanRevision;
+    const out = applyClientMessage(state, alice, {
+      t: 'layer_update',
+      id: layerId,
+      patch: { locked: true, name: 'Renamed', offsetX: 300 },
+    });
+    expect(out.toSender?.[0]).toMatchObject({ t: 'error', message: 'layer is locked' });
+    expect(state.layers[0]!.locked).toBe(false);
+    expect(state.layers[0]!.name).not.toBe('Renamed');
+    expect(state.layers[0]!.offsetX ?? 0).toBe(0);
+    expect(state.humanRevision).toBe(revision);
+    expect(out.broadcast ?? []).toHaveLength(0);
+  });
+
   it('still allows non-transform edits while locked', () => {
     const { state, alice, layerId } = room();
     applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { locked: true } });

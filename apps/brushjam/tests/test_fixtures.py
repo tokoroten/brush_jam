@@ -151,3 +151,47 @@ def test_reducer_trace_matches_node() -> None:
         assert json.loads(json.dumps(_normalise(after, mapping))) == step["snapshot"], (
             f"step {index} snapshot ({step['msg']})"
         )
+
+
+# ----------------------------------------------------------- noise placement
+
+
+def test_noise_hashes_from_the_same_world_pixel_as_the_browser() -> None:
+    """Where a noise stroke's texture starts, for fractional layer offsets.
+
+    The fixture is produced by driving the real shared renderer, so this is the
+    origin the browser uses, not a restatement of it. Two things it pins down:
+    the temp raster's origin must stay unrounded for hashing (flooring it first
+    shifts the texture onto the previous world pixel), and the rounding must be
+    `Math.round`, not Python's ties-to-even.
+    """
+    from brushjam.raster import _js_round, _temp_box
+
+    cases: List[Dict[str, Any]] = load_fixture("noise-placement.json")["cases"]
+    assert len(cases) > 100
+    ties = 0
+    for case in cases:
+        stroke = {
+            "id": case["strokeId"],
+            "tool": "noise",
+            "color": "#000000",
+            "width": case["width"],
+            "points": case["points"],
+        }
+        box = _temp_box(stroke, case["offsetX"], case["offsetY"], case["bounds"])
+        assert box is not None, case
+        assert box.logical_left == case["logicalLeft"], case
+        assert box.logical_top == case["logicalTop"], case
+
+        world_x = _js_round(box.logical_left + case["offsetX"])
+        world_y = _js_round(box.logical_top + case["offsetY"])
+        assert list(noise_rgb(fnv1a(case["strokeId"]), world_x, world_y)) == case["originRGB"], case
+
+        if (world_x, world_y) != (
+            round(box.logical_left + case["offsetX"]),
+            round(box.logical_top + case["offsetY"]),
+        ):
+            ties += 1
+    # If the fixture stopped covering exact .5 sums, the rounding rule would be
+    # untested and this would silently pass.
+    assert ties > 0, "no case exercises the Math.round / round() difference"

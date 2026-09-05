@@ -739,15 +739,23 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             layer[key] = value
             renders_differently = True
 
+        # Validate the WHOLE patch before touching the layer. A refusal must
+        # leave nothing behind: `{locked: true, offsetX: 10}` used to lock the
+        # layer and then refuse, with no revision and no broadcast, so every
+        # client disagreed with the server about the lock.
+        # Unlocking in the same update is still allowed - the prospective lock
+        # is what the patch asks for, not what the layer currently says.
+        transforms = ("x", "y", "scale", "offsetX", "offsetY")
+        will_be_locked = (
+            patch["locked"] if isinstance(patch.get("locked"), bool) else layer["locked"]
+        )
+        if will_be_locked and any(_finite(patch.get(k)) for k in transforms):
+            return _refuse("layer is locked")
+
         if isinstance(patch.get("name"), str):
             layer["name"] = patch["name"][:32]
         if isinstance(patch.get("locked"), bool):
             layer["locked"] = patch["locked"]
-        # A locked layer must not be moved or scaled. Unlocking in the same
-        # update is allowed - `locked` above has already been applied.
-        transforms = ("x", "y", "scale", "offsetX", "offsetY")
-        if layer["locked"] and any(_finite(patch.get(k)) for k in transforms):
-            return _refuse("layer is locked")
         if isinstance(patch.get("visible"), bool):
             set_render("visible", patch["visible"])
         if _finite(patch.get("opacity")):

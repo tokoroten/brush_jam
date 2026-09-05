@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import io
 import math
+import threading
 from collections import OrderedDict
 from functools import lru_cache
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -34,25 +35,34 @@ _BYTES_PER_PIXEL = 4
 #: bounded by decoded pixels, not entries, and evicts least-recently-used first.
 DECODED_PIXEL_BUDGET = (512 * 1024 * 1024) // _BYTES_PER_PIXEL
 
-_image_cache: "OrderedDict[str, Tuple[Image.Image, int]]" = OrderedDict()
+#: Rooms render on different worker threads and pruning runs on the event
+#: loop, so every read, insert, eviction and removal happens under this.
+_cache_lock = threading.Lock()
+#: Immutable RGBA pixels, not PIL images: what the cache hands out is shared by
+#: concurrent renders, and a shared mutable image is a bug waiting for a second
+#: room.
+_image_cache: "OrderedDict[str, Tuple[np.ndarray, int]]" = OrderedDict()
 _cached_pixels = 0
 
 
 def decoded_cache_stats() -> Dict[str, int]:
-    return {"entries": len(_image_cache), "pixels": _cached_pixels}
+    with _cache_lock:
+        return {"entries": len(_image_cache), "pixels": _cached_pixels}
 
 
 def forget_images(ids: Iterable[str]) -> None:
     """Drop decoded images that are no longer referenced."""
     global _cached_pixels
-    for image_id in list(ids):
-        entry = _image_cache.pop(image_id, None)
-        if entry is None:
-            continue
-        _cached_pixels -= entry[1]
+    with _cache_lock:
+        for image_id in list(ids):
+            entry = _image_cache.pop(image_id, None)
+            if entry is None:
+                continue
+            _cached_pixels -= entry[1]
 
 
 def _evict_until_under_budget(budget: int = DECODED_PIXEL_BUDGET) -> None:
+    """Caller holds `_cache_lock`."""
     global _cached_pixels
     while _cached_pixels > budget and _image_cache:
         _, entry = _image_cache.popitem(last=False)
@@ -61,18 +71,32 @@ def _evict_until_under_budget(budget: int = DECODED_PIXEL_BUDGET) -> None:
 
 def _decode(image_id: str, data: bytes) -> Image.Image:
     global _cached_pixels
-    hit = _image_cache.get(image_id)
-    if hit is not None:
-        _image_cache.move_to_end(image_id)
-        return hit[0]
-    image = Image.open(io.BytesIO(data))
-    image.load()
-    image = image.convert("RGBA")
-    pixels = image.width * image.height
-    _image_cache[image_id] = (image, pixels)
-    _cached_pixels += pixels
-    _evict_until_under_budget()
-    return image
+    with _cache_lock:
+        hit = _image_cache.get(image_id)
+        if hit is not None:
+            _image_cache.move_to_end(image_id)
+            return Image.fromarray(hit[0], "RGBA")
+
+    # Decoding is slow and is deliberately done outside the lock: two threads
+    # racing on the same id decode twice, and the accounting below makes that
+    # cost one entry, not two.
+    with Image.open(io.BytesIO(data)) as raw:
+        raw.load()
+        pixels_array = np.asarray(raw.convert("RGBA"), dtype=np.uint8)
+    pixels_array = np.ascontiguousarray(pixels_array)
+    pixels_array.flags.writeable = False
+    pixels = int(pixels_array.shape[0]) * int(pixels_array.shape[1])
+
+    with _cache_lock:
+        existing = _image_cache.get(image_id)
+        if existing is not None:
+            # Somebody else won the race; use theirs so the budget counts one.
+            _image_cache.move_to_end(image_id)
+            return Image.fromarray(existing[0], "RGBA")
+        _image_cache[image_id] = (pixels_array, pixels)
+        _cached_pixels += pixels
+        _evict_until_under_budget()
+    return Image.fromarray(pixels_array, "RGBA")
 
 
 def decode_upload(data: bytes, width: int, height: int) -> bool:
@@ -126,10 +150,35 @@ def stroke_bounds(stroke: Stroke) -> Rect:
     }
 
 
+def _js_round(v: float) -> int:
+    """`Math.round`: half away from zero upwards, not Python's ties-to-even.
+
+    `round(0.5)` is 0 in Python and 1 in JavaScript, and this decides which
+    world pixel a noise stroke hashes from.
+    """
+    return math.floor(v + 0.5)
+
+
+class TempBox(NamedTuple):
+    """The temp raster a stroke is drawn into, in target space.
+
+    `left`/`top` are the integral origin the array is sliced at. `logical_left`
+    and `logical_top` are the same origin *unrounded*, which is what the shared
+    renderer keeps and what the noise hash is addressed from - flooring first
+    shifts a fractionally translated noise layer onto the previous world pixel.
+    """
+
+    left: int
+    top: int
+    width: int
+    height: int
+    logical_left: float
+    logical_top: float
+
+
 def _temp_box(
     stroke: Stroke, offset_x: float, offset_y: float, bounds: Optional[Dict[str, int]]
-) -> Optional[Tuple[int, int, int, int]]:
-    """The temp raster a stroke is drawn into, in target space: (left, top, w, h)."""
+) -> Optional[TempBox]:
     box = stroke_bounds(stroke)
     left = box["x"] - offset_x
     top = box["y"] - offset_y
@@ -152,7 +201,7 @@ def _temp_box(
     height = math.ceil(bottom - top_i)
     if width <= 0 or height <= 0:
         return None
-    return left_i, top_i, width, height
+    return TempBox(left_i, top_i, width, height, left, top)
 
 
 def _rasterise_shape(stroke: Stroke, left: float, top: float, width: int, height: int) -> np.ndarray:
@@ -289,7 +338,7 @@ def render_strokes(
         box = _temp_box(s, offset_x, offset_y, bounds)
         if box is None:
             continue
-        left, top, width, height = box
+        left, top, width, height = box.left, box.top, box.width, box.height
         # The shape is rasterised at full strength in its own box and
         # composited ONCE at the stroke's alpha, so a stroke that crosses
         # itself is one mark at one strength. The box is in target space, so
@@ -302,8 +351,8 @@ def render_strokes(
         if s["tool"] == "noise":
             # Seeded by the stroke id and addressed in *world* coordinates, so a
             # translated render (the server's crop) yields identical pixels.
-            world_x = round(left + offset_x)
-            world_y = round(top + offset_y)
+            world_x = _js_round(box.logical_left + offset_x)
+            world_y = _js_round(box.logical_top + offset_y)
             rgb = _noise_rgb_grid(fnv1a(s["id"]), world_x, world_y, width, height).astype(
                 np.float32
             )

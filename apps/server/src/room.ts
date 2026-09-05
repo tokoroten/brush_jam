@@ -554,14 +554,20 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         rendersDifferently = true;
       };
 
-      if (typeof patch.name === 'string') layer.name = patch.name.slice(0, 32);
-      if (typeof patch.locked === 'boolean') layer.locked = patch.locked;
-      // A locked layer must not be moved or scaled. Unlocking in the same
-      // update is allowed - `locked` above has already been applied.
+      // Validate the WHOLE patch before touching the layer. A refusal must
+      // leave nothing behind: `{locked: true, offsetX: 10}` used to lock the
+      // layer and then refuse, with no revision and no broadcast, so every
+      // client disagreed with the server about the lock.
+      // Unlocking in the same update is still allowed - the prospective lock is
+      // what the patch asks for, not what the layer currently says.
       const transforms = ['x', 'y', 'scale', 'offsetX', 'offsetY'] as const;
-      if (layer.locked && transforms.some((k) => finite(patch[k]))) {
+      const willBeLocked = typeof patch.locked === 'boolean' ? patch.locked : layer.locked;
+      if (willBeLocked && transforms.some((k) => finite(patch[k]))) {
         return refuse('layer is locked');
       }
+
+      if (typeof patch.name === 'string') layer.name = patch.name.slice(0, 32);
+      if (typeof patch.locked === 'boolean') layer.locked = patch.locked;
       if (typeof patch.visible === 'boolean') setRender('visible', patch.visible);
       if (finite(patch.opacity)) setRender('opacity', clamp(patch.opacity, 0, 1));
       if (typeof patch.includeInAI === 'boolean' && layer.kind === 'reference') setRender('includeInAI', patch.includeInAI);
