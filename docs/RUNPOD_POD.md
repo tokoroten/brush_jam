@@ -93,6 +93,12 @@ cycle skips straight to the model load.
 - **One GPU, one generation at a time.** The server's own admission control
   handles the queue; expect ~1.5–2 s per edit at fast/768 and ~9 s at
   quality/1024 on a 3070, faster on a 4090.
+- **The proxy blocks the default urllib user agent.** A request sent as
+  `Python-urllib/3.x` gets a flat 403 from `*.proxy.runpod.net` - the identical
+  request with curl's user agent goes through. `deploy.py` names itself
+  (`brushjam-deploy/1.0`) on every proxied call, and anything else talking to
+  the pod has to as well. The failure is indistinguishable from a rejected
+  upload token, so check this first.
 - **Uploads must carry a Content-Length.** A chunked PUT cannot be stored, so
   the receiver answers 411 (no length) or 400 (unparseable, or a body cut
   short) rather than the 403 it uses for a bad token. `deploy.py` sends the

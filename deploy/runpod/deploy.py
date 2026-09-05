@@ -37,6 +37,8 @@ REPO = HERE.parent.parent
 POD_FILE = HERE / ".pod"
 TARBALL = HERE / "app.tgz"
 API = "https://rest.runpod.io/v1"
+#: Anything but urllib's default: the pod proxy 403s that one.
+USER_AGENT = "brushjam-deploy/1.0"
 
 GPU_TYPE = "NVIDIA GeForce RTX 4090"
 IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
@@ -107,8 +109,23 @@ def proxy(pod_id: str, port: int) -> str:
     return f"https://{pod_id}-{port}.proxy.runpod.net"
 
 
+def proxy_request(url: str, data: Optional[bytes] = None, method: str = "GET", **headers: str):
+    """A request the RunPod proxy will actually forward.
+
+    The proxy answers 403 to anything sent with urllib's default user agent -
+    the same request with curl's goes through - so every call through
+    *.proxy.runpod.net names itself. This looked exactly like a bad upload
+    token for two rounds of debugging.
+    """
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("user-agent", USER_AGENT)
+    for name, value in headers.items():
+        request.add_header(name.replace("_", "-"), value)
+    return request
+
+
 def get(url: str, timeout: float = 20) -> str:
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+    with urllib.request.urlopen(proxy_request(url), timeout=timeout) as response:
         return response.read().decode("utf-8", "replace")
 
 
@@ -248,11 +265,12 @@ def upload(pod_id: str, token: str, tarball: Path) -> None:
     # proxy refuses it outright). The tarball is under a megabyte.
     body = tarball.read_bytes()
     print(f"uploading {len(body) / 1e6:.1f} MB", flush=True)
-    req = urllib.request.Request(
+    req = proxy_request(
         f"{proxy(pod_id, 8788)}/upload?token={token}",
         data=body,
         method="PUT",
-        headers={"content-type": "application/octet-stream", "content-length": str(len(body))},
+        content_type="application/octet-stream",
+        content_length=str(len(body)),
     )
     with urllib.request.urlopen(req, timeout=600) as response:
         print(f"receiver: {response.read().decode().strip()}", flush=True)

@@ -180,6 +180,51 @@ def test_receiver() -> None:
             server.shutdown()
 
 
+def test_user_agent() -> None:
+    """Every proxied call has to name itself.
+
+    The RunPod proxy answers 403 to urllib's default user agent, which is
+    indistinguishable from a rejected upload token at the call site - it cost
+    two rounds of debugging the token instead of the header.
+    """
+    req = D.proxy_request("https://pod-8788.proxy.runpod.net/status")
+    check("a proxied GET carries a user agent", req.get_header("User-agent") == D.USER_AGENT)
+    check("it is not urllib's default", "urllib" not in (req.get_header("User-agent") or ""))
+
+    put = D.proxy_request(
+        "https://pod-8788.proxy.runpod.net/upload?token=x",
+        data=b"body",
+        method="PUT",
+        content_type="application/octet-stream",
+        content_length="4",
+    )
+    check("an upload carries it too", put.get_header("User-agent") == D.USER_AGENT)
+    check("the upload is still a PUT", put.get_method() == "PUT")
+    check("the upload still declares its length", put.get_header("Content-length") == "4")
+
+    # get() is what /status, /log and the /healthz poll all go through, so
+    # every proxied read is covered by it carrying the header.
+    seen: list = []
+    real = D.urllib.request.urlopen
+
+    class Fake:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"ok"
+
+    D.urllib.request.urlopen = lambda request, timeout=None: (seen.append(request), Fake())[1]
+    try:
+        D.get("https://pod-8787.proxy.runpod.net/healthz")
+    finally:
+        D.urllib.request.urlopen = real
+    check("get() sends the header", seen and seen[0].get_header("User-agent") == D.USER_AGENT)
+
+
 def test_install_pending() -> None:
     """The boot loop's claim-and-extract step, driven directly in bash.
 
@@ -272,6 +317,7 @@ if __name__ == "__main__":
     test_tarball()
     test_start_cmd()
     test_receiver()
+    test_user_agent()
     test_install_pending()
     test_watch_boot()
     print()
