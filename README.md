@@ -1,652 +1,196 @@
-# Brush Jam — MVP vertical slice
+# Brush Jam
 
-Several people draw on one big shared canvas while an AI continuously
-reinterprets what they make. This repository implements the MVP described in
-[`docs/MVP_PLAN.md`](docs/MVP_PLAN.md) (sections 1–9), which in turn implements
-phases 1–3 of [`docs/BRUSHJAM_CONTEXT.md`](docs/BRUSHJAM_CONTEXT.md). Nothing
-marked Post-MVP in the context document is implemented.
+Several people draw on one shared canvas, and an AI continuously reinterprets
+what they have made. Not a prompt box with a picture under it: the canvas is the
+prompt. Every stroke anyone commits sends the *whole* drawing back through an
+img2img pass, and the result appears beside it a second or two later. Draw a
+rough hill and it comes back as a hill; someone else adds a house on it, and the
+next pass has a house on a hill, in the same style, because the same picture
+went in.
+
+It is a toy for a room of people, not a tool for one. Drawing never waits for
+the model - strokes are local and relayed to everyone else immediately, and the
+AI runs behind them. The room shares one prompt, one denoise, one seed and one
+speed/quality setting, so what changes for one person changes for everyone, and
+arguing about the prompt is half the game.
+
+## What you need
+
+- **Python 3.10+** and [uv](https://docs.astral.sh/uv/). One Python process is
+  the whole server.
+- **Node 20+ and pnpm**, to build the browser client. Not needed at runtime.
+- **An NVIDIA GPU with 8 GB or more**, or a rented one - `deploy/runpod/` puts
+  the whole thing on a RunPod pod for a few dollars an hour. Without a GPU
+  everything still runs against a mock backend that returns instant grey
+  rectangles, which is enough to work on the drawing side.
+- **An SDXL checkpoint** (a 6-7 GB `.safetensors`). Any of them works; the
+  measurements in `docs/` were taken with an Illustrious-based one. The 4-step
+  DMD2 LoRA and the fp16-fix VAE download themselves.
 
 ## Quick start
 
-One Python process serves the built client, the room protocol and inference.
+```bash
+git clone <this repo> && cd brush_jam
+pnpm install
+pnpm build                       # builds the web client into the Python package
+
+cp .env.example .env             # then set INPROC_CHECKPOINT (see below)
+
+cd apps/brushjam
+uv sync --extra inproc           # torch + diffusers; omit --extra inproc for a GPU-free run
+cd ../..
+
+pnpm start                       # http://localhost:8787
+```
+
+If you do not have a checkpoint yet:
 
 ```bash
-pnpm install
-cd apps/brushjam
-uv sync --extra dev --extra inproc     # drop --extra inproc for a GPU-free run
-cd ../..
-pnpm build:py                          # build the client into the Python package
-pnpm py:serve                          # http://127.0.0.1:8787
+uv run --project apps/brushjam python apps/brushjam/scripts/download_models.py
 ```
 
-Open <http://localhost:8787>, pick a name, press **Create room**, and send the
-resulting `/r/<id>` URL to someone else (or open a second tab). Draw on the
-left; AI patches appear on the right.
+It downloads one into `./models/checkpoints/` and prints the
+`INPROC_CHECKPOINT=` line to paste into `.env`. (Civitai wants an account for
+most models: put `CIVITAI_TOKEN` in `.env` first.)
 
-With `--extra inproc` and a checkpoint configured, the model loads into the
-server process itself and the startup log says so:
+Then open <http://localhost:8787>, pick a name, press **Create room**, and send
+the `/r/<id>` URL to someone. Draw on the left; the AI's version appears on the
+right. The startup log says which backend it chose and why:
 
 ```
-[brushjam] backend: inproc, waiNSFWIllustrious_v150.safetensors resident in this process
+[brushjam] backend: inproc, sdxl-illustrious.safetensors resident in this process
 [brushjam] server on http://127.0.0.1:8787
 ```
 
-Without torch, or without a checkpoint, it falls back through ComfyUI to a
-GPU-free mock backend and logs which one it chose. See
-[`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md) for the backends and the
-`INPROC_*` settings.
+Without torch, or without a checkpoint, it falls back to ComfyUI if one is
+running and to the mock backend otherwise, saying so rather than failing
+silently.
 
-**While developing the client**, run Vite beside it for hot reload - the dev
-server proxies `/api`, `/rooms`, `/ws` and `/healthz` to `:8787`:
+## Playing with friends
 
-```bash
-pnpm dev:py        # Python server on :8787, Vite on :5173
-pnpm dev:py:lan    # ...both reachable from the LAN
-```
-
-Other commands:
+**On your LAN**, bind to every interface and give people your machine's address:
 
 ```bash
-pnpm py:test                                  # the Python suite
-pnpm test                                     # the TypeScript suites
-pnpm typecheck
-pnpm smoke -- --url http://127.0.0.1:8787     # one real generation, saves smoke-out/patch.png
-pnpm latency -- --url http://127.0.0.1:8787 --n 5 --profile fast --resolution 768
-pnpm playtest-sim -- --url http://127.0.0.1:8787 --users 3 --minutes 1
+HOST=0.0.0.0 pnpm start          # then http://<your-ip>:8787/r/<id>
 ```
 
-Those three scripts live in [`tools/`](tools/README.md) and speak only the
-public HTTP and WebSocket surface, so they measure whatever is actually
-listening.
-
-## Playtest quickstart (3 people on a LAN)
-
-**1. Start the server, bound to the LAN.** The model loads at startup and takes
-about 28 seconds before the first generation is fast.
+**Over the internet**, put the server on a rented GPU. `deploy/runpod/` creates
+a RunPod pod, ships this repository into it as a tarball and starts it, with no
+SSH, no registry and no git remote involved:
 
 ```bash
-cd apps/brushjam
-HOST=0.0.0.0 AI_BACKEND=inproc uv run brushjam
+uv run --project apps/brushjam python deploy/runpod/deploy.py deploy
 ```
 
-Wait until it answers warm, in another terminal:
+The runbook - first boot, what a redeploy costs, how to watch it - is
+[`docs/RUNPOD_POD.md`](docs/RUNPOD_POD.md). Anyone with the pod's URL can join,
+so treat the link as the only access control there is.
 
-```bash
-curl http://127.0.0.1:8787/healthz     # {"ok":true,"warm":true,...}
-```
+## The controls
 
-`"ok": true` with `"warm": false` means it is still loading. Drawing before it
-is warm is fine; the first generation simply waits for the model.
+- **fast / quality.** `fast` is a 4-step distilled LoRA at 768 - a couple of
+  seconds an edit on a 3070, which is what makes the loop feel alive. `quality`
+  is 14 steps at 1024, several times slower and considerably better. Room-wide.
+- **prompt.** Shared. It steers the whole canvas. The negative prompt is in
+  Advanced, and is inert on `fast`: a distilled model at CFG 1.0 never evaluates
+  the negative branch, and the UI greys it out rather than pretending.
+- **denoise.** How far the model may depart from the drawing. Low values
+  recolour, high values reinterpret. 0.8 suits `fast`.
+- **seed.** The room keeps one seed rather than drawing a new one per
+  generation, so adding a stroke changes the picture instead of reshuffling it.
+  The dice beside the field asks for a different picture from the same drawing.
+- **resolution.** Generation size; the result is scaled onto the canvas.
+- **tools.** Pen, eraser, a **noise pen** whose texture is hashed from world
+  coordinates (identical for everyone, stable under any crop), and a move tool
+  for whole layers. Ctrl/Cmd+V pastes a reference image as a layer, excluded
+  from the AI's input until you tick "AI input".
 
-Settings can be pinned in a repo-root `.env` (copy `.env.example`) instead of
-the command line. It is read at startup and fills gaps only - a variable
-already in the environment wins. Values are never logged; the startup log names
-the *source*, which is the fastest way to tell what a terminal is running:
+## How it works
 
-```
-[brushjam] AI_BACKEND=inproc (from the environment)
-[brushjam] AI_BACKEND=inproc (from the repo-root .env)
-[brushjam] AI_BACKEND is not set (auto-detecting)
-```
+One Python process (`apps/brushjam`) serves the built client, the room protocol
+and inference. It is the only server.
 
-**2. Let other people join.** `HOST=0.0.0.0` is what makes the server reachable;
-by default it binds `127.0.0.1` and nothing outside the machine can see it.
-
-- Windows will show a **Windows Defender Firewall** prompt the first time. Allow
-  it on **private networks**. If you dismiss it by accident, nobody can connect
-  and the symptom is a page that never loads; restart to get the prompt back.
-- Find your LAN address with `ipconfig` (the IPv4 address of your Wi-Fi or
-  Ethernet adapter, e.g. `192.168.0.66`) and open
-  **`http://192.168.0.66:8787`** - not `localhost` - on the host machine too.
-- Then **Copy invite URL** produces a working link. That button copies
-  `location.href`, and the client opens its WebSocket against `location.host`,
-  so both follow whatever address the page was opened with. Open the page on
-  `localhost` and you will copy a `localhost` URL that works for nobody else;
-  open it by LAN IP and everything downstream is correct. There is nothing to
-  configure - just be the first one to use the IP.
-
-Everyone opens the invite URL, picks a name, and draws on the same canvas.
-
-**Check it first, without the people:**
-
-```bash
-pnpm playtest-sim -- --url http://127.0.0.1:8787 --users 3 --minutes 1
-```
-
-**One model at a time.** The in-process model and ComfyUI each hold several GB
-of VRAM. On an 8 GB card, running both turns a 10-second generation into
-minutes of thrashing. Stop one before starting the other.
-
-**ComfyUI instead of the resident model.** Start ComfyUI and run with
-`AI_BACKEND=comfyui` (or no setting at all, without torch installed). It is
-slower - about 3.7 s for `fast` at 768 and 10.3 s for `quality` at 1024 - and
-it needs its own process and its own VRAM.
-
-## Documents
-
-| document | what it is |
-| --- | --- |
-| [`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md) | **The server**: layout, backends, the resident model, limits, measurements, review history. |
-| [`docs/PYTHON_SERVER_PLAN.md`](docs/PYTHON_SERVER_PLAN.md) | The plan that port followed, and its status. |
-| [`docs/RETIRE_NODE_CHECKLIST.md`](docs/RETIRE_NODE_CHECKLIST.md) | What the Node server's deletion removes and changes, pending approval. |
-| [`docs/BRUSHJAM_CONTEXT.md`](docs/BRUSHJAM_CONTEXT.md) | The product context: what Brush Jam is, phased. |
-| [`docs/MVP_PLAN.md`](docs/MVP_PLAN.md) | The build plan this repository implements, sections 1-9. |
-| [`docs/STREAM_WORKER.md`](docs/STREAM_WORKER.md) | The stream worker: protocol, why it is explicit-only. |
-| [`docs/NIGHT_REPORT.md`](docs/NIGHT_REPORT.md) | Handoff report: what was built and measured overnight, and the recommended configuration. |
-| [`docs/experiments/2026-09-05-comfyui/REPORT.md`](docs/experiments/2026-09-05-comfyui/REPORT.md) | Reference measurement for ComfyUI: latency by size and profile, and what each denoise value actually does. |
-| [`docs/experiments/2026-09-05-stream/REPORT.md`](docs/experiments/2026-09-05-stream/REPORT.md) | The stream worker measured the same way, plus the LCM vs DMD2 comparison behind the current default. |
-| [`docs/experiments/README.md`](docs/experiments/README.md) | Index of raw experiment output. |
+- **Truth is a log.** The room owns an append-only stroke log plus a set of
+  undone stroke ids. Every raster is derived and can be rebuilt, so a client
+  that reconnects gets a `snapshot` and is exactly caught up. `undo` reverts the
+  *sender's* own latest stroke, which is what makes it usable with several
+  people drawing at once.
+- **The AI sees everything.** After `AI_DEBOUNCE_MS` of quiet the scheduler
+  renders the whole canvas server-side - with the same renderer the browser uses
+  - and hands it to the backend. One generation is in flight per room; activity
+  during one queues exactly one more; a result older than the last accepted one
+  is discarded.
+- **Drawing never waits.** Strokes are drawn locally on pointer input and
+  relayed as chunks every ~40 ms. Nothing in that path touches the model.
+- **The protocol is the contract.** `packages/shared/src/protocol.ts` defines
+  every message, and the server validates each one before the reducer sees it.
 
 ## Layout
 
 ```
-packages/shared/       protocol types + pure logic, no DOM and no Node imports
-  src/geometry.ts        rects, stroke bboxes, rect subtraction
-  src/dirty.ts           dirty-region merging
-  src/crop.ts            AI window selection + central apply rect
-  src/revision.ts        latest-useful-wins rule
-  src/undo.ts            per-user undo selection
-  src/mask.ts            mask geometry (dilate / clip / apply area)
-  src/camera.ts          pan / zoom / fit math
-  src/render.ts          renderStrokes() — runs on both server and browser
-  src/protocol.ts        WebSocket message types
-
-apps/brushjam/         the server: one Python process, rooms + inference
-  src/brushjam/room.py       authoritative room reducer (strokes, undo, layers, prompt)
-  src/brushjam/validate.py   runtime validation of every client message
-  src/brushjam/runtime.py    rooms, sockets, admission, the AI canvas, patch store
-  src/brushjam/app.py        HTTP routes + WebSocket + the built client
-  src/brushjam/raster.py     Pillow + numpy: AI input, mask, AI canvas compositing
-  src/brushjam/scheduler.py  debounce, single in-flight, stale handling
+apps/brushjam/         the server: client, protocol and inference in one process
+  src/brushjam/room.py        the authoritative reducer (strokes, undo, layers, settings)
+  src/brushjam/runtime.py     sockets, presence, the AI raster, room eviction
+  src/brushjam/scheduler.py   debounce, single in-flight, stale results
   src/brushjam/ai/pipeline.py the resident SDXL model
-  src/brushjam/ai/backends/  inproc | stream | comfyui | runpod | mock
-  tests/                     278 tests, including the cross-language fixtures
+  src/brushjam/ai/backends/   inproc | stream | comfyui | runpod | mock
+  scripts/download_models.py  fetch a checkpoint
+  tests/                      302 tests, including the frozen parity fixtures
 
+apps/web/              the browser client (Vite + React 19)
+packages/shared/       protocol, geometry, the renderer both sides use
 tools/                 scripts against a running server, over HTTP/WS only
-  scripts/latency.ts     per-edit latency, with --profile / --resolution / --json
-  scripts/playtest-sim.ts N users for M minutes, then convergence checks
-  scripts/smoke.ts       one real generation end to end
-
-apps/web/              Vite + React 19
-  src/App.tsx            name gate, home page, /r/<id> routing
-  src/Room.tsx           tools, camera, pointer handling, paste, prompt
-  src/StageView.tsx      one viewport (human or AI), shared camera
-  src/LayerPanel.tsx     layer list
-  src/roomClient.ts      WebSocket client + all client-side rasters
-  src/raster.ts          per-layer offscreen canvases
-  src/paste.ts           clipboard downscale / placement helpers
-  src/serialQueue.ts     keeps ordered websocket frames applied in order
-  src/session.ts         per-room reconnect token
+apps/stream-worker/    optional: the model on another machine
+deploy/runpod/         put the server on a rented GPU
 ```
 
-## How it works
+## Development
 
-- **World.** 4096×4096 logical canvas. One `Camera {centerX, centerY, zoom}`
-  drives both the Human and AI views, so they can never drift apart.
-- **Truth.** The room server owns an append-only stroke log plus a set of undone
-  stroke ids. Rasters are derived, never authoritative — a client can reconnect
-  and rebuild everything from the `snapshot` message.
-- **Undo.** `undo` reverts the *sender's* latest not-yet-undone stroke
-  (Alice #100, Bob #101, Alice #102 → Alice's undo removes #102). `clear_layer`
-  is room-level and not undoable. No redo in MVP.
-- **AI loop.** Every committed stroke / undo / clear adds its bbox to the room's
-  dirty regions (merged when within 256 px). After `AI_DEBOUNCE_MS` of quiet the
-  scheduler picks a square `AI_WINDOW` crop centred on the most recent region,
-  renders the AI input server-side with the same `renderStrokes` the browser
-  uses, builds a mask (dilate 48 px → feather 32 px → limited to the central
-  `AI_APPLY` area), and calls the backend. Only one request is in flight per
-  room; activity during a request queues exactly one more run. A result whose
-  revision is older than the last accepted one is discarded. Accepted patches are
-  composited into the room's persistent AI raster through the soft mask, and
-  clients are sent the composited rect as a PNG URL.
-- **Drawing never waits.** Strokes are drawn locally on pointer input and relayed
-  as chunks (~40 ms); the AI is entirely out of that path.
-- **Reference images.** Ctrl/Cmd+V uploads a downscaled (≤2048 px) PNG and adds a
-  `reference` layer. Reference layers are visible but **excluded from AI input**
-  until you tick "AI input" in the layer panel.
+```bash
+pnpm dev            # Python server on :8787, Vite on :5173 with hot reload
+pnpm dev:lan        # ...both reachable from the LAN
 
-## Environment variables
+pnpm py:test        # the Python suite
+pnpm test           # the TypeScript suites
+pnpm typecheck
 
-Every variable below can go in a repo-root `.env` (see `.env.example`) instead
-of the command line. The file never overrides a variable that is already set,
-and its values are never logged.
-
-Read from the process environment; a repo-root `.env` is loaded if present (its
-values are never logged and it stays git-ignored).
-
-Every value is validated at startup and the server refuses to boot with a clear
-message if anything is out of range (`AI_APPLY` must not exceed `AI_WINDOW`, both
-are multiples of 64, denoise is 0..1, and so on).
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `HOST` | `127.0.0.1` | Bind address; set `0.0.0.0` to expose on the LAN |
-| `PORT` | `8787` | Room server port |
-| `AI_BACKEND` | auto | `stream`, `comfyui`, `mock`, `runpod`, or unset for auto-detect |
-| `STREAM_URL` | `http://127.0.0.1:8790` | Model-resident worker (`apps/stream-worker`) |
-| `STREAM_TIMEOUT_MS` | `120000` | Per-generation deadline for the stream worker |
-| `COMFYUI_URL` | `http://127.0.0.1:8188` | Local ComfyUI |
-| `COMFYUI_CHECKPOINT` | `waiNSFWIllustrious_v150.safetensors` | Must exist in ComfyUI |
-| `CANVAS_SIZE` | `1024` | World canvas size in px (square, multiple of 64, 512-4096) |
-| `AI_MODE` | `full` | `full` regenerates the whole canvas; `patch` uses crops + dirty regions |
-| `AI_PROFILE` | `fast` | Starting profile for new rooms: `fast` or `quality` |
-| `AI_WINDOW` | the profile's size (`fast` 768, `quality` 1024), capped by the canvas | Generation size in px (512-2048, multiple of 64) |
-| `AI_APPLY` | `768` | Central area the result is allowed to change |
-| `AI_STEPS` | `14` | Sampler steps for the quality profile |
-| `AI_FAST_STEPS` | `4` | Sampler steps for the fast profile |
-| `AI_FAST` | - | Legacy alias: `1` means `AI_PROFILE=fast`, `0` means `quality` |
-| `AI_STREAM_AUTO` | `0` | `1` lets `AI_BACKEND=auto` consider the stream worker |
-| `COMFYUI_FAST_LORA` | `dmd2_sdxl_4step_lora_fp16.safetensors` | LoRA for the fast profile; `lcm-lora-sdxl.safetensors` also recognised, empty disables it |
-| `AI_DENOISE` | `0.7` | img2img strength; the starting value of each room's slider |
-| `AI_CFG` | `5.5` | CFG scale |
-| `AI_VAE_TILE` | `512` | VAEDecodeTiled tile size; `0` uses a plain `VAEDecode` |
-| `AI_DEBOUNCE_MS` | `400` | Quiet time before a generation starts |
-| `AI_WATCHDOG_MS` | `180000` | A generation past this is abandoned, not left in flight |
-| `ROOM_IDLE_MS` | `1800000` | Empty rooms are reclaimed after this long |
-| `RUNPOD_ENDPOINT_ID`, `RUNPOD_API_KEY` | — | Only for `AI_BACKEND=runpod`; both live in the repo-root `.env`. See [docs/RUNPOD.md](docs/RUNPOD.md) |
-| `RUNPOD_TIMEOUT_MS` | `300000` | Deadline for one RunPod generation; must stay above the ~80 s cold start |
-| `WEB_DIST` | `apps/web/dist` | Static client directory |
-
-Fixed limits, not configurable: 64 live rooms per server (further creates and
-upgrades get `429`/close 1013), 64 session tokens per room (the oldest
-*disconnected* session is evicted first), 4 pending strokes per user, 20 000
-committed strokes per room, 32 uploaded images per room, a 512 MiB budget for
-decoded reference pixels shared process-wide (LRU eviction), a 60 s idle window
-on a pending stroke, and a 2 min grace period before an unreferenced upload is
-swept.
-
-### Backend selection
-
-An explicit `AI_BACKEND` always wins. `auto` (the default) probes ComfyUI's
-`/system_stats` and otherwise falls back to the mock. Each probe has a 2 s
-deadline so a dead endpoint cannot delay startup, and the chosen backend is
-logged with the reason.
-
-**The stream worker is explicit-only.** `auto` ignores it unless
-`AI_STREAM_AUTO=1`, because its answering `/healthz` only means it is holding
-~5 GB of VRAM - which on this 8 GB card starves ComfyUI - and because it needs
-a different denoise to look right, so silently routing to it would change output
-quality as well as speed. Which model owns the GPU is a deployment decision, not
-something a reachability probe should infer.
-
-When it is opted in, a reachable worker still has to be *usable*: auto requires
-`warm: true` (a worker with no model loaded answers `ok` and then echoes the
-input back) and `max_size >= AI_WINDOW` (a worker capped below the window
-answers `ok` and then 400s every request, which full mode retries forever). Each
-rejection is logged with its reason. An explicit `AI_BACKEND=stream` is always
-honoured, but the same checks run and print a warning.
-
-## ComfyUI requirements
-
-ComfyUI 0.28.0 with `waiNSFWIllustrious_v150.safetensors` and core nodes only.
-The workflow is built in `apps/brushjam/src/brushjam/ai/backends/comfyui.py`
-(node ids fixed so tests can assert on it):
-
-```
-CheckpointLoaderSimple → 2× CLIPTextEncode
-LoadImage(image) → VAEEncode ┐
-LoadImage(mask) → ImageToMask ┴→ SetLatentNoiseMask → KSampler → VAEDecodeTiled → SaveImage
+pnpm smoke -- --url http://127.0.0.1:8787          # one real generation
+pnpm latency -- --url http://127.0.0.1:8787 --n 5  # per-edit latency
+pnpm playtest-sim -- --url http://127.0.0.1:8787 --users 3 --minutes 1
 ```
 
-### Fast and quality profiles
+The three scripts in [`tools/`](tools/README.md) speak only the public HTTP and
+WebSocket surface, so they measure whatever is actually listening - local,
+remote, or a pod. `AI_BACKEND=mock` runs the whole server with no model at all,
+which is how the tests and most of the client work get done.
 
-Each room chooses one, from the segmented control next to the prompt, and the
-choice is shared like the prompt. It is a property of the request, not of the
-process: one server serves rooms that disagree.
+## Documents
 
-| profile | workflow | steps | cfg | default size | measured |
-| --- | --- | --- | --- | --- | --- |
-| `fast` | DMD2 LoRA, `lcm` / `sgm_uniform` | 4 | 1.0 | 768 | ~2.4 s |
-| `quality` | plain checkpoint, `euler_ancestral` / `normal` | 14 | 5.5 | 1024 | ~10.3 s |
+- [`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md) - the server: backends,
+  scheduling, limits, measurements, review history.
+- [`docs/RUNPOD_POD.md`](docs/RUNPOD_POD.md) - deploying to a rented GPU.
+- [`docs/STREAM_WORKER.md`](docs/STREAM_WORKER.md) - the remote model host, and
+  a long account of what actually makes SDXL fast on 8 GB.
+- [`docs/MVP_PLAN.md`](docs/MVP_PLAN.md) - the original plan (historical).
+- [`docs/experiments/`](docs/experiments/) - denoise sweeps and their reports.
 
-Measured medians, which are also the fallback hints in the UI: fast is the
-stream worker at 768 end-to-end through the app, quality is ComfyUI at 1024
-(`docs/experiments/2026-09-05-stream/REPORT.md` and `.../2026-09-05-comfyui/`).
-Each room replaces them with its own timings after one generation.
+## Limits and known issues
 
-In the fast profile a `LoraLoader` (node 12) is inserted between the checkpoint
-and its consumers - both `CLIPTextEncode` nodes and the `KSampler` read
-MODEL/CLIP from it, while the VAE still comes from the checkpoint. Steps are
-passed straight through: ComfyUI runs exactly that many sampler steps at any
-denoise (it builds the longer schedule then keeps the last `steps + 1` sigmas,
-so denoise only picks the starting noise level). cfg 5.5 burns the image out at
-4 steps, and the sampler settings come from a named profile keyed off the LoRA,
-because few-step LoRAs are not interchangeable: a name containing `dmd2` uses
-cfg 1.0 (DMD2 is distilled and wants no guidance), anything else LCM at 1.5.
-DMD2 is the default because it measured both faster and better at reinterpreting
-a drawing at the same denoise (`docs/experiments/2026-09-05-stream/REPORT.md`
-section 8).
+- **8 GB is the design point**, and it is tight: tiled VAE decode, text encoders
+  offloaded to the CPU. `quality` at 1024 peaks around 7 GB of the 8.
+- **One model on one GPU.** Running ComfyUI and this server at once on an 8 GB
+  card will OOM one of them. The `stream` backend exists so the model can live
+  on a second machine.
+- **The negative prompt does nothing on `fast`.** Distilled models at CFG 1.0
+  never evaluate it. The UI says so.
+- **Everyone behind one address shares the rate limits**, which matters on a
+  RunPod pod, where the proxy makes every player look like a single client. The
+  pod configuration raises `ROOM_CREATE_PER_MIN` for that reason.
+- **Sparse line art on white reinterprets weakly.** The model has little to work
+  with; denoise, prompt and a filled background help more than any server
+  setting.
+- No redo, and `clear_layer` is not undoable.
 
-At cfg 1.0 the sampler never evaluates the negative branch, so the negative
-prompt does nothing. Rather than accepting text into a box that is ignored, the
-backend reports `negativePromptActive` per profile, the room puts the value for
-its current profile in the snapshot and in `ai_settings_changed`, and the UI
-greys the input with "inactive with the current fast profile (CFG 1.0)". The
-text itself is kept, so switching to quality brings it back.
+## License
 
-Switching profile also moves the room's generation size to that profile's
-default, because the two go together - fast is only worth having if it is also
-smaller. Everything stays adjustable in the Advanced panel afterwards.
-
-`COMFYUI_FAST_LORA=''` disables the fast profile entirely: every room starts on
-quality, rather than running a 4-step `euler_ancestral`, which is neither.
-
-Switching profiles makes ComfyUI load or unload the LoRA, so the first
-generation after a switch is a few seconds slower; the server logs it rather
-than leaving it looking like a random stall.
-
-### Backend capabilities
-
-A backend declares what it can do (`capabilities()`), probed once at startup,
-and rooms are capped by it: the UI disables a profile the backend does not have
-and stops the denoise slider at its ceiling, and the server refuses anything
-outside it rather than silently substituting.
-
-| backend | profiles | max resolution | max denoise | negative prompt |
-| --- | --- | --- | --- | --- |
-| comfyui / runpod | fast + quality (quality only without a LoRA) | 2048 | 0.95 | inactive for `fast` at cfg 1.0 (DMD2) |
-| stream | **fast only** | worker's `max_size`, else 1024 | worker's `max_denoise`, else 0.9 | worker's `negative_prompt_active`, else active |
-| mock | fast + quality | 2048 | 0.95 | active |
-
-The stream worker holds one fused few-step LoRA (DMD2 at CFG 1.0), so it has no
-quality mode at all - asking it for 14 steps would silently run 4. Its defaults also differ, and the
-server applies them once the backend is known (`auto` only resolves at startup):
-resolution 768 and denoise 0.8, because 0.7 barely moves the drawing at 4 LCM
-steps. An explicit `AI_WINDOW` or `AI_DENOISE` still wins.
-
-```
-pnpm dev:stream    # same as pnpm dev with AI_BACKEND=stream (works on Windows)
-pnpm dev:lan       # the same, plus HOST=0.0.0.0 and vite --host so a LAN can join
-```
-
-**Why these numbers.** Measured on an RTX 3070 8 GB - see
-[docs/experiments/2026-09-05-comfyui/REPORT.md](docs/experiments/2026-09-05-comfyui/REPORT.md)
-for ComfyUI and
-[docs/experiments/2026-09-05-stream/REPORT.md](docs/experiments/2026-09-05-stream/REPORT.md)
-for the stream worker, which is faster again (768 in ~1.8 s, 1024 in ~3.5 s).
-Denoise 0.5 is a no-op on this checkpoint, 0.65 decorates, 0.8 genuinely
-reinterprets (a noise-pen sky becomes buildings) and 0.9 discards the drawing,
-which is why the default is 0.7. LCM matches the 14-step result up to about 0.65
-but is visibly weaker at 0.8, so `fast` is the responsive default and `quality`
-is there for when the model should actually invent something.
-
-`SetLatentNoiseMask` (rather than `VAEEncodeForInpaint`) keeps the human drawing
-as the img2img base, so the model reinterprets the strokes instead of filling
-holes.
-
-### Switching to RunPod later
-
-Set `AI_BACKEND=runpod`, `RUNPOD_ENDPOINT_ID` and `RUNPOD_API_KEY`. The adapter
-posts the **same workflow JSON** to `/v2/{id}/runsync` in the `worker-comfyui`
-input format (`{ input: { workflow, images: [{name, image: base64}] } }`), so
-moving to the cloud is a transport change, not a pipeline change.
-
-This is deployed and measured — see **[docs/RUNPOD.md](docs/RUNPOD.md)** for the
-endpoint id, prices, latency numbers and the exact teardown calls. Short version:
-a 4090 worker that scales to zero, ~3.0 s per edit at fast/768 and ~4.6 s at
-quality/1024 end to end from Japan, an **80 s cold start** after the endpoint has
-been idle, and about $0.0003–$0.0009 of GPU per generation on top of $2.10/month
-for the model volume. `pnpm --filter @brushjam/server runpod-smoke` is one live
-generation against the endpoint, and is the first thing to run if it misbehaves.
-
-`/runsync` is not actually synchronous for long jobs: RunPod abandons it after
-~90 s and hands back a job id, so the adapter falls through to polling
-`/status/{id}` and cancels what it abandons.
-
-### Two AI modes
-
-`AI_MODE=full` (the default, and what the playtest uses) treats the whole canvas
-as one unit: any change - a stroke, an undo, a layer edit, a prompt or settings
-change - marks the room changed, and after the debounce the entire canvas is
-rendered, sent with a fully opaque mask, and the result **replaces** the AI
-raster. There is no crop selection, no dirty-region bookkeeping and no mask
-feathering, so a thin line no longer comes back as a narrow repainted band. The
-window is locked to `CANVAS_SIZE`, which must therefore be <= 2048; the server
-refuses to boot otherwise and points at patch mode.
-
-**Generation resolution is not the canvas size.** `AI_WINDOW` is what the model
-actually runs at: the whole canvas is rendered, resampled down to
-`AI_WINDOW`x`AI_WINDOW`, generated, then resampled back up to the canvas and
-composited. On an 8 GB card `CANVAS_SIZE=1024 AI_WINDOW=768` (or 512) is much
-faster than generating at 1024, at the cost of detail; `AI_WINDOW` may also be
-*larger* than the canvas. The effective sizes are logged at startup, and each
-room can pick its own value from the advanced panel ("AI resolution", one of
-512/768/1024, capped by the server's `AI_WINDOW`), which re-runs like a prompt
-change.
-
-`AI_MODE=patch` restores the original large-canvas pipeline (dirty regions ->
-crop -> dilated, feathered mask -> apply rect), e.g.
-`AI_MODE=patch CANVAS_SIZE=4096 AI_WINDOW=1024 AI_APPLY=768`.
-
-The client never hard-codes a canvas size: it takes `canvasSize` from the
-snapshot, sizes its rasters to it and fits the camera to it. In full mode the
-crop/apply overlay rectangles are hidden, because they are the whole canvas.
-
-### Brush sizes
-
-Each drawing tool keeps its own width - pen 14, eraser 32, noise 64 - persisted
-in `localStorage` and restored when you switch back. They are not
-interchangeable: a 14 px noise stroke is useless as an "invent something here"
-seed, because it averages to flat grey before the model sees it (worse at lower
-AI resolutions), while an eraser sized for line work is painful for clearing an
-area. The `move` tool has no width of its own and keeps showing the last
-drawing tool's.
-
-Opacity works the same way: a per-tool `alpha` from 5% to 100%, remembered in
-`localStorage`, offered for the pen and the noise pen and not for the eraser,
-which either removes or is a different tool. Both default to 100%.
-
-The opacity belongs to the **stroke**, not to each segment of it. A stroke that
-crosses itself is one mark at one strength, so a translucent stroke is
-rasterised at full strength into its own small canvas and composited once - the
-same thing the live preview does, which is why the preview does not jump when
-the pointer is lifted. Drawing the segments straight onto the layer at
-`globalAlpha` would darken every join, and the segments cannot simply be merged
-into one path because pressure varies their width. The server's crop render
-takes the identical path, so what the model is fed matches what is on screen,
-pixel for pixel.
-
-### The noise pen
-
-A third stroke tool next to pen and eraser. It fills the stroke shape with
-deterministic RGB noise: the value of a pixel is `hash(seed, worldX, worldY)`
-with `seed = FNV-1a(stroke.id)`, so two renders are byte-identical and a
-server-side crop (rendered with the crop origin subtracted) produces the same
-pixels as the client's full-size layer. The shape's antialiased alpha is kept,
-so it composites like any other stroke, and it is a normal stroke everywhere
-else: same undo, same eraser interaction, same dirty-region behaviour. It exists
-to give the model something richer than white paper to reinterpret.
-
-While a noise stroke is being drawn (yours or someone else's) it is previewed
-into a per-stroke raster that is extended with each new segment, so the cost per
-frame follows the movement rather than the whole stroke.
-
-Implementation note: `renderStrokes` takes a `createCanvas(w, h)` dependency
-(browser: `document.createElement('canvas')`, server: `@napi-rs/canvas`) and
-rasterises the stroke into a temporary canvas of its bounding box before
-replacing each covered pixel's RGB. Live preview while drawing uses the same
-renderer per chunk - the per-frame cost is bounded by the stroke's bbox and was
-not noticeable in the browser.
-
-### Moving layers
-
-The move tool moves reference layers *and* draw layers. A draw layer gets
-`offsetX`/`offsetY`: the stroke log keeps its original coordinates and the whole
-layer is translated at render time, on the client and on the server (including
-the bbox maths that feed patch-mode dirty regions). Drawing on a moved layer
-records points in layer space, so the line still appears under the pointer. The
-hit test picks the topmost unlocked layer under the pointer - a reference by its
-image box, a draw layer by the box of its strokes - and falls back to the
-selected layer. **Moving a layer is not undoable**, exactly like moving a
-reference image.
-
-### Room-level AI settings
-
-Behind the **advanced** toggle next to the prompt, and shared by everyone in the
-room exactly like the prompt itself:
-
-- **denoise** — 0.2 to 0.95 in 0.05 steps, starting from `AI_DENOISE`. Low values
-  keep the drawing and only clean it up; high values reinterpret it.
-- **AI resolution** — 512 / 768 / 1024, capped by the server's `AI_WINDOW`.
-  Lower is faster and blurrier; the result is always scaled back to the canvas.
-- **negative prompt** — up to 1000 characters. Empty means "use the built-in
-  list", which the input shows as its placeholder. Greyed out while the current
-  profile runs at cfg 1.0, where the sampler ignores it.
-
-Both debounce for 500 ms, broadcast as `ai_settings_changed`, ride along in the
-snapshot, and behave like a prompt change: the last painted area is re-dirtied so
-the effect is visible without anyone having to draw.
-
-### Why the decode is tiled
-
-On this box a 1024² KSampler pass finishes in ~22 s, but the plain `VAEDecode`
-that follows took **1–4 minutes** whenever VRAM was contended (one run was still
-decoding 2.5 minutes after sampling finished, and was cut off by the watchdog).
-`VAEDecodeTiled` at `tile_size` 512 / `overlap` 64 decodes in slices instead, and
-is the default. Set `AI_VAE_TILE=0` to go back to the plain node.
-
-### Measuring latency
-
-```
-pnpm latency -- --url http://127.0.0.1:8787 --n 10
-pnpm latency -- --url http://127.0.0.1:8787 --n 5 --profile quality --resolution 1024
-```
-
-`--profile`, `--resolution` and `--denoise` are applied to the room and
-confirmed before anything is measured, so the numbers say what they were
-measured under; `--json <path>` writes them out with those settings attached.
-
-Joins a **running** server as an ordinary client, draws N short strokes one at a
-time, and reports three numbers per edit, min/median/max:
-
-- **stroke_end -> pixels on screen** - the whole wait, including fetching the
-  result PNG, which is what a person actually experiences
-- **stroke_end -> ai_result message** - the same minus that download
-- **server pipeline** - the server's own `latencyMs`, which spans input render
-  + backend + compositing (it is *not* backend-only, despite the name)
-
-It starts nothing itself, so the `/healthz` line tells you which backend was
-really measured.
-
-## Measured behaviour
-
-Smoke test on the local box (RTX 3070 8 GB, `AI_WINDOW=1024`, 14 steps,
-denoise 0.55): first generation ~73 s including checkpoint load, warm generations
-~14–31 s (13.7 s on the most recent run with more free RAM). That is slower than the plan's 8–15 s estimate; the machine had ~3 GB
-free RAM during the run, so weight paging is the likely cause. The pipeline is
-correct end to end: stroke → dirty region → crop → mask → ComfyUI → composited
-patch broadcast to clients.
-
-**Honest caveat on output quality.** With sparse line art on a white background,
-the reinterpretation is subtle — at denoise 0.55 the model mostly smooths and
-recolours the strokes rather than turning them into a scene. Raising
-`AI_DENOISE` to ~0.85 changes colours and line weight but still reads as line
-art, because the input latent is dominated by white. Making the AI feel like a
-real collaborator is a tuning problem for the playtest phase (denoise, prompt,
-maybe a coloured/filled base), not an architectural one — the plumbing described
-above is what this slice was built to prove.
-
-### Dev restart on Windows
-
-`tsx watch` restarts used to fail with `EADDRINUSE 127.0.0.1:8787`: open
-WebSocket connections kept the old process's listener alive. The server now
-terminates every socket, calls `closeAllConnections()`, and exits on
-SIGINT/SIGTERM/SIGHUP/SIGBREAK or an IPC `shutdown` message, with a hard 2 s
-deadline; `listen` also retries EADDRINUSE a few times. Verified by editing a
-server file twice under `tsx watch` with a WebSocket client connected - both
-restarts served the new code.
-
-## Decisions and deviations from the plan
-
-Judgement calls made while implementing, since the plan left them open:
-
-1. **Rooms are created on demand.** `POST /api/rooms` mints an id, but joining
-   `/ws/rooms/<any valid id>` also creates the room, so a shared URL always works
-   after a server restart.
-2. **`chooseCrop` returns an exact integer square.** The plan's clamp-then-round
-   could produce a 1024×1025 rect (observed in the first smoke run), which broke
-   the single-scale assumption in the mask builder.
-3. **Dirty regions are rect-subtracted, not cleared.** After an accepted result
-   the repainted apply area is subtracted from each region that was dirty *when
-   the request was built*; regions dirtied *during* the request survive whole, so
-   the queued follow-up run has something to do. This avoids both an infinite
-   regeneration loop and losing edits made mid-generation.
-4. **AI patches are served over HTTP, not pushed over the socket.** `ai_result`
-   carries `{rect, url}`; the last 24 patches are kept in memory per room, and a
-   late joiner pulls `GET /rooms/:id/ai.png` once.
-5. **Prompt changes re-run the existing dirty regions** (`scheduler.nudge()`)
-   rather than marking the whole canvas dirty. A prompt change with a clean
-   canvas does nothing until someone draws.
-6. **Layer reorder sends the full ordered id list**, which is simpler to validate
-   than relative moves.
-7. **Colours must be 6-digit hex.** The server rejects anything else and falls
-   back to black; the UI uses `<input type="color">`, which always sends 6 digits.
-8. **Shift+drag also pans** (in addition to space+drag and middle-drag), because
-   space+drag is awkward while a pointer is captured.
-9. **`packages/shared` is consumed as TypeScript source** (no build step) via a
-   Vite alias and Node's TS loader, which keeps one source of truth for
-   `renderStrokes` on both sides.
-10. **The reference-layer transform is a drag plus a scale slider**, per the
-    plan — no rotation and no transform handles.
-11. **Stroke ids avoid `crypto.randomUUID`.** That API only exists in secure
-    contexts, and browser testing over a plain-http LAN hostname threw on it, so
-    ids come from `crypto.getRandomValues` with a `Math.random` fallback.
-12. **Stroke ids are namespaced by author** (`<userId>:<clientId>`). Two clients
-    choosing the same id would otherwise share an undo entry.
-13. **The apply rect is centred on the dirty region, not on the crop.** With a
-    fixed centred rect, a stroke against a canvas edge was never inside the
-    repainted area, so the scheduler regenerated the same crop forever. A
-    per-region no-progress guard is the backstop.
-14. **Reconnects carry a `sessionStorage` token** so a dropped connection keeps
-    the same server identity and undo stack. It is not authentication: anyone
-    holding the token is that participant, which is the right trade for a
-    local playtest.
-15. **Uploads are structurally validated in pure JS before any decode.**
-    `@napi-rs/canvas`'s `loadImage` *segfaults* (verified: exit 139, not a
-    catchable exception) on a file with a valid PNG signature and IHDR but no
-    image data, so a `try/catch` around the decoder cannot protect the process.
-    `validateStructure()` walks PNG chunks / checks the JPEG SOS+EOI markers /
-    checks the RIFF size before the single verifying decode, which also confirms
-    the header's declared dimensions.
-16. **A cancelled generation cleans up after itself.** Once `/prompt` has
-    returned a `prompt_id`, any later failure interrupts the job if it is
-    running or `POST /queue {delete:[id]}`s it if it is only queued, so an
-    abandoned request does not keep occupying the GPU. A transient `/history`
-    failure is retried while the generation deadline still holds.
-17. **A prompt change during an in-flight run is not lost.** The scheduler keeps
-    a prompt epoch; if it moved while a generation was running, the rect that
-    result just repainted is re-dirtied so the new prompt gets applied there.
-18. **The no-progress guard is scoped to one region.** Only the region that was
-    actually selected can be judged stuck, and only after the same
-    crop+region signature has already failed once — other overlapping regions
-    are never discarded.
-19. **Client asset loads are bounded and cancellable.** Reference images and
-    `ai.png` load with a 10 s timeout outside the ordered message queue and are
-    aborted on dispose/reconnect, so a stalled image can never wedge frame
-    application; a failed AI patch schedules a revision-guarded refresh instead.
-20. **Socket teardown is connection-scoped.** A superseded socket (React
-    StrictMode's mount/unmount/mount, or a reconnect that beat the old close
-    event) closes *after* its replacement joined, so `leave()` ignores a close
-    from a socket that is no longer the member's current one. The client is
-    likewise re-connectable after `dispose()`.
-21. **Upload quota is reserved before the decode await**, so concurrent uploads
-    cannot all measure the same pre-upload totals and collectively overshoot the
-    per-room cap. A failed decode releases the reservation.
-22. **A full `ai.png` load is discarded if anything newer was painted** while it
-    was in flight (a paint generation counter), so a slow recovery fetch can
-    never undo a fresher patch.
-23. **A full session table costs nobody their identity.** If every recorded
-    session belongs to someone still connected, the newcomer gets a working but
-    non-resumable identity instead of evicting a live participant's token.
-24. **The server binds to `127.0.0.1` by default.** Exposing the room server
-    needs an explicit `HOST=0.0.0.0`, since there is no authentication.
-
-## Not verified
-
-- A real multi-person playtest. Two browser tabs in one room were verified
-  end to end (a stroke drawn in tab A appeared in tab B, presence showed both
-  members, the shared prompt propagated, and an AI patch was composited into the
-  right-hand view with the crop/apply overlays aligned across both views). Three
-  people on three machines has not been tried.
-- Touch/pen pressure on real tablet hardware (Pointer Events are wired up, but
-  only a mouse was used).
+MIT. See [LICENSE](LICENSE).
