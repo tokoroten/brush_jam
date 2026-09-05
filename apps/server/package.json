@@ -13,7 +13,8 @@
     "latency": "tsx scripts/latency.ts",
     "quality-grid": "tsx scripts/quality-grid.ts",
     "playtest-sim": "tsx scripts/playtest-sim.ts",
-    "runpod-smoke": "tsx scripts/runpod-smoke.ts"
+    "runpod-smoke": "tsx scripts/runpod-smoke.ts",
+    "export-fixtures": "tsx scripts/export-fixtures.ts"
   },
   "dependencies": {
     "@brushjam/shared": "workspace:*",

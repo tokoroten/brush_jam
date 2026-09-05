@@ -1,0 +1,47 @@
+[project]
+name = "brushjam"
+version = "0.1.0"
+description = "Brush Jam: one Python process serving the client, the room protocol and inference"
+readme = "README.md"
+# 3.10 is what apps/stream-worker targets, and its pipeline moves in here for
+# the `inproc` backend, so the torch/diffusers pin must stay installable.
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# The GPU pipeline moved from apps/stream-worker. Not needed to run the room
+# server with the mock backend, which is what the tests use.
+inproc = [
+    "torch>=2.4",
+    "diffusers>=0.31",
+    "transformers>=4.44",
+    "accelerate>=0.34",
+    "peft>=0.13",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.25",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "httpx>=0.27", "websockets>=13.0"]
+
+[project.scripts]
+brushjam = "brushjam.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brushjam"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.uv]
+default-groups = []

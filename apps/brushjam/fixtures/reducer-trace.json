@@ -1,0 +1,3652 @@
+{
+  "note": "createRoom(\"trace01\", 0.7, 1024, 768, true, \"fast\", {fast+quality, 0.95, 1024}); Alice then Bob join.",
+  "room": {
+    "id": "trace01",
+    "denoise": 0.7,
+    "canvasSize": 1024,
+    "resolution": 768,
+    "adjustable": true,
+    "profile": "fast"
+  },
+  "users": [
+    "Alice",
+    "Bob"
+  ],
+  "steps": [
+    {
+      "by": 0,
+      "msg": {
+        "t": "cursor",
+        "x": 10,
+        "y": 20
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [
+          {
+            "t": "cursor",
+            "userId": "U0",
+            "x": 10,
+            "y": 20
+          }
+        ],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 0,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "a1",
+          "layerId": "@layer0",
+          "tool": "pen",
+          "color": "#ff0000",
+          "width": 12,
+          "points": [
+            {
+              "x": 10,
+              "y": 10
+            }
+          ]
+        }
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [
+          {
+            "t": "stroke_start",
+            "userId": "U0",
+            "stroke": {
+              "id": "U0:a1",
+              "layerId": "L0",
+              "tool": "pen",
+              "color": "#ff0000",
+              "width": 12,
+              "alpha": 1,
+              "points": [
+                {
+                  "x": 10,
+                  "y": 10
+                }
+              ]
+            }
+          }
+        ],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 0,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "stroke_chunk",
+        "strokeId": "a1",
+        "points": [
+          {
+            "x": 20,
+            "y": 20
+          },
+          {
+            "x": 30,
+            "y": 25,
+            "p": 0.5
+          }
+        ]
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [
+          {
+            "t": "stroke_chunk",
+            "userId": "U0",
+            "strokeId": "U0:a1",
+            "points": [
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              }
+            ]
+          }
+        ],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 0,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "stroke_end",
+        "strokeId": "a1",
+        "points": [
+          {
+            "x": 40,
+            "y": 30
+          }
+        ]
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "stroke_committed",
+            "stroke": {
+              "id": "U0:a1",
+              "userId": "U0",
+              "layerId": "L0",
+              "tool": "pen",
+              "color": "#ff0000",
+              "width": 12,
+              "alpha": 1,
+              "points": [
+                {
+                  "x": 10,
+                  "y": 10
+                },
+                {
+                  "x": 20,
+                  "y": 20
+                },
+                {
+                  "x": 30,
+                  "y": 25,
+                  "p": 0.5
+                },
+                {
+                  "x": 40,
+                  "y": 30
+                }
+              ],
+              "revision": 1,
+              "bbox": {
+                "x": 3,
+                "y": 3,
+                "width": 44,
+                "height": 34
+              }
+            },
+            "humanRevision": 1
+          }
+        ],
+        "relay": [
+          {
+            "t": "stroke_end",
+            "userId": "U0",
+            "strokeId": "U0:a1",
+            "points": [
+              {
+                "x": 40,
+                "y": 30
+              }
+            ]
+          }
+        ],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 3,
+            "y": 3,
+            "width": 44,
+            "height": 34
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 1,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          }
+        ],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "b1",
+          "layerId": "@layer0",
+          "tool": "noise",
+          "color": "#00ff00",
+          "width": 64,
+          "alpha": 0.4,
+          "points": [
+            {
+              "x": 100,
+              "y": 100
+            }
+          ]
+        }
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [
+          {
+            "t": "stroke_start",
+            "userId": "U1",
+            "stroke": {
+              "id": "U1:b1",
+              "layerId": "L0",
+              "tool": "noise",
+              "color": "#00ff00",
+              "width": 64,
+              "alpha": 0.4,
+              "points": [
+                {
+                  "x": 100,
+                  "y": 100
+                }
+              ]
+            }
+          }
+        ],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 1,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          }
+        ],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "stroke_end",
+        "strokeId": "b1",
+        "points": [
+          {
+            "x": 140,
+            "y": 160
+          }
+        ]
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "stroke_committed",
+            "stroke": {
+              "id": "U1:b1",
+              "userId": "U1",
+              "layerId": "L0",
+              "tool": "noise",
+              "color": "#00ff00",
+              "width": 64,
+              "alpha": 0.4,
+              "points": [
+                {
+                  "x": 100,
+                  "y": 100
+                },
+                {
+                  "x": 140,
+                  "y": 160
+                }
+              ],
+              "revision": 2,
+              "bbox": {
+                "x": 67,
+                "y": 67,
+                "width": 106,
+                "height": 126
+              }
+            },
+            "humanRevision": 2
+          }
+        ],
+        "relay": [
+          {
+            "t": "stroke_end",
+            "userId": "U1",
+            "strokeId": "U1:b1",
+            "points": [
+              {
+                "x": 140,
+                "y": 160
+              }
+            ]
+          }
+        ],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 67,
+            "y": 67,
+            "width": 106,
+            "height": 126
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 2,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          }
+        ],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "a2",
+          "layerId": "@layer0",
+          "tool": "pen",
+          "color": "red",
+          "width": 500,
+          "points": [
+            {
+              "x": 200,
+              "y": 200
+            }
+          ]
+        }
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [
+          {
+            "t": "stroke_start",
+            "userId": "U0",
+            "stroke": {
+              "id": "U0:a2",
+              "layerId": "L0",
+              "tool": "pen",
+              "color": "#000000",
+              "width": 128,
+              "alpha": 1,
+              "points": [
+                {
+                  "x": 200,
+                  "y": 200
+                }
+              ]
+            }
+          }
+        ],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 2,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          }
+        ],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "stroke_end",
+        "strokeId": "a2",
+        "points": [
+          {
+            "x": 210,
+            "y": 220
+          }
+        ]
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "stroke_committed",
+            "stroke": {
+              "id": "U0:a2",
+              "userId": "U0",
+              "layerId": "L0",
+              "tool": "pen",
+              "color": "#000000",
+              "width": 128,
+              "alpha": 1,
+              "points": [
+                {
+                  "x": 200,
+                  "y": 200
+                },
+                {
+                  "x": 210,
+                  "y": 220
+                }
+              ],
+              "revision": 3,
+              "bbox": {
+                "x": 135,
+                "y": 135,
+                "width": 140,
+                "height": 150
+              }
+            },
+            "humanRevision": 3
+          }
+        ],
+        "relay": [
+          {
+            "t": "stroke_end",
+            "userId": "U0",
+            "strokeId": "U0:a2",
+            "points": [
+              {
+                "x": 210,
+                "y": 220
+              }
+            ]
+          }
+        ],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 135,
+            "y": 135,
+            "width": 140,
+            "height": 150
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 3,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "undo"
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "undo_applied",
+            "strokeId": "U0:a2",
+            "layerId": "L0",
+            "humanRevision": 4
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 135,
+            "y": 135,
+            "width": 140,
+            "height": 150
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 4,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "undo"
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "undo_applied",
+            "strokeId": "U1:b1",
+            "layerId": "L0",
+            "humanRevision": 5
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 67,
+            "y": 67,
+            "width": 106,
+            "height": 126
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 5,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "undo"
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 5,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_create",
+        "layer": {
+          "kind": "draw",
+          "name": "Second"
+        }
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "layer_created",
+            "layer": {
+              "id": "L1",
+              "name": "Second",
+              "kind": "draw",
+              "visible": true,
+              "locked": false,
+              "opacity": 1,
+              "order": 1,
+              "includeInAI": true
+            },
+            "humanRevision": 6
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 6,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          },
+          {
+            "id": "L1",
+            "name": "Second",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_update",
+        "id": "@layer1",
+        "patch": {
+          "opacity": 0.25,
+          "visible": false
+        }
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "layer_updated",
+            "layer": {
+              "id": "L1",
+              "name": "Second",
+              "kind": "draw",
+              "visible": false,
+              "locked": false,
+              "opacity": 0.25,
+              "order": 1,
+              "includeInAI": true
+            },
+            "humanRevision": 7
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 7,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true
+          },
+          {
+            "id": "L1",
+            "name": "Second",
+            "kind": "draw",
+            "visible": false,
+            "locked": false,
+            "opacity": 0.25,
+            "order": 1,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_update",
+        "id": "@layer0",
+        "patch": {
+          "offsetX": 40,
+          "offsetY": -10
+        }
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "layer_updated",
+            "layer": {
+              "id": "L0",
+              "name": "Layer 1",
+              "kind": "draw",
+              "visible": true,
+              "locked": false,
+              "opacity": 1,
+              "order": 0,
+              "includeInAI": true,
+              "offsetX": 40,
+              "offsetY": -10
+            },
+            "humanRevision": 8
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 3,
+            "y": 3,
+            "width": 44,
+            "height": 34
+          },
+          {
+            "x": 43,
+            "y": -7,
+            "width": 44,
+            "height": 34
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 8,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          },
+          {
+            "id": "L1",
+            "name": "Second",
+            "kind": "draw",
+            "visible": false,
+            "locked": false,
+            "opacity": 0.25,
+            "order": 1,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_update",
+        "id": "@layer1",
+        "patch": {
+          "locked": true
+        }
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "layer_updated",
+            "layer": {
+              "id": "L1",
+              "name": "Second",
+              "kind": "draw",
+              "visible": false,
+              "locked": true,
+              "opacity": 0.25,
+              "order": 1,
+              "includeInAI": true
+            },
+            "humanRevision": 9
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 9,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          },
+          {
+            "id": "L1",
+            "name": "Second",
+            "kind": "draw",
+            "visible": false,
+            "locked": true,
+            "opacity": 0.25,
+            "order": 1,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_update",
+        "id": "@layer1",
+        "patch": {
+          "offsetX": 5
+        }
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [],
+        "toSender": [
+          {
+            "t": "error",
+            "message": "layer is locked"
+          }
+        ],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 9,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 0,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          },
+          {
+            "id": "L1",
+            "name": "Second",
+            "kind": "draw",
+            "visible": false,
+            "locked": true,
+            "opacity": 0.25,
+            "order": 1,
+            "includeInAI": true
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_reorder",
+        "ids": [
+          "@layer1",
+          "@layer0"
+        ]
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "layers_reordered",
+            "layers": [
+              {
+                "id": "L1",
+                "name": "Second",
+                "kind": "draw",
+                "visible": false,
+                "locked": true,
+                "opacity": 0.25,
+                "order": 0,
+                "includeInAI": true
+              },
+              {
+                "id": "L0",
+                "name": "Layer 1",
+                "kind": "draw",
+                "visible": true,
+                "locked": false,
+                "opacity": 1,
+                "order": 1,
+                "includeInAI": true,
+                "offsetX": 40,
+                "offsetY": -10
+              }
+            ],
+            "humanRevision": 10
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 43,
+            "y": -7,
+            "width": 44,
+            "height": 34
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 10,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L1",
+            "name": "Second",
+            "kind": "draw",
+            "visible": false,
+            "locked": true,
+            "opacity": 0.25,
+            "order": 0,
+            "includeInAI": true
+          },
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_delete",
+        "id": "@layer1"
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "layer_deleted",
+            "id": "L1",
+            "humanRevision": 11
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 11,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "layer_delete",
+        "id": "@layer0"
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [],
+        "toSender": [
+          {
+            "t": "error",
+            "message": "cannot delete the last draw layer"
+          }
+        ],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 11,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [
+          {
+            "id": "U0:a1",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#ff0000",
+            "width": 12,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 10,
+                "y": 10
+              },
+              {
+                "x": 20,
+                "y": 20
+              },
+              {
+                "x": 30,
+                "y": 25,
+                "p": 0.5
+              },
+              {
+                "x": 40,
+                "y": 30
+              }
+            ],
+            "revision": 1,
+            "bbox": {
+              "x": 3,
+              "y": 3,
+              "width": 44,
+              "height": 34
+            }
+          },
+          {
+            "id": "U1:b1",
+            "userId": "U1",
+            "layerId": "L0",
+            "tool": "noise",
+            "color": "#00ff00",
+            "width": 64,
+            "alpha": 0.4,
+            "points": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 140,
+                "y": 160
+              }
+            ],
+            "revision": 2,
+            "bbox": {
+              "x": 67,
+              "y": 67,
+              "width": 106,
+              "height": 126
+            }
+          },
+          {
+            "id": "U0:a2",
+            "userId": "U0",
+            "layerId": "L0",
+            "tool": "pen",
+            "color": "#000000",
+            "width": 128,
+            "alpha": 1,
+            "points": [
+              {
+                "x": 200,
+                "y": 200
+              },
+              {
+                "x": 210,
+                "y": 220
+              }
+            ],
+            "revision": 3,
+            "bbox": {
+              "x": 135,
+              "y": 135,
+              "width": 140,
+              "height": 150
+            }
+          }
+        ],
+        "undone": [
+          "U0:a2",
+          "U1:b1"
+        ],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "clear_layer",
+        "layerId": "@layer0"
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "clear_applied",
+            "layerId": "L0",
+            "humanRevision": 12
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [
+          {
+            "x": 43,
+            "y": -7,
+            "width": 44,
+            "height": 34
+          }
+        ],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "clear_layer",
+        "layerId": "nope42"
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [],
+        "toSender": [
+          {
+            "t": "error",
+            "message": "unknown layer"
+          }
+        ],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "anime style, fantasy town, vibrant colors",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "set_prompt",
+        "prompt": "a quiet harbour"
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "prompt_changed",
+            "prompt": "a quiet harbour"
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": true
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "set_prompt",
+        "prompt": "a quiet harbour"
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.7,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "set_ai_settings",
+        "denoise": 0.85
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "ai_settings_changed",
+            "denoise": 0.85,
+            "negativePrompt": "",
+            "aiResolution": 768,
+            "aiProfile": "fast",
+            "negativePromptActive": true
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": true
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.85,
+        "negativePrompt": "",
+        "aiResolution": 768,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "fast",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "set_ai_settings",
+        "aiProfile": "quality"
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "ai_settings_changed",
+            "denoise": 0.85,
+            "negativePrompt": "",
+            "aiResolution": 1024,
+            "aiProfile": "quality",
+            "negativePromptActive": true
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": true
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.85,
+        "negativePrompt": "",
+        "aiResolution": 1024,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "quality",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "set_ai_settings",
+        "aiResolution": 512,
+        "negativePrompt": "text, watermark"
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "ai_settings_changed",
+            "denoise": 0.85,
+            "negativePrompt": "text, watermark",
+            "aiResolution": 512,
+            "aiProfile": "quality",
+            "negativePromptActive": true
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": true
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.85,
+        "negativePrompt": "text, watermark",
+        "aiResolution": 512,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "quality",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 1,
+      "msg": {
+        "t": "set_ai_settings",
+        "aiResolution": 2048
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [],
+        "toSender": [
+          {
+            "t": "error",
+            "message": "this room can generate at up to 1024"
+          }
+        ],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U1",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.85,
+        "negativePrompt": "text, watermark",
+        "aiResolution": 512,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "quality",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    }
+  ]
+}

@@ -1,0 +1,722 @@
+{
+  "note": "Each sample is fed to validateClientMessage; `result` is what the Node validator returned.",
+  "samples": [
+    {
+      "type": "cursor",
+      "input": {
+        "t": "cursor",
+        "x": 12.5,
+        "y": -3
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "cursor",
+          "x": 12.5,
+          "y": -3
+        }
+      }
+    },
+    {
+      "type": "cursor",
+      "input": {
+        "t": "cursor",
+        "x": "a",
+        "y": 1
+      },
+      "result": {
+        "ok": false,
+        "error": "cursor needs finite x and y"
+      }
+    },
+    {
+      "type": "cursor",
+      "input": {
+        "t": "cursor",
+        "x": 1
+      },
+      "result": {
+        "ok": false,
+        "error": "cursor needs finite x and y"
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "s1",
+          "layerId": "l1",
+          "tool": "pen",
+          "color": "#112233",
+          "width": 14,
+          "points": [
+            {
+              "x": 1,
+              "y": 2
+            }
+          ]
+        }
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "stroke_start",
+          "stroke": {
+            "id": "s1",
+            "layerId": "l1",
+            "tool": "pen",
+            "color": "#112233",
+            "width": 14,
+            "points": [
+              {
+                "x": 1,
+                "y": 2
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "s2",
+          "layerId": "l1",
+          "tool": "noise",
+          "color": "#000000",
+          "width": 64,
+          "alpha": 0.5,
+          "points": [
+            {
+              "x": 1,
+              "y": 2,
+              "p": 0.4
+            }
+          ]
+        }
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "stroke_start",
+          "stroke": {
+            "id": "s2",
+            "layerId": "l1",
+            "tool": "noise",
+            "color": "#000000",
+            "width": 64,
+            "alpha": 0.5,
+            "points": [
+              {
+                "x": 1,
+                "y": 2,
+                "p": 0.4
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "s3",
+          "layerId": "l1",
+          "tool": "eraser",
+          "color": "#000000",
+          "width": 32,
+          "alpha": 9,
+          "points": []
+        }
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "stroke_start",
+          "stroke": {
+            "id": "s3",
+            "layerId": "l1",
+            "tool": "eraser",
+            "color": "#000000",
+            "width": 32,
+            "alpha": 1,
+            "points": []
+          }
+        }
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start"
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke_start needs a stroke object"
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "",
+          "layerId": "l1",
+          "tool": "pen",
+          "color": "#000000",
+          "width": 3,
+          "points": []
+        }
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke needs an id"
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "s1",
+          "layerId": "l1",
+          "tool": "brush",
+          "color": "#000000",
+          "width": 3,
+          "points": []
+        }
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke tool must be pen, eraser or noise"
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "s1",
+          "layerId": "l1",
+          "tool": "pen",
+          "color": "#000000",
+          "width": 3,
+          "alpha": "x",
+          "points": []
+        }
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke alpha must be a finite number"
+      }
+    },
+    {
+      "type": "stroke_start",
+      "input": {
+        "t": "stroke_start",
+        "stroke": {
+          "id": "s1",
+          "layerId": "l1",
+          "tool": "pen",
+          "color": "#000000",
+          "width": 3,
+          "points": [
+            {
+              "x": 1
+            }
+          ]
+        }
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke points are malformed or too many"
+      }
+    },
+    {
+      "type": "stroke_chunk",
+      "input": {
+        "t": "stroke_chunk",
+        "strokeId": "s1",
+        "points": [
+          {
+            "x": 1,
+            "y": 2
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "p": 1
+          }
+        ]
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "stroke_chunk",
+          "strokeId": "s1",
+          "points": [
+            {
+              "x": 1,
+              "y": 2
+            },
+            {
+              "x": 3,
+              "y": 4,
+              "p": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "stroke_chunk",
+      "input": {
+        "t": "stroke_chunk",
+        "points": []
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke_chunk needs a strokeId"
+      }
+    },
+    {
+      "type": "stroke_chunk",
+      "input": {
+        "t": "stroke_chunk",
+        "strokeId": "s1",
+        "points": "no"
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke_chunk points are malformed or too many"
+      }
+    },
+    {
+      "type": "stroke_end",
+      "input": {
+        "t": "stroke_end",
+        "strokeId": "s1",
+        "points": []
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "stroke_end",
+          "strokeId": "s1",
+          "points": []
+        }
+      }
+    },
+    {
+      "type": "stroke_end",
+      "input": {
+        "t": "stroke_end",
+        "strokeId": "",
+        "points": []
+      },
+      "result": {
+        "ok": false,
+        "error": "stroke_end needs a strokeId"
+      }
+    },
+    {
+      "type": "undo",
+      "input": {
+        "t": "undo"
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "undo"
+        }
+      }
+    },
+    {
+      "type": "clear_layer",
+      "input": {
+        "t": "clear_layer",
+        "layerId": "l1"
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "clear_layer",
+          "layerId": "l1"
+        }
+      }
+    },
+    {
+      "type": "clear_layer",
+      "input": {
+        "t": "clear_layer"
+      },
+      "result": {
+        "ok": false,
+        "error": "clear_layer needs a layerId"
+      }
+    },
+    {
+      "type": "layer_create",
+      "input": {
+        "t": "layer_create",
+        "layer": {
+          "kind": "draw"
+        }
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "layer_create",
+          "layer": {
+            "kind": "draw"
+          }
+        }
+      }
+    },
+    {
+      "type": "layer_create",
+      "input": {
+        "t": "layer_create",
+        "layer": {
+          "kind": "reference",
+          "imageId": "img1",
+          "x": 5,
+          "y": 6,
+          "scale": 2,
+          "name": "Ref"
+        }
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "layer_create",
+          "layer": {
+            "x": 5,
+            "y": 6,
+            "scale": 2,
+            "name": "Ref",
+            "kind": "reference",
+            "imageId": "img1"
+          }
+        }
+      }
+    },
+    {
+      "type": "layer_create",
+      "input": {
+        "t": "layer_create",
+        "layer": {
+          "kind": "sketch"
+        }
+      },
+      "result": {
+        "ok": false,
+        "error": "layer kind must be draw or reference"
+      }
+    },
+    {
+      "type": "layer_create",
+      "input": {
+        "t": "layer_create",
+        "layer": {
+          "kind": "draw",
+          "opacity": "half"
+        }
+      },
+      "result": {
+        "ok": false,
+        "error": "layer fields are malformed"
+      }
+    },
+    {
+      "type": "layer_create",
+      "input": {
+        "t": "layer_create"
+      },
+      "result": {
+        "ok": false,
+        "error": "layer_create needs a layer object"
+      }
+    },
+    {
+      "type": "layer_update",
+      "input": {
+        "t": "layer_update",
+        "id": "l1",
+        "patch": {
+          "visible": false,
+          "opacity": 0.5,
+          "offsetX": 10,
+          "unknown": 3
+        }
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "layer_update",
+          "id": "l1",
+          "patch": {
+            "visible": false,
+            "opacity": 0.5,
+            "offsetX": 10
+          }
+        }
+      }
+    },
+    {
+      "type": "layer_update",
+      "input": {
+        "t": "layer_update",
+        "id": "l1",
+        "patch": {}
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "layer_update",
+          "id": "l1",
+          "patch": {}
+        }
+      }
+    },
+    {
+      "type": "layer_update",
+      "input": {
+        "t": "layer_update",
+        "id": "l1",
+        "patch": {
+          "visible": "no"
+        }
+      },
+      "result": {
+        "ok": false,
+        "error": "layer patch is malformed"
+      }
+    },
+    {
+      "type": "layer_update",
+      "input": {
+        "t": "layer_update",
+        "patch": {}
+      },
+      "result": {
+        "ok": false,
+        "error": "layer_update needs an id"
+      }
+    },
+    {
+      "type": "layer_delete",
+      "input": {
+        "t": "layer_delete",
+        "id": "l1"
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "layer_delete",
+          "id": "l1"
+        }
+      }
+    },
+    {
+      "type": "layer_delete",
+      "input": {
+        "t": "layer_delete",
+        "id": 3
+      },
+      "result": {
+        "ok": false,
+        "error": "layer_delete needs an id"
+      }
+    },
+    {
+      "type": "layer_reorder",
+      "input": {
+        "t": "layer_reorder",
+        "ids": [
+          "a",
+          "b"
+        ]
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "layer_reorder",
+          "ids": [
+            "a",
+            "b"
+          ]
+        }
+      }
+    },
+    {
+      "type": "layer_reorder",
+      "input": {
+        "t": "layer_reorder",
+        "ids": []
+      },
+      "result": {
+        "ok": false,
+        "error": "layer_reorder needs an id list"
+      }
+    },
+    {
+      "type": "layer_reorder",
+      "input": {
+        "t": "layer_reorder",
+        "ids": [
+          "a",
+          "a"
+        ]
+      },
+      "result": {
+        "ok": false,
+        "error": "layer_reorder ids must be unique"
+      }
+    },
+    {
+      "type": "set_prompt",
+      "input": {
+        "t": "set_prompt",
+        "prompt": "a town"
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "set_prompt",
+          "prompt": "a town"
+        }
+      }
+    },
+    {
+      "type": "set_prompt",
+      "input": {
+        "t": "set_prompt",
+        "prompt": 7
+      },
+      "result": {
+        "ok": false,
+        "error": "set_prompt needs a string prompt"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "denoise": 0.8
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "set_ai_settings",
+          "denoise": 0.8
+        }
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "aiResolution": 768,
+        "aiProfile": "quality",
+        "negativePrompt": "blurry"
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "set_ai_settings",
+          "negativePrompt": "blurry",
+          "aiResolution": 768,
+          "aiProfile": "quality"
+        }
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings"
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings needs denoise, negativePrompt, aiResolution or aiProfile"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "denoise": 0.99
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings denoise must be between 0.2 and 0.95"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "aiResolution": 700
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings aiResolution must be a multiple of 64"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "aiProfile": "turbo"
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings aiProfile must be one of fast, quality"
+      }
+    },
+    {
+      "type": "unknown",
+      "input": {
+        "t": "nope"
+      },
+      "result": {
+        "ok": false,
+        "error": "unknown message type: nope"
+      }
+    },
+    {
+      "type": "unknown",
+      "input": {
+        "t": 5
+      },
+      "result": {
+        "ok": false,
+        "error": "missing message type"
+      }
+    },
+    {
+      "type": "unknown",
+      "input": "string",
+      "result": {
+        "ok": false,
+        "error": "message must be an object"
+      }
+    },
+    {
+      "type": "unknown",
+      "input": [
+        1,
+        2
+      ],
+      "result": {
+        "ok": false,
+        "error": "message must be an object"
+      }
+    }
+  ]
+}
