@@ -17,6 +17,7 @@ import asyncio
 import io
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
@@ -63,6 +64,8 @@ class InprocBackend:
         self._current_request_id: Optional[str] = None
         self._cancelled: "set[str]" = set()
         self._load_lock = asyncio.Lock()
+        #: The last generation's stage timings, for /healthz and the DEBUG log.
+        self.last_timings: Dict[str, float] = {}
 
     # ------------------------------------------------------------------ load
     async def load(self) -> None:
@@ -132,6 +135,9 @@ class InprocBackend:
             "current_request_id": self._current_request_id,
             "error": self._error,
             "memory": self.pipeline.memory(),
+            # The last run's stage breakdown, so a slow edit can be explained
+            # without turning on DEBUG logging first.
+            "last_timings": dict(self.last_timings),
         }
 
     # ------------------------------------------------------------- generation
@@ -150,8 +156,13 @@ class InprocBackend:
             raise BackendHttpError(str(err), 400) from err
         height = width
 
-        image = _decode(req.image_png, "image")
-        mask = _decode(req.mask_png, "mask") if req.mask_png else None
+        # PNG codec work is CPU-bound and must not run on the event loop, and
+        # it must not run on the single GPU thread either: that thread is the
+        # device lock, so anything done there delays the next request's
+        # diffusion for no reason.
+        t = time.perf_counter()
+        image, mask = await asyncio.to_thread(_decode_inputs, req.image_png, req.mask_png)
+        decode_in_ms = (time.perf_counter() - t) * 1000.0
         # Clamped to max_denoise, not to 1.0: above it the model stops
         # reinterpreting the drawing and starts replacing it.
         strength = min(self.settings.max_denoise, max(0.05, req.denoise))
@@ -183,6 +194,7 @@ class InprocBackend:
                 self._current_request_id = None
                 self._cancelled.discard(request_id)
 
+        queued_at = time.perf_counter()
         future = loop.run_in_executor(self._executor, run)
         try:
             result = await asyncio.shield(future)
@@ -196,10 +208,42 @@ class InprocBackend:
         except GenerationCancelled as err:
             raise asyncio.CancelledError() from err
 
-        png = result.image if isinstance(result.image, Image.Image) else result.image
-        out = to_png(png)
-        self.last_timings = dict(result.timings)
+        t = time.perf_counter()
+        # `compress_level=1` on purpose: this PNG exists only to hand the image
+        # to the compositor in the same process. Level 6 costs ~5x the CPU for
+        # bytes nobody transmits.
+        out = await asyncio.to_thread(to_png, result.image, 1)
+        encode_out_ms = (time.perf_counter() - t) * 1000.0
+
+        timings = dict(result.timings)
+        timings["decode_in_ms"] = round(decode_in_ms, 2)
+        timings["encode_out_ms"] = round(encode_out_ms, 2)
+        # Everything between handing the job to the GPU thread and getting the
+        # result back that the pipeline did not account for: queueing behind a
+        # previous run, plus the executor hop.
+        timings["queue_ms"] = round(
+            max(0.0, (t - queued_at) * 1000.0 - timings.get("total_ms", 0.0)), 2
+        )
+        self.last_timings = timings
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "backend %s: decode_in %.0f queue %.0f pipeline %.0f encode_out %.0f ms",
+                request_id,
+                decode_in_ms,
+                timings["queue_ms"],
+                timings.get("total_ms", 0.0),
+                encode_out_ms,
+            )
         return out
+
+
+def _decode_inputs(
+    image_png: bytes, mask_png: Optional[bytes]
+) -> "tuple[Image.Image, Optional[Image.Image]]":
+    return (
+        _decode(image_png, "image"),
+        _decode(mask_png, "mask") if mask_png else None,
+    )
 
 
 def _decode(data: bytes, what: str) -> Image.Image:

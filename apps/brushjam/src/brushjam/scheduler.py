@@ -108,7 +108,10 @@ class SchedulerOptions:
 
 
 def _now_ms() -> float:
-    return time.monotonic() * 1000
+    # `perf_counter`, not `monotonic`: both are monotonic, but on Windows
+    # `monotonic` ticks at ~15.6 ms, which is the same order as the stages this
+    # measures and quantises every reported `latencyMs`.
+    return time.perf_counter() * 1000
 
 
 class AIScheduler:
@@ -237,7 +240,9 @@ class AIScheduler:
         # The whole canvas is rendered, then resampled to the generation size;
         # the result is scaled back to the canvas when it is composited.
         resolution = job.resolution or self.opts.window
+        t_mask = _now_ms()
         mask = self.host.build_full_mask(resolution)
+        mask_ms = _now_ms() - t_mask
 
         self._changed = False
         self._in_flight = True
@@ -250,7 +255,9 @@ class AIScheduler:
         try:
             negative = job.negative_prompt or ""
             request_seed = (self.opts.seed or _default_seed)()
+            t_render = _now_ms()
             image_png = await asyncio.to_thread(job.render, rect, resolution)
+            render_ms = _now_ms() - t_render
             req = GenerateRequest(
                 profile=job.profile or "quality",
                 prompt=job.prompt,
@@ -264,6 +271,7 @@ class AIScheduler:
                 seed=request_seed,
                 tag=f"{self.opts.tag}_r{for_revision}",
             )
+            t_backend = _now_ms()
             try:
                 patch = await asyncio.wait_for(
                     self.backend.generate(req), self.opts.watchdog_ms / 1000
@@ -275,11 +283,31 @@ class AIScheduler:
             if for_revision < self._last_accepted:
                 self._set_state("idle")
             else:
+                backend_ms = _now_ms() - t_backend
+                t_apply = _now_ms()
                 applied = await self.host.apply_result(
                     patch, rect, rect, mask.alpha, for_revision
                 )
+                apply_ms = _now_ms() - t_apply
                 self._last_accepted = for_revision
                 latency_ms = round(_now_ms() - started_at)
+                if log.isEnabledFor(logging.DEBUG):
+                    # Where a single edit's wait actually went. `backend` is the
+                    # whole call including any queueing; `apply` is the decode,
+                    # upsample, composite and the PNG the client downloads.
+                    log.debug(
+                        "run r%d %dpx: mask %.0f render %.0f backend %.0f apply %.0f "
+                        "= %d ms (%d KiB in, %d KiB out)",
+                        for_revision,
+                        resolution,
+                        mask_ms,
+                        render_ms,
+                        backend_ms,
+                        apply_ms,
+                        latency_ms,
+                        len(image_png) // 1024,
+                        len(patch) // 1024,
+                    )
                 self.host.emit(
                     {
                         "t": "ai_result",

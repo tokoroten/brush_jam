@@ -2,6 +2,13 @@
  * Per-edit latency measurement against an ALREADY RUNNING server.
  *
  *   pnpm --filter @brushjam/server latency [--url http://127.0.0.1:8787] [--n 10]
+ *     [--profile fast|quality] [--resolution 512|768|1024] [--denoise 0.1-1.0]
+ *     [--json out.json]
+ *
+ * The three settings flags are applied to the room before the first stroke and
+ * confirmed by `ai_settings_changed`, so what is measured is what was asked
+ * for. Without them the room keeps the server's defaults, which is what this
+ * script has always measured.
  *
  * Joins a fresh room as a WebSocket client, draws N short strokes one at a
  * time, and times each one from the moment `stroke_end` is sent to the
@@ -12,7 +19,9 @@
  * It never starts a server or a backend of its own, so it measures whatever is
  * really running (the /healthz line says which backend that is).
  */
+import { writeFileSync } from 'node:fs';
 import WebSocket from 'ws';
+import { AI_RESOLUTIONS } from '@brushjam/shared';
 import type { ServerMessage } from '@brushjam/shared';
 
 interface Options {
@@ -22,6 +31,12 @@ interface Options {
   count: number;
   room: string;
   timeoutMs: number;
+  /** Room settings to apply before measuring; undefined = leave the default. */
+  profile?: 'fast' | 'quality';
+  resolution?: number;
+  denoise?: number;
+  /** Where to write the machine-readable result, if anywhere. */
+  jsonPath?: string;
 }
 
 function parseArgs(argv: string[]): Options {
@@ -40,6 +55,27 @@ function parseArgs(argv: string[]): Options {
     else if (arg === '--room' && value) opts.room = value;
     else if (arg === '--timeout' && value) opts.timeoutMs = Math.max(1000, Number(value) || 1000);
     else if (arg === '--worker' && value) opts.workerUrl = value;
+    else if (arg === '--profile' && value) {
+      if (value !== 'fast' && value !== 'quality') {
+        console.error(`[latency] --profile must be fast or quality, not "${value}"`);
+        process.exit(1);
+      }
+      opts.profile = value;
+    } else if (arg === '--resolution' && value) {
+      const n = Number(value);
+      if (!AI_RESOLUTIONS.includes(n as (typeof AI_RESOLUTIONS)[number])) {
+        console.error(`[latency] --resolution must be one of ${AI_RESOLUTIONS.join(', ')}, not "${value}"`);
+        process.exit(1);
+      }
+      opts.resolution = n;
+    } else if (arg === '--denoise' && value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0 || n > 1) {
+        console.error(`[latency] --denoise must be in (0, 1], not "${value}"`);
+        process.exit(1);
+      }
+      opts.denoise = n;
+    } else if (arg === '--json' && value) opts.jsonPath = value;
   }
   return opts;
 }
@@ -108,6 +144,9 @@ let canvasSize = 1024;
 let edit = 0;
 let sentAt = 0;
 let waiting = false;
+/** True between sending set_ai_settings and its confirmation. */
+let awaitingSettings = false;
+let applied: { aiProfile: string; aiResolution: number; denoise: number } | undefined;
 
 const fail = (message: string): never => {
   console.error(`[latency] ${message}`);
@@ -150,6 +189,50 @@ socket.on('message', (raw) => {
     layerId = draw!.id;
     canvasSize = msg.snapshot.canvasSize;
     console.log(`[latency] canvas ${canvasSize}, ai resolution ${msg.snapshot.aiResolution}, prompt "${msg.snapshot.prompt}"`);
+    applied = {
+      aiProfile: msg.snapshot.aiProfile,
+      aiResolution: msg.snapshot.aiResolution,
+      denoise: msg.snapshot.denoise,
+    };
+    // Ask for the settings we were told to measure, and wait for the room to
+    // confirm them: it may clamp what the backend cannot do, and measuring the
+    // clamped value silently would be a lie. A room that already has them
+    // broadcasts nothing, so only ask when something actually differs.
+    const wanted =
+      (opts.profile !== undefined && opts.profile !== msg.snapshot.aiProfile) ||
+      (opts.resolution !== undefined && opts.resolution !== msg.snapshot.aiResolution) ||
+      (opts.denoise !== undefined && Math.abs(opts.denoise - msg.snapshot.denoise) > 1e-6);
+    if (wanted) {
+      awaitingSettings = true;
+      socket.send(
+        JSON.stringify({
+          t: 'set_ai_settings',
+          ...(opts.profile === undefined ? {} : { aiProfile: opts.profile }),
+          ...(opts.resolution === undefined ? {} : { aiResolution: opts.resolution }),
+          ...(opts.denoise === undefined ? {} : { denoise: opts.denoise }),
+        }),
+      );
+      return;
+    }
+    if (opts.profile !== undefined || opts.resolution !== undefined || opts.denoise !== undefined) {
+      console.log(
+        `[latency] measuring profile ${applied.aiProfile}, resolution ${applied.aiResolution}, denoise ${applied.denoise} (already set)`,
+      );
+    }
+    drawNext();
+    return;
+  }
+
+  if (msg.t === 'ai_settings_changed') {
+    applied = { aiProfile: msg.aiProfile, aiResolution: msg.aiResolution, denoise: msg.denoise };
+    if (!awaitingSettings) return;
+    awaitingSettings = false;
+    const asked: string[] = [];
+    if (opts.profile !== undefined && opts.profile !== msg.aiProfile) asked.push(`profile ${opts.profile} -> ${msg.aiProfile}`);
+    if (opts.resolution !== undefined && opts.resolution !== msg.aiResolution) asked.push(`resolution ${opts.resolution} -> ${msg.aiResolution}`);
+    if (opts.denoise !== undefined && Math.abs(opts.denoise - msg.denoise) > 1e-6) asked.push(`denoise ${opts.denoise} -> ${msg.denoise}`);
+    if (asked.length > 0) console.log(`[latency] the server clamped: ${asked.join(', ')}`);
+    console.log(`[latency] measuring profile ${msg.aiProfile}, resolution ${msg.aiResolution}, denoise ${msg.denoise}`);
     drawNext();
     return;
   }
@@ -207,4 +290,21 @@ function report(): void {
   console.log(line('stroke_end -> pixels on screen', total));
   console.log(line('stroke_end -> ai_result message', notified));
   console.log(line('server pipeline (render+gen+composite)', pipeline));
+  if (opts.jsonPath === undefined) return;
+  const payload = {
+    url: base,
+    backend: health.backend ?? 'unknown',
+    room: opts.room,
+    count: opts.count,
+    // What was asked for and what the room actually ran with - the second is
+    // the one that explains the numbers.
+    requested: { profile: opts.profile, resolution: opts.resolution, denoise: opts.denoise },
+    applied,
+    canvasSize,
+    summary: { totalMs: total, notifiedMs: notified, pipelineMs: pipeline },
+    samples,
+  };
+  writeFileSync(opts.jsonPath, `${JSON.stringify(payload, null, 2)}
+`, 'utf8');
+  console.log(`[latency] wrote ${opts.jsonPath}`);
 }

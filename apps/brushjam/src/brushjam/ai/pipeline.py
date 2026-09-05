@@ -577,6 +577,21 @@ class InprocPipeline:
                 raise RuntimeError(f"internal error: produced {composed.size}, expected {(width, height)}")
             timings["composite_ms"] = (time.perf_counter() - t) * 1000.0
             timings["total_ms"] = (time.perf_counter() - t_start) * 1000.0
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "gen %s %s %dpx: prompt %.0f (cached %s) unet %.0f vae_enc %.0f "
+                    "vae_dec %.0f composite %.0f total %.0f ms",
+                    request_id or "-",
+                    profile,
+                    width,
+                    timings["prompt_ms"],
+                    bool(timings["prompt_cached"]),
+                    timings["unet_ms"],
+                    timings["vae_encode_ms"],
+                    timings["vae_decode_ms"],
+                    timings["composite_ms"],
+                    timings["total_ms"],
+                )
             return GenerateResult(image=composed, timings=timings)
         finally:
             # Must run on every exit path: a cancelled or failed run allocated

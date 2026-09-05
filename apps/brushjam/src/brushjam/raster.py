@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import math
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -363,12 +364,18 @@ def render_crop_input(snapshot: RenderSnapshot, crop: Rect, size: int) -> bytes:
     image = Image.fromarray(np.clip(canvas, 0, 255).astype(np.uint8), "RGB")
     if size != width or size != height:
         image = image.resize((size, size), Image.LANCZOS)
-    return to_png(image)
+    return to_png(image, AI_INPUT_COMPRESS_LEVEL)
 
 
-def to_png(image: Image.Image) -> bytes:
+#: The AI input never leaves this process, so it is encoded for speed, not for
+#: size: level 1 is ~5x cheaper than level 6 and the bytes are handed straight
+#: to the backend. Level 6 stays the default for anything a client downloads.
+AI_INPUT_COMPRESS_LEVEL = 1
+
+
+def to_png(image: Image.Image, compress_level: int = 6) -> bytes:
     out = io.BytesIO()
-    image.save(out, format="PNG", compress_level=6)
+    image.save(out, format="PNG", compress_level=compress_level)
     return out.getvalue()
 
 
@@ -382,10 +389,18 @@ class BuiltMask:
         self.empty = empty
 
 
-def build_full_mask(size: int) -> BuiltMask:
-    """Full-canvas mode: everything is regenerated, so the mask is opaque."""
+@lru_cache(maxsize=8)
+def _full_mask(size: int) -> BuiltMask:
     alpha = Image.new("L", (size, size), 255)
-    return BuiltMask(to_png(alpha.convert("RGB")), alpha, False)
+    return BuiltMask(to_png(alpha.convert("RGB"), AI_INPUT_COMPRESS_LEVEL), alpha, False)
+
+
+def build_full_mask(size: int) -> BuiltMask:
+    """Full-canvas mode: everything is regenerated, so the mask is opaque - and
+    therefore identical for every run at a given size, so it is built once. The
+    alpha is only ever read (`putalpha`, never drawn into), so sharing it is
+    safe; the PNG is immutable bytes."""
+    return _full_mask(size)
 
 
 class AICanvas:

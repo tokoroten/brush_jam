@@ -103,6 +103,38 @@ backend, the fields the tooling used to fetch from the worker's own `/healthz`
 (`model`, `steps`, `guidance`, `vae`, `lora`, `max_size`, `max_denoise`,
 `warm`, `busy`, `memory`), so there is one place to look.
 
+## Where an edit's time goes
+
+`LOG_LEVEL=DEBUG` makes every run print its stages, and `/healthz` carries the
+last generation's `last_timings` so a slow edit can be explained without
+turning logging on first:
+
+```
+[brushjam.ai] run r4 768px: mask 0 render 50 backend 35 apply 41 = 128 ms
+[brushjam.ai.inproc] backend <id>: decode_in 3 queue 25 pipeline N encode_out 4 ms
+```
+
+`render` is the AI input (raster + PNG), `apply` is decode + upsample +
+composite + the PNG the client downloads, `backend` is the whole generate call.
+Measured with `INPROC_DRY_RUN=1` at 768 on this box, everything the Python
+server does around the model costs **110-130 ms** per edit, and a real
+photographic result adds at most ~40 ms of PNG encoding on top (measured: a
+768 RGB encode is 20 ms at level 6, a 1024 RGBA one 36 ms). The gap between
+`fast`/768 here (~3.7 s of server pipeline) and the dedicated worker process
+(~1.4 s of generation) is therefore inside the GPU call, not in the plumbing.
+
+Three things keep the plumbing off the critical path:
+
+- **No PNG codec on the event loop.** The input render and the composite were
+  already in threads; the backend's input decode and output encode are too.
+  They are deliberately *not* on the GPU thread - that thread is the device
+  lock, and CPU work there delays the next request's diffusion for nothing.
+- **The AI input and mask are encoded at `compress_level=1`.** Those bytes
+  never leave the process. Level 6 costs ~2x the CPU for a file nobody
+  transmits; the composited canvas a client downloads stays at level 6.
+- **The full mask is built once per size.** In full-canvas mode it is an opaque
+  square, identical for every run.
+
 ## Differences from the Node server
 
 1. **Patch mode is not ported.** `AI_MODE=full` only; `AI_MODE=patch` refuses to
