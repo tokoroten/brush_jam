@@ -5,7 +5,7 @@ server on :8788, and everything else about the boot is observable through it.
 Keep it short - deploy.py embeds this file verbatim into the pod's start
 command via a heredoc, and it must stay readable there.
 """
-import json, os, signal, urllib.request
+import json, os, signal, tarfile, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 TOKEN = os.environ.get("UPLOAD_TOKEN", "")
@@ -15,6 +15,38 @@ PORT = int(os.environ.get("RECEIVER_PORT", "8788"))
 APP_PORT = int(os.environ.get("APP_PORT", "8787"))
 TGZ, LOG, PHASE = WS + "/app.tgz", WS + "/boot.log", WS + "/phase"
 PID = WS + "/server.pid"
+#: A real tarball of apps/brushjam is ~300 KB. Anything this small is a probe,
+#: a truncated transfer or a mistake - and accepting one used to cost a running
+#: pod its server: the empty file replaced app.tgz and the SIGTERM killed a
+#: bootstrap that was midway through uv sync.
+MIN_UPLOAD_BYTES = 10 * 1024
+#: What the boot loop runs after extracting. An archive without it cannot boot
+#: the pod, so it is not an upload, whatever else it contains.
+REQUIRED_MEMBER = "bootstrap.sh"
+
+
+def looks_like_our_tarball(path):
+    """Cheap gate, then the real one: gzip magic, then the member list.
+
+    Validated before anything is replaced or signalled, so a bad upload costs
+    the pod nothing at all.
+    """
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) != b"\x1f\x8b":
+                return "that is not a gzip file"
+    except OSError as err:
+        return "unreadable upload (%s)" % err
+    try:
+        with tarfile.open(path, "r:gz") as tar:
+            for i, member in enumerate(tar):
+                if member.name == REQUIRED_MEMBER:
+                    return None
+                if i > 20000:
+                    break
+    except Exception as err:
+        return "that tarball did not open (%s)" % err
+    return "the tarball has no %s, so it cannot boot the pod" % REQUIRED_MEMBER
 
 
 def stop_server():
@@ -81,6 +113,11 @@ class H(BaseHTTPRequestHandler):
                 411 if raw is None else 400,
                 "the upload needs a valid Content-Length; a chunked body cannot be stored",
             )
+        if n < MIN_UPLOAD_BYTES:
+            # Refused before a single byte is written, so an empty PUT cannot
+            # replace the installed tarball or stop the server.
+            self.drain(n)
+            return self.reply(400, "%d bytes is too small to be the app (min %d)" % (n, MIN_UPLOAD_BYTES))
         got = 0
         with open(TGZ + ".part", "wb") as f:
             while got < n:
@@ -92,6 +129,10 @@ class H(BaseHTTPRequestHandler):
         if got != n:
             os.remove(TGZ + ".part")
             return self.reply(400, "the upload was cut short (%d of %d bytes)" % (got, n))
+        wrong = looks_like_our_tarball(TGZ + ".part")
+        if wrong:
+            os.remove(TGZ + ".part")
+            return self.reply(400, wrong)
         os.replace(TGZ + ".part", TGZ)
         # The boot loop re-extracts the newer tarball once the server is down.
         stop_server()

@@ -114,6 +114,12 @@ model load.
   (`brushjam-deploy/1.0`) on every proxied call, and anything else talking to
   the pod has to as well. The failure is indistinguishable from a rejected
   upload token, so check this first.
+- **The receiver only accepts the real app.** A body under 10 KB is refused
+  before a byte is written, and one that is not a gzip archive listing
+  `bootstrap.sh` is refused before anything is replaced or signalled. An empty
+  PUT with a valid token used to be accepted: it overwrote `app.tgz` and
+  SIGTERMed the server, which killed a bootstrap midway through `uv sync` and
+  left the pod with nothing to run.
 - **Uploads must carry a Content-Length.** A chunked PUT cannot be stored, so
   the receiver answers 411 (no length) or 400 (unparseable, or a body cut
   short) rather than the 403 it uses for a bad token. `deploy.py` sends the

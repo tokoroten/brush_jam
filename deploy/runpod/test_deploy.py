@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -98,7 +99,9 @@ def test_receiver() -> None:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{port}"
         try:
-            payload = b"a tarball, more or less" * 1000
+            # A real one: the receiver refuses anything that is not the app,
+            # so the happy path has to send the genuine article.
+            payload = D.build_tarball(workspace / "upload.tgz").read_bytes()
 
             def put(url: str) -> int:
                 req = urllib.request.Request(url, data=payload, method="PUT")
@@ -138,6 +141,33 @@ def test_receiver() -> None:
                 check("unknown paths 404", False)
             except urllib.error.HTTPError as err:
                 check("unknown paths 404", err.code == 404)
+
+            # An empty or tiny PUT used to be accepted: it replaced app.tgz
+            # and SIGTERMed the server, which killed a bootstrap that was
+            # midway through uv sync and left the pod with nothing to run.
+            def put_body(body: bytes) -> int:
+                req = urllib.request.Request(f"{base}/upload?token={token}", data=body, method="PUT")
+                req.add_header("content-length", str(len(body)))
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as r:
+                        return r.status
+                except urllib.error.HTTPError as err:
+                    return err.code
+
+            check("an empty upload is refused", put_body(b"") == 400)
+            check("a tiny upload is refused", put_body(b"x" * 4096) == 400)
+            not_gzip = bytes(20000)
+            check("a body that is not gzip is refused", put_body(not_gzip) == 400)
+
+            wrong = io.BytesIO()
+            with tarfile.open(fileobj=wrong, mode="w:gz") as tar:
+                info = tarfile.TarInfo("some/other/file.txt")
+                info.size = 20000
+                tar.addfile(info, io.BytesIO(bytes(20000)))
+            check("a tarball without bootstrap.sh is refused", put_body(wrong.getvalue()) == 400)
+
+            check("none of that replaced the installed tarball", (workspace / "app.tgz").read_bytes() == payload)
+            check("none of that left a partial file", not (workspace / "app.tgz.part").exists())
 
             # The way deploy.py actually uploads. A file-object body made
             # urllib send it chunked, and that failed with a bare 403.
