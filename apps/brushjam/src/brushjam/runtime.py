@@ -731,16 +731,28 @@ class SocketReservation:
     `finally`, a revocation and a failed join all want to give it back, and
     only one of them may.
 
-    A reconnect does not take a second claim. It takes over the one the socket
-    it replaces already holds - but only once it has actually replaced it. The
-    ticket a reconnect gets owns nothing and changes no counters until
-    `commit`, because everything between the reservation and the join can
-    fail: an accept that never completes used to release a lease whose
-    original socket was still connected, leaving that socket counted by
-    nobody and the cap bypassed.
+    A reconnect does not take a second claim, and it does not take the first
+    one early either. It gets a *ticket*: a provisional claim that owns
+    nothing and moves no counters until `commit`, because everything between
+    the reservation and the join can fail, and until it succeeds the socket
+    being replaced is still connected and still needs its slot.
+
+    There is exactly one counted slot per identity for the whole crossover,
+    and it is never in flight. Whichever of the two lets go first hands it to
+    the other: the original releasing while a ticket is out transfers the slot
+    (and with it the room's pin) to the ticket rather than decrementing, and a
+    ticket that commits inherits it rather than incrementing. There is no path
+    that takes a slot without one having been checked for.
     """
 
-    __slots__ = ("_registry", "_room", "_released", "_owns", "_supersedes", "_takeover_pending")
+    __slots__ = (
+        "_registry",
+        "_room",
+        "_released",
+        "_owns",
+        "_supersedes",
+        "_ticket",
+    )
 
     def __init__(
         self,
@@ -752,13 +764,13 @@ class SocketReservation:
         self._registry = registry
         self._room = room
         self._released = False
-        #: Whether this reservation currently holds a counted slot.
+        #: Whether this reservation currently holds the counted slot.
         self._owns = owns
-        #: The lease this one will take over when it commits.
+        #: The lease this one is taking over, until it commits.
         self._supersedes = supersedes
-        #: A takeover ticket is out against this lease; a second reconnect must
-        #: not be handed the same one.
-        self._takeover_pending = False
+        #: The outstanding ticket against this lease, if any. One at a time:
+        #: two tickets would both believe they were getting the same slot.
+        self._ticket: Optional["SocketReservation"] = None
 
     @property
     def released(self) -> bool:
@@ -777,40 +789,57 @@ class SocketReservation:
 
         Nothing moves yet. The original socket keeps its lease, the counters
         keep their values, and if the replacement never arrives the ticket is
-        simply discarded.
+        discarded and nothing has to be put back.
         """
-        if self._released or self._takeover_pending:
+        if self._released or self._ticket is not None:
             return None
-        self._takeover_pending = True
-        return SocketReservation(self._registry, self._room, owns=False, supersedes=self)
+        ticket = SocketReservation(self._registry, self._room, owns=False, supersedes=self)
+        self._ticket = ticket
+        return ticket
 
     def commit(self) -> None:
-        """The replacement is installed; take the slot over for real."""
+        """The replacement is installed; the slot is this connection's now."""
         old = self._supersedes
         self._supersedes = None
         if old is None:
             return
-        old._takeover_pending = False
-        if old._released:
-            # The socket we replaced closed first and already gave its slot
-            # back. Take one now - unconditionally, because this connection is
-            # past the point where it could be refused, and it is replacing an
-            # identity that had one.
-            self._registry._take_reservation(self._room)
-        else:
-            old._released = True  # the old route's release is now a no-op
+        old._ticket = None
+        if not self._owns:
+            # The original is still holding the slot: inherit it, and make its
+            # eventual release a no-op.
+            old._owns = False
+            old._released = True
+        # Otherwise the original released first and handed the slot over then;
+        # this reservation has owned it since.
         self._owns = True
 
     def release(self) -> None:
         if self._released:
             return
         self._released = True
+
         if self._supersedes is not None:
-            # A takeover that never committed. The original keeps its lease and
-            # its slot; this ticket was never counted.
-            self._supersedes._takeover_pending = False
+            # An uncommitted ticket. Either the original still holds the slot,
+            # in which case there is nothing to give back, or it released while
+            # this ticket was out and handed the slot over - and now the ticket
+            # is the one returning it.
+            old = self._supersedes
             self._supersedes = None
+            old._ticket = None
+            if self._owns:
+                self._registry._release_reservation(self._room)
             return
+
+        if self._ticket is not None and not self._ticket._released:
+            # A reconnect is mid-handshake against this identity. Handing it
+            # the slot keeps the count honest - an unrelated connection must
+            # not be admitted into a vacancy that is already spoken for - and
+            # keeps the room pinned, so the sweeper cannot delete it out from
+            # under a ticket that is about to commit.
+            self._ticket._owns = self._owns
+            self._owns = False
+            return
+
         if self._owns:
             self._registry._release_reservation(self._room)
 
@@ -906,12 +935,6 @@ class RoomRegistry:
     def _release_reservation(self, room: "RoomRuntime") -> None:
         self._sockets_open = max(0, self._sockets_open - 1)
         room.reserved_sockets = max(0, room.reserved_sockets - 1)
-
-    def _take_reservation(self, room: "RoomRuntime") -> None:
-        """An unchecked increment, for a takeover whose original had already
-        released. The identity being replaced held a slot; this one does now."""
-        self._sockets_open += 1
-        room.reserved_sockets += 1
 
     def can_accept_socket(self, room: "RoomRuntime") -> Optional[str]:
         """Why a socket could not be accepted right now, or None. Advisory:

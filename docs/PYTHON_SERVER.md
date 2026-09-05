@@ -153,7 +153,16 @@ concurrent connections cannot all pass the same check. A reconnect does not
 take a second slot and does not skip the check either: it gets a ticket for the
 exact lease held by the socket it replaces, and that ticket owns nothing until
 the join installs the replacement. Everything between the reservation and the
-join can fail, and until it succeeds the original socket keeps its slot. A room is never swept while a
+join can fail, and until it succeeds the original socket keeps its slot.
+
+There is exactly one counted slot per identity across a reconnect, and it is
+never in flight: whichever side lets go first hands it to the other. An
+original that releases while a ticket is outstanding transfers the slot -
+and with it the room's pin - rather than decrementing, so no unrelated
+connection can be admitted into a vacancy that is already spoken for and the
+sweeper cannot delete the room before the ticket commits. A ticket that
+commits inherits the slot; one that is abandoned returns whatever it was
+holding. No path increments a counter without a check having been made for it. A room is never swept while a
 handshake holds a slot in it.
 
 One more thing is process-wide rather than per-room: **generation admission**.

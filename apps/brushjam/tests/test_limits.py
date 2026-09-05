@@ -901,9 +901,12 @@ def test_a_takeover_whose_original_closed_first_still_holds_one_slot() -> None:
 
     ticket = registry.reserve_socket(room, "tok-a-0001")
     assert ticket is not None
-    # The old route reaches its finally before the new one joins.
+    # The old route reaches its finally before the new one joins. The slot is
+    # handed to the ticket rather than given back: there is exactly one per
+    # identity for the whole crossover, and it is never in flight.
     lease.release()
-    assert registry.sockets_open == 0
+    assert ticket.owns_slot is True
+    assert registry.sockets_open == 1 and room.reserved_sockets == 1
 
     room.join(FakeSocket(), "A", "tok-a-0001", ticket)
     assert ticket.owns_slot is True
@@ -994,3 +997,114 @@ def test_a_stroke_that_fits_is_still_committed() -> None:
     assert ended.broadcast[0]["t"] == "stroke_committed"
     assert room.committed_points == 60
     assert room.pending_points == 0
+
+
+# ------------------------------------------ the slot is never in flight
+
+
+def a_room_with_one_socket(**env):
+    """A registry at limit 1 with one joined member holding the only slot."""
+    settings = {"MAX_ROOM_SOCKETS": "1", "MAX_TOTAL_SOCKETS": "1"}
+    settings.update(env)
+    registry = RoomRegistry(MockBackend(), config(**settings))
+    room = registry.get_or_create("aaaa", "test")
+    assert room is not None
+    lease = registry.reserve_socket(room)
+    assert lease is not None
+    room.join(FakeSocket(), "A", "tok-a-0001", lease)
+    return registry, room, lease
+
+
+def test_nobody_else_can_fill_the_vacancy_a_ticket_is_holding() -> None:
+    """The original letting go mid-handshake is not a free slot.
+
+    It used to decrement, so an unrelated connection took the slot and the
+    ticket then incremented on top of it: two sockets at a limit of one.
+    """
+    registry, room, lease = a_room_with_one_socket()
+    ticket = registry.reserve_socket(room, "tok-a-0001")
+    assert ticket is not None
+
+    # The original route reaches its finally while the reconnect is still in
+    # its handshake.
+    lease.release()
+    assert registry.sockets_open == 1
+    assert room.reserved_sockets == 1
+
+    # An unrelated connection sees no vacancy...
+    assert registry.reserve_socket(room) is None
+    assert registry.reserve_socket(room, "tok-somebody-else") is None
+
+    # ...and the ticket commits without adding to the count.
+    room.join(FakeSocket(), "B", "tok-a-0001", ticket)
+    assert registry.sockets_open == 1
+    assert room.reserved_sockets == 1
+
+
+def test_the_room_stays_pinned_while_a_ticket_is_outstanding() -> None:
+    """reserved_sockets going to zero mid-crossover let the sweeper delete
+    the room, and the ticket then committed into a detached RoomRuntime."""
+    registry, room, lease = a_room_with_one_socket(
+        UNJOINED_ROOM_TTL_MS="1000", ROOM_IDLE_MS="10000"
+    )
+    ticket = registry.reserve_socket(room, "tok-a-0001")
+    assert ticket is not None
+
+    # The original leaves the room entirely, not just its route.
+    user_id = next(iter(room.state.members))
+    room.leave(user_id, room._sockets[user_id])
+    lease.release()
+
+    assert room.reserved_sockets == 1, "the room lost its pin mid-handshake"
+    assert registry.sweep(room.state.created_at + 60_000) == 0
+    assert registry.get("aaaa") is room
+
+    # The ticket commits into the room the registry still knows about.
+    room.join(FakeSocket(), "A", "tok-a-0001", ticket)
+    assert registry.get("aaaa") is room
+    assert registry.sockets_open == 1
+
+
+def test_an_aborted_ticket_returns_the_slot_the_original_handed_it() -> None:
+    registry, room, lease = a_room_with_one_socket(
+        UNJOINED_ROOM_TTL_MS="1000", ROOM_IDLE_MS="10000"
+    )
+    ticket = registry.reserve_socket(room, "tok-a-0001")
+    assert ticket is not None
+
+    user_id = next(iter(room.state.members))
+    room.leave(user_id, room._sockets[user_id])
+    lease.release()
+    assert ticket.owns_slot is True
+
+    # The reconnect never arrives either.
+    ticket.release()
+    assert registry.sockets_open == 0
+    assert room.reserved_sockets == 0
+    # Nothing is holding the room any more, so it can go.
+    assert registry.sweep(room.state.created_at + 60_000) == 1
+
+
+def test_releasing_twice_on_either_side_of_a_crossover_counts_once() -> None:
+    registry, room, lease = a_room_with_one_socket()
+    ticket = registry.reserve_socket(room, "tok-a-0001")
+    assert ticket is not None
+    lease.release()
+    lease.release()
+    ticket.release()
+    ticket.release()
+    assert registry.sockets_open == 0
+    assert room.reserved_sockets == 0
+
+
+def test_a_slot_is_never_taken_without_having_been_checked_for() -> None:
+    """There is no unchecked increment left anywhere."""
+    import inspect
+
+    from brushjam import runtime as runtime_module
+
+    source = inspect.getsource(runtime_module)
+    assert "_take_reservation" not in source
+    # The only place either counter goes up.
+    assert source.count("self._sockets_open += 1") == 1
+    assert source.count("room.reserved_sockets += 1") == 1
