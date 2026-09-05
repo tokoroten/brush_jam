@@ -182,7 +182,9 @@ def validate_client_message(raw: Any) -> ValidationResult:
         if patch is None:
             return _bad("layer fields are malformed")
         image_id = layer_raw.get("imageId")
-        if "imageId" in layer_raw and image_id is not None and not _is_id(image_id):
+        # Presence, not non-None: Node tests `!== undefined`, so an explicit
+        # `"imageId": null` is malformed there and must be malformed here.
+        if "imageId" in layer_raw and not _is_id(image_id):
             return _bad("imageId must be a string")
         layer: Dict[str, Any] = dict(patch)
         layer["kind"] = layer_raw["kind"]
@@ -223,7 +225,7 @@ def validate_client_message(raw: Any) -> ValidationResult:
 
     if t == "set_ai_settings":
         msg: Dict[str, Any] = {"t": "set_ai_settings"}
-        if raw.get("denoise") is not None:
+        if "denoise" in raw:
             if not _is_num(raw["denoise"]):
                 return _bad("set_ai_settings denoise must be a finite number")
             if raw["denoise"] < MIN_DENOISE or raw["denoise"] > MAX_DENOISE:
@@ -232,13 +234,13 @@ def validate_client_message(raw: Any) -> ValidationResult:
                     f"{_num_str(MIN_DENOISE)} and {_num_str(MAX_DENOISE)}"
                 )
             msg["denoise"] = raw["denoise"]
-        if raw.get("negativePrompt") is not None:
+        if "negativePrompt" in raw:
             if not _is_str(raw["negativePrompt"]):
                 return _bad("set_ai_settings negativePrompt must be a string")
             if len(raw["negativePrompt"]) > MAX_NEGATIVE_PROMPT:
                 return _bad("set_ai_settings negativePrompt is too long")
             msg["negativePrompt"] = raw["negativePrompt"]
-        if raw.get("aiResolution") is not None:
+        if "aiResolution" in raw:
             if not _is_num(raw["aiResolution"]):
                 return _bad("set_ai_settings aiResolution must be a finite number")
             if raw["aiResolution"] < MIN_AI_RESOLUTION or raw["aiResolution"] > MAX_AI_RESOLUTION:
@@ -249,7 +251,7 @@ def validate_client_message(raw: Any) -> ValidationResult:
             if raw["aiResolution"] % 64 != 0:
                 return _bad("set_ai_settings aiResolution must be a multiple of 64")
             msg["aiResolution"] = raw["aiResolution"]
-        if raw.get("aiProfile") is not None:
+        if "aiProfile" in raw:
             if not _is_str(raw["aiProfile"]) or raw["aiProfile"] not in AI_PROFILES:
                 return _bad(
                     f"set_ai_settings aiProfile must be one of {', '.join(AI_PROFILES)}"

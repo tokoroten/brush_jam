@@ -361,7 +361,10 @@ def create_app(
         async def static_files(path: str) -> Response:
             rel = "index.html" if path in ("", "/") else path
             candidate = (web_dist / rel).resolve()
-            if str(candidate).startswith(str(web_dist)) and candidate.is_file():
+            # Containment by resolved path, not by string prefix: a sibling
+            # directory whose name merely starts with web_dist's would pass a
+            # `startswith` check.
+            if _contained(candidate, web_dist) and candidate.is_file():
                 media = MIME.get(candidate.suffix) or mimetypes.guess_type(candidate.name)[0] or (
                     "application/octet-stream"
                 )
