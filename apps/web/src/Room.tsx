@@ -7,6 +7,8 @@ import {
   DENOISE_STEP,
   MAX_DENOISE,
   MAX_LAYERS,
+  MAX_STROKE_ALPHA,
+  MIN_STROKE_ALPHA,
   MAX_NEGATIVE_PROMPT,
   MIN_DENOISE,
   PROFILE_HINT_MS,
@@ -25,6 +27,12 @@ import {
   loadBrushSizes,
   saveBrushSizes,
   sizeForTool,
+  alphaForTool,
+  hasAlpha,
+  loadBrushAlphas,
+  saveBrushAlphas,
+  withAlpha,
+  type BrushAlphas,
   withSize,
   MAX_BRUSH,
   MIN_BRUSH,
@@ -107,6 +115,18 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     setBrushSizes((prev) => {
       const updated = withSize(prev, target, next);
       saveBrushSizes(brushStorage(), updated);
+      return updated;
+    });
+  };
+  // Opacity is per tool for the same reason: soft shading with a 30% pen must
+  // not quietly make the noise pen 30% too, where full strength is the point.
+  const [brushAlphas, setBrushAlphas] = useState<BrushAlphas>(() => loadBrushAlphas(brushStorage()));
+  const alpha = alphaForTool(brushAlphas, tool, lastSized);
+  const setAlpha = (next: number): void => {
+    const target = isSizedTool(tool) ? tool : lastSized;
+    setBrushAlphas((prev) => {
+      const updated = withAlpha(prev, target, next);
+      saveBrushAlphas(brushStorage(), updated);
       return updated;
     });
   };
@@ -281,7 +301,17 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     // The layer is rendered translated, so points are recorded in layer space
     // and the line appears exactly under the pointer.
     const point: Point = { ...layerPoint(world, activeLayer), p: e.pressure > 0 ? e.pressure : 1 };
-    const init = { id: liveKey, layerId: activeLayer.id, tool: tool === 'eraser' ? ('eraser' as const) : tool === 'noise' ? ('noise' as const) : ('pen' as const), color, width, points: [point] };
+    const strokeTool = tool === 'eraser' ? ('eraser' as const) : tool === 'noise' ? ('noise' as const) : ('pen' as const);
+    const init = {
+      id: liveKey,
+      layerId: activeLayer.id,
+      tool: strokeTool,
+      color,
+      width,
+      // The eraser removes fully; only pen and noise carry an opacity.
+      alpha: strokeTool === 'eraser' ? 1 : alpha,
+      points: [point],
+    };
     client.live.set(liveKey, { userId: client.youUserId, init, points: [point] });
     client.send({ t: 'stroke_start', stroke: { ...init, id: strokeId } });
     dragRef.current = { kind: 'stroke', strokeId, liveKey, lastScreen: screen, sentPoints: 1, lastChunkAt: Date.now() };
@@ -582,6 +612,18 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             onChange={(e) => setWidth(Number(e.target.value))}
           />
         </label>
+        {hasAlpha(tool) ? (
+          <label title="stroke opacity - a stroke that crosses itself stays one strength">
+            alpha {Math.round(alpha * 100)}%
+            <input
+              type="range"
+              min={Math.round(MIN_STROKE_ALPHA * 100)}
+              max={Math.round(MAX_STROKE_ALPHA * 100)}
+              value={Math.round(alpha * 100)}
+              onChange={(e) => setAlpha(Number(e.target.value) / 100)}
+            />
+          </label>
+        ) : null}
         <button onClick={() => client.send({ t: 'undo' })}>undo (Ctrl+Z)</button>
         <button onClick={fit}>fit</button>
         <button onClick={reset}>100%</button>

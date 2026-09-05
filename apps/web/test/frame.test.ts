@@ -1,7 +1,7 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Layer, Point, RenderableStroke } from '@brushjam/shared';
-import { drawHumanFrame, setScratchCanvasFactory, type HumanFrameModel } from '../src/raster.js';
+import { drawHumanFrame, drawStroke, setScratchCanvasFactory, type HumanFrameModel } from '../src/raster.js';
 
 /**
  * Review 10 finding 3: live strokes used to be drawn on top of the whole
@@ -154,5 +154,77 @@ describe('drawHumanFrame', () => {
       live: new Map([['p1', line('pen', '#ff0000', 'gone')]]),
     });
     expect(at(32, 32)).toEqual([255, 255, 255, 255]);
+  });
+});
+
+/**
+ * The live preview must land at the same strength as the committed stroke, or
+ * a translucent stroke visibly jumps the moment the pointer is lifted.
+ */
+describe('live stroke alpha', () => {
+  const halfPen = (layerId: string): { init: RenderableStroke & { layerId: string }; points: Point[] } => ({
+    init: { id: 'live-half', tool: 'pen', color: '#000000', width: 20, alpha: 0.5, layerId, points: [] },
+    points: [
+      { x: 8, y: 32 },
+      { x: 56, y: 32 },
+    ],
+  });
+
+  it('draws a live half-alpha stroke at half strength, not full', () => {
+    const a = layer('a', 0);
+    const { at } = frame({
+      orderedLayers: [a],
+      layerCanvases: new Map([['a', filled('#ffffff')]]),
+      live: new Map([['l1', halfPen('a')]]),
+    });
+    const [r] = at(32, 32);
+    expect(r).toBeGreaterThan(100);
+    expect(r).toBeLessThan(160);
+  });
+
+  it('matches what the committed stroke will look like', () => {
+    const a = layer('a', 0);
+    const live = frame({
+      orderedLayers: [a],
+      layerCanvases: new Map([['a', filled('#ffffff')]]),
+      live: new Map([['l1', halfPen('a')]]),
+    });
+
+    // the same stroke, committed into the layer raster instead
+    const raster = filled('#ffffff');
+    drawStroke(raster, {
+      id: 'live-half',
+      userId: 'u',
+      layerId: 'a',
+      tool: 'pen',
+      color: '#000000',
+      width: 20,
+      alpha: 0.5,
+      points: halfPen('a').points,
+      revision: 1,
+      bbox: { x: 0, y: 0, width: 64, height: 64 },
+    });
+    const committed = frame({ orderedLayers: [a], layerCanvases: new Map([['a', raster]]), live: new Map() });
+
+    expect(Math.abs(live.at(32, 32)[0] - committed.at(32, 32)[0])).toBeLessThanOrEqual(2);
+  });
+
+  it('does not darken where a live stroke overlaps itself', () => {
+    const a = layer('a', 0);
+    const zigzag = {
+      init: { id: 'zz', tool: 'pen' as const, color: '#000000', width: 16, alpha: 0.5, layerId: 'a', points: [] },
+      points: [
+        { x: 12, y: 12 },
+        { x: 52, y: 52 },
+        { x: 52, y: 12 },
+        { x: 12, y: 52 },
+      ],
+    };
+    const { at } = frame({
+      orderedLayers: [a],
+      layerCanvases: new Map([['a', filled('#ffffff')]]),
+      live: new Map([['zz', zigzag]]),
+    });
+    expect(Math.abs(at(32, 32)[0] - at(22, 22)[0])).toBeLessThanOrEqual(3);
   });
 });

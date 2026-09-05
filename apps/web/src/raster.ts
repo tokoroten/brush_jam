@@ -1,4 +1,4 @@
-import { CANVAS_SIZE, renderStrokes, type Layer, type Point, type RenderableStroke, type Stroke } from '@brushjam/shared';
+import { CANVAS_SIZE, alphaOf, renderStrokes, type Layer, type Point, type RenderableStroke, type Stroke } from '@brushjam/shared';
 
 /** Temp canvases for the noise pen; kept here so both renderers share it. */
 let scratchFactory = (width: number, height: number): HTMLCanvasElement => {
@@ -76,7 +76,10 @@ export function drawStroke(canvas: HTMLCanvasElement, stroke: Stroke, layer?: La
  * every frame meant hashing its entire bounding box 60 times a second.
  */
 export function drawStrokeSegment(canvas: HTMLCanvasElement, stroke: RenderableStroke): void {
-  renderStrokes(ctxOf(canvas) as unknown as never, [stroke as never], {
+  // Built at full strength and composited at the stroke's alpha when the frame
+  // is drawn. Applying alpha per segment would darken the overlaps between
+  // consecutive chunks, so the preview would not match the committed stroke.
+  renderStrokes(ctxOf(canvas) as unknown as never, [{ ...stroke, alpha: 1 } as never], {
     bounds: { width: canvas.width, height: canvas.height },
     createCanvas: (w, h) => scratchCanvas(w, h) as never,
   });
@@ -147,7 +150,13 @@ export function drawHumanFrame(ctx: CanvasRenderingContext2D, model: HumanFrameM
     for (const [id, live] of lives) {
       if (live.init.tool === 'noise') {
         const preview = model.previewRaster(id);
-        if (preview) sctx.drawImage(preview, dx, dy);
+        if (preview) {
+          // The preview raster holds the stroke at full strength; its opacity
+          // is applied here, once, exactly as the committed stroke will be.
+          sctx.globalAlpha = alphaOf(live.init);
+          sctx.drawImage(preview, dx, dy);
+          sctx.globalAlpha = 1;
+        }
         continue;
       }
       renderStrokes(sctx as unknown as never, [{ ...live.init, points: live.points } as never], {

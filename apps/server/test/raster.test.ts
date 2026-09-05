@@ -77,6 +77,28 @@ describe('layer compositing matches the browser (finding 5)', () => {
     const upper = (created.broadcast[0] as { layer: Layer }).layer.id;
     applyClientMessage(state, userId, { t: 'layer_update', id: upper, patch: { opacity: 0.5 } });
 
+    const strokeWith = (
+      layerId: string,
+      id: string,
+      tool: 'pen' | 'eraser',
+      color: string,
+      pts: Array<[number, number]>,
+      alpha?: number,
+    ): void => {
+      applyClientMessage(state, userId, {
+        t: 'stroke_start',
+        stroke: {
+          id,
+          layerId,
+          tool,
+          color,
+          width: 60,
+          ...(alpha === undefined ? {} : { alpha }),
+          points: [{ x: pts[0]![0], y: pts[0]![1] }],
+        },
+      });
+      applyClientMessage(state, userId, { t: 'stroke_end', strokeId: id, points: pts.slice(1).map(([x, y]) => ({ x, y })) });
+    };
     const stroke = (layerId: string, id: string, tool: 'pen' | 'eraser', color: string, pts: Array<[number, number]>): void => {
       applyClientMessage(state, userId, {
         t: 'stroke_start',
@@ -90,6 +112,9 @@ describe('layer compositing matches the browser (finding 5)', () => {
     stroke(upper, 'u1', 'pen', '#ff0000', [[100, 150], [400, 150]]);
     stroke(upper, 'u2', 'pen', '#ff0000', [[100, 170], [400, 170]]);
     stroke(upper, 'u3', 'eraser', '#000000', [[200, 250], [300, 250]]);
+    // a translucent stroke that crosses itself, so the parity check covers the
+    // flattened-then-composited path as well as the plain one
+    strokeWith(lower, 'l2', 'pen', '#00aa00', [[120, 320], [380, 380], [380, 320], [120, 380]], 0.4);
     return state;
   }
 
@@ -110,7 +135,15 @@ describe('layer compositing matches the browser (finding 5)', () => {
       const layerCanvas = createCanvas(crop.width, crop.height);
       const lctx = layerCanvas.getContext('2d');
       const strokes: Stroke[] = state.strokes.filter((s) => s.layerId === layer.id);
-      renderStrokes(lctx as unknown as never, strokes, { undone: state.undone, offsetX: crop.x, offsetY: crop.y });
+      renderStrokes(lctx as unknown as never, strokes, {
+        undone: state.undone,
+        offsetX: crop.x,
+        offsetY: crop.y,
+        // Same options the client uses, so a translucent stroke takes the same
+        // path here as it does in the browser.
+        createCanvas: (w, h) => createCanvas(w, h) as never,
+        bounds: { width: crop.width, height: crop.height },
+      });
       nctx.save();
       nctx.globalAlpha = layer.opacity;
       nctx.drawImage(layerCanvas, 0, 0);

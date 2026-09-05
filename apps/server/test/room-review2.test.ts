@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CANVAS_SIZE, MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE } from '@brushjam/shared';
+import { CANVAS_SIZE, MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE, MIN_STROKE_ALPHA } from '@brushjam/shared';
 import {
   captureRenderSnapshot,
   snapshot,
@@ -779,5 +779,90 @@ describe('moving a draw layer while someone is drawing on it', () => {
     const out = applyClientMessage(state, alice, { t: 'stroke_end', strokeId: 'sA', points: [{ x: 10, y: 10 }] });
     expect(out.broadcast.filter((m) => m.t === 'stroke_committed')).toHaveLength(0);
     expect(state.strokes).toHaveLength(0);
+  });
+});
+
+/** Stroke opacity through the reducer: defaulted, clamped, and committed. */
+describe('stroke alpha in the room', () => {
+  const start = (
+    state: ReturnType<typeof createRoom>,
+    userId: string,
+    id: string,
+    extra: Partial<{ alpha: number; tool: 'pen' | 'eraser' | 'noise' }> = {},
+  ): ReturnType<typeof applyClientMessage> =>
+    applyClientMessage(state, userId, {
+      t: 'stroke_start',
+      stroke: {
+        id,
+        layerId: state.layers[0]!.id,
+        tool: extra.tool ?? 'pen',
+        color: '#ff0000',
+        width: 10,
+        ...(extra.alpha === undefined ? {} : { alpha: extra.alpha }),
+        points: [{ x: 5, y: 5 }],
+      },
+    });
+
+  const commit = (state: ReturnType<typeof createRoom>, userId: string, id: string): void => {
+    applyClientMessage(state, userId, { t: 'stroke_end', strokeId: id, points: [{ x: 9, y: 9 }] });
+  };
+
+  function room(): { state: ReturnType<typeof createRoom>; alice: string } {
+    const state = createRoom('alpharoom');
+    return { state, alice: addMember(state, 'Alice').userId };
+  }
+
+  it('defaults to fully opaque', () => {
+    const { state, alice } = room();
+    const out = start(state, alice, 'a1');
+    expect(JSON.stringify(out.relay)).toContain('"alpha":1');
+    commit(state, alice, 'a1');
+    expect(state.strokes[0]!.alpha).toBe(1);
+  });
+
+  it('keeps a valid alpha and commits it', () => {
+    const { state, alice } = room();
+    start(state, alice, 'a2', { alpha: 0.35 });
+    commit(state, alice, 'a2');
+    expect(state.strokes[0]!.alpha).toBeCloseTo(0.35, 5);
+  });
+
+  it('clamps an out-of-range alpha rather than trusting the client', () => {
+    const { state, alice } = room();
+    start(state, alice, 'a3', { alpha: 9 });
+    commit(state, alice, 'a3');
+    expect(state.strokes[0]!.alpha).toBe(1);
+
+    start(state, alice, 'a4', { alpha: -2 });
+    commit(state, alice, 'a4');
+    expect(state.strokes[1]!.alpha).toBe(MIN_STROKE_ALPHA);
+  });
+
+  it('forces the eraser to full strength whatever the client asked for', () => {
+    const { state, alice } = room();
+    start(state, alice, 'a5', { tool: 'eraser', alpha: 0.2 });
+    commit(state, alice, 'a5');
+    expect(state.strokes[0]!.alpha).toBe(1);
+  });
+
+  it('allows a translucent noise stroke', () => {
+    const { state, alice } = room();
+    start(state, alice, 'a6', { tool: 'noise', alpha: 0.5 });
+    commit(state, alice, 'a6');
+    expect(state.strokes[0]!.alpha).toBe(0.5);
+  });
+
+  it('carries the alpha into the snapshot for late joiners', () => {
+    const { state, alice } = room();
+    start(state, alice, 'a7', { alpha: 0.25 });
+    commit(state, alice, 'a7');
+    const snap = snapshot(state, alice, 'idle', { window: 1024, apply: 1024 });
+    expect(snap.strokes[0]!.alpha).toBe(0.25);
+  });
+
+  it('relays the alpha to other clients when the stroke starts', () => {
+    const { state, alice } = room();
+    const out = start(state, alice, 'a8', { alpha: 0.6 });
+    expect(JSON.stringify(out.relay)).toContain('"alpha":0.6');
   });
 });

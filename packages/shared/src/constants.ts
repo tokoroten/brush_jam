@@ -2,6 +2,14 @@
 export const CANVAS_SIZE = 4096;
 /** Hard cap on layers per room (context doc: "roughly 4-8"). */
 export const MAX_LAYERS = 8;
+
+/**
+ * Stroke opacity. Zero would be an invisible stroke that still costs a
+ * generation, so the slider stops short of it.
+ */
+export const MIN_STROKE_ALPHA = 0.05;
+export const MAX_STROKE_ALPHA = 1;
+export const DEFAULT_STROKE_ALPHA = 1;
 /** Two dirty regions merge when their bboxes, expanded by this, intersect. */
 export const DIRTY_MERGE_PADDING = 256;
 /** Mask dilation around dirty strokes, in world px. */

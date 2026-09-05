@@ -1,7 +1,6 @@
 import { MAX_AI_RESOLUTION, MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_AI_RESOLUTION, MIN_DENOISE, type ClientMessage, type Layer, type LayerKind, type Point,
   AI_PROFILES,
-  type AIProfileName,
-} from '@brushjam/shared';
+  type AIProfileName, MAX_STROKE_ALPHA, MIN_STROKE_ALPHA } from '@brushjam/shared';
 
 /**
  * Hand-written runtime validation for every client message. The reducer is
@@ -72,9 +71,27 @@ export function validateClientMessage(raw: unknown): ValidationResult {
       if (!isNum(s.width)) return bad('stroke needs a finite width');
       const pts = points(s.points);
       if (!pts) return bad('stroke points are malformed or too many');
+      // Absent means opaque; present but not a number is a bug worth naming,
+      // while a number out of range is just a client clamping differently.
+      if (s.alpha !== undefined && !isNum(s.alpha)) return bad('stroke alpha must be a finite number');
+      const alpha =
+        s.alpha === undefined
+          ? undefined
+          : Math.max(MIN_STROKE_ALPHA, Math.min(MAX_STROKE_ALPHA, s.alpha as number));
       return {
         ok: true,
-        msg: { t: 'stroke_start', stroke: { id: s.id, layerId: s.layerId, tool: s.tool, color: s.color, width: s.width, points: pts } },
+        msg: {
+          t: 'stroke_start',
+          stroke: {
+            id: s.id,
+            layerId: s.layerId,
+            tool: s.tool,
+            color: s.color,
+            width: s.width,
+            ...(alpha === undefined ? {} : { alpha }),
+            points: pts,
+          },
+        },
       };
     }
 

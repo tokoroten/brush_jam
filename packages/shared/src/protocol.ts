@@ -38,6 +38,12 @@ export interface Stroke {
   tool: Tool;
   color: string;
   width: number;
+  /**
+   * Stroke opacity, 0.05-1. Applied to the stroke as a whole, so a stroke that
+   * crosses itself is not darker where it overlaps. Ignored for the eraser,
+   * which always removes fully.
+   */
+  alpha?: number;
   points: Point[];
   /** humanRevision at which this stroke was committed. */
   revision: number;
@@ -110,6 +116,8 @@ export interface StrokeInit {
   tool: Tool;
   color: string;
   width: number;
+  /** Stroke opacity, 0.05-1; absent means fully opaque. */
+  alpha?: number;
   points: Point[];
 }
 

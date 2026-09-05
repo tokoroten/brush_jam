@@ -1,5 +1,12 @@
+import { MIN_STROKE_ALPHA } from '@brushjam/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  BRUSH_ALPHA_KEY,
+  alphaForTool,
+  hasAlpha,
+  loadBrushAlphas,
+  saveBrushAlphas,
+  withAlpha,
   BRUSH_SIZE_KEY,
   DEFAULT_SIZES,
   MAX_BRUSH,
@@ -100,5 +107,88 @@ describe('persistence', () => {
     const hostile = fakeStorage({}, true);
     expect(loadBrushSizes(hostile)).toEqual(DEFAULT_SIZES);
     expect(() => saveBrushSizes(hostile, DEFAULT_SIZES)).not.toThrow();
+  });
+});
+
+/**
+ * Opacity is remembered per tool for the same reason size is: someone shading
+ * with a 30% pen still wants the noise pen at full strength.
+ */
+describe('per-tool alpha', () => {
+  const store = (initial: Record<string, string> = {}): StorageLike & { data: Record<string, string> } => {
+    const data = { ...initial };
+    return {
+      data,
+      getItem: (k: string) => data[k] ?? null,
+      setItem: (k: string, v: string) => void (data[k] = v),
+    };
+  };
+
+  it('starts every tool fully opaque', () => {
+    const alphas = loadBrushAlphas(store());
+    expect(alphas).toEqual({ pen: 1, eraser: 1, noise: 1 });
+  });
+
+  it('remembers a value per tool', () => {
+    const s = store();
+    const next = withAlpha(loadBrushAlphas(s), 'pen', 0.3);
+    saveBrushAlphas(s, next);
+    const reloaded = loadBrushAlphas(s);
+    expect(reloaded.pen).toBe(0.3);
+    expect(reloaded.noise).toBe(1);
+  });
+
+  it('clamps a stored value that is out of range', () => {
+    const s = store({ [BRUSH_ALPHA_KEY]: JSON.stringify({ pen: 4, noise: -1 }) });
+    const alphas = loadBrushAlphas(s);
+    expect(alphas.pen).toBe(1);
+    expect(alphas.noise).toBe(MIN_STROKE_ALPHA);
+  });
+
+  it('falls back to the defaults for malformed storage', () => {
+    expect(loadBrushAlphas(store({ [BRUSH_ALPHA_KEY]: 'not json' })).pen).toBe(1);
+    expect(loadBrushAlphas(store({ [BRUSH_ALPHA_KEY]: '"a string"' })).pen).toBe(1);
+    expect(loadBrushAlphas(undefined).pen).toBe(1);
+  });
+
+  it('survives storage that throws', () => {
+    const hostile: StorageLike = {
+      getItem: () => {
+        throw new Error('blocked');
+      },
+      setItem: () => {
+        throw new Error('blocked');
+      },
+    };
+    expect(loadBrushAlphas(hostile).pen).toBe(1);
+    expect(() => saveBrushAlphas(hostile, { pen: 0.5, eraser: 1, noise: 1 })).not.toThrow();
+  });
+
+  it('never gives the eraser an opacity, however it got stored', () => {
+    const s = store({ [BRUSH_ALPHA_KEY]: JSON.stringify({ eraser: 0.2 }) });
+    expect(loadBrushAlphas(s).eraser).toBe(1);
+    expect(withAlpha(loadBrushAlphas(s), 'eraser', 0.2).eraser).toBe(1);
+    expect(alphaForTool({ pen: 0.3, eraser: 1, noise: 0.5 }, 'eraser', 'pen')).toBe(1);
+  });
+
+  it('shows the last drawing tool while move is selected', () => {
+    const alphas = { pen: 0.3, eraser: 1, noise: 0.8 };
+    expect(alphaForTool(alphas, 'move', 'noise')).toBe(0.8);
+    expect(alphaForTool(alphas, 'move', 'pen')).toBe(0.3);
+  });
+
+  it('offers the slider for pen and noise only', () => {
+    expect(hasAlpha('pen')).toBe(true);
+    expect(hasAlpha('noise')).toBe(true);
+    expect(hasAlpha('eraser')).toBe(false);
+    expect(hasAlpha('move')).toBe(false);
+  });
+
+  it('keeps size and alpha in separate storage keys', () => {
+    const s = store();
+    saveBrushAlphas(s, { pen: 0.4, eraser: 1, noise: 1 });
+    saveBrushSizes(s, { pen: 20, eraser: 32, noise: 64 });
+    expect(loadBrushAlphas(s).pen).toBe(0.4);
+    expect(loadBrushSizes(s).pen).toBe(20);
   });
 });

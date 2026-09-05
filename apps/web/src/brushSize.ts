@@ -1,3 +1,4 @@
+import { DEFAULT_STROKE_ALPHA, MAX_STROKE_ALPHA, MIN_STROKE_ALPHA } from '@brushjam/shared';
 import type { StorageLike } from './session.js';
 
 /**
@@ -14,6 +15,18 @@ export const MIN_BRUSH = 1;
 export const MAX_BRUSH = 128;
 
 export const BRUSH_SIZE_KEY = 'brushjam.brushSizes';
+export const BRUSH_ALPHA_KEY = 'brushjam.brushAlphas';
+
+/**
+ * Opacity is remembered per tool for the same reason size is: someone building
+ * up soft shading with a 30% pen still wants the noise pen at full strength,
+ * where it is a seed for the model rather than a mark.
+ */
+export const DEFAULT_ALPHAS: Record<SizedTool, number> = {
+  pen: DEFAULT_STROKE_ALPHA,
+  eraser: 1,
+  noise: DEFAULT_STROKE_ALPHA,
+};
 
 /** localStorage when the browser allows it; undefined in tests and SSR. */
 export function brushStorage(): StorageLike | undefined {
@@ -25,6 +38,7 @@ export function brushStorage(): StorageLike | undefined {
 }
 
 export type BrushSizes = Record<SizedTool, number>;
+export type BrushAlphas = Record<SizedTool, number>;
 
 /** `move` has no width of its own; it keeps showing the last drawing tool's. */
 export function isSizedTool(tool: string): tool is SizedTool {
@@ -74,4 +88,52 @@ export function sizeForTool(sizes: BrushSizes, tool: string, lastSized: SizedToo
 
 export function withSize(sizes: BrushSizes, tool: SizedTool, size: number): BrushSizes {
   return { ...sizes, [tool]: clamp(size, DEFAULT_SIZES[tool]) };
+}
+
+/** Alpha is a fraction, not a rounded pixel count, so it clamps differently. */
+function clampAlpha(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(MAX_STROKE_ALPHA, Math.max(MIN_STROKE_ALPHA, value));
+}
+
+export function loadBrushAlphas(storage: StorageLike | undefined): BrushAlphas {
+  const alphas = { ...DEFAULT_ALPHAS };
+  try {
+    const raw = storage?.getItem(BRUSH_ALPHA_KEY);
+    if (!raw) return alphas;
+    const parsed = JSON.parse(raw) as Partial<Record<SizedTool, unknown>>;
+    if (typeof parsed !== 'object' || parsed === null) return alphas;
+    for (const tool of Object.keys(alphas) as SizedTool[]) {
+      alphas[tool] = clampAlpha(parsed[tool], DEFAULT_ALPHAS[tool]);
+    }
+  } catch {
+    /* unreadable or malformed: the defaults are a perfectly good answer */
+  }
+  // The eraser has no opacity setting, whatever storage happens to hold.
+  alphas.eraser = 1;
+  return alphas;
+}
+
+export function saveBrushAlphas(storage: StorageLike | undefined, alphas: BrushAlphas): void {
+  try {
+    storage?.setItem(BRUSH_ALPHA_KEY, JSON.stringify(alphas));
+  } catch {
+    /* the value is still correct in memory for this session */
+  }
+}
+
+/** The opacity to draw with, given the active tool. */
+export function alphaForTool(alphas: BrushAlphas, tool: string, lastSized: SizedTool): number {
+  const which = isSizedTool(tool) ? tool : lastSized;
+  return which === 'eraser' ? 1 : alphas[which];
+}
+
+export function withAlpha(alphas: BrushAlphas, tool: SizedTool, alpha: number): BrushAlphas {
+  if (tool === 'eraser') return alphas;
+  return { ...alphas, [tool]: clampAlpha(alpha, DEFAULT_ALPHAS[tool]) };
+}
+
+/** Whether the alpha slider applies to this tool at all. */
+export function hasAlpha(tool: string): boolean {
+  return tool === 'pen' || tool === 'noise';
 }

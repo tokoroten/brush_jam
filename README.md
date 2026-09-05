@@ -30,7 +30,7 @@ server falls back to a GPU-free mock backend and logs:
 Other commands:
 
 ```bash
-pnpm test         # 671 tests across shared / server / web
+pnpm test         # 705 tests across shared / server / web
 pnpm typecheck
 pnpm build        # server bundle + web dist
 pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
@@ -417,6 +417,20 @@ seed, because it averages to flat grey before the model sees it (worse at lower
 AI resolutions), while an eraser sized for line work is painful for clearing an
 area. The `move` tool has no width of its own and keeps showing the last
 drawing tool's.
+
+Opacity works the same way: a per-tool `alpha` from 5% to 100%, remembered in
+`localStorage`, offered for the pen and the noise pen and not for the eraser,
+which either removes or is a different tool. Both default to 100%.
+
+The opacity belongs to the **stroke**, not to each segment of it. A stroke that
+crosses itself is one mark at one strength, so a translucent stroke is
+rasterised at full strength into its own small canvas and composited once - the
+same thing the live preview does, which is why the preview does not jump when
+the pointer is lifted. Drawing the segments straight onto the layer at
+`globalAlpha` would darken every join, and the segments cannot simply be merged
+into one path because pressure varies their width. The server's crop render
+takes the identical path, so what the model is fed matches what is on screen,
+pixel for pixel.
 
 ### The noise pen
 

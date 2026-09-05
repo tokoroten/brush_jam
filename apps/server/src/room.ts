@@ -22,6 +22,9 @@ import {
   type ServerMessage,
   type Stroke,
   type StrokeInit,
+  DEFAULT_STROKE_ALPHA,
+  MAX_STROKE_ALPHA,
+  MIN_STROKE_ALPHA,
 } from '@brushjam/shared';
 import { memberColor, shortId } from './ids.js';
 
@@ -399,6 +402,8 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         tool: init.tool,
         color: isHexColor(init.color) ? init.color : '#000000',
         width: clamp(init.width, 1, 128),
+        // The eraser has no opacity: it removes, or it is a different tool.
+        alpha: init.tool === 'eraser' ? 1 : clamp(init.alpha ?? DEFAULT_STROKE_ALPHA, MIN_STROKE_ALPHA, MAX_STROKE_ALPHA),
         points: sanitizePoints(init.points, room.canvasSize),
       };
       const now = Date.now();
@@ -451,6 +456,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         tool: p.init.tool,
         color: p.init.color,
         width: p.init.width,
+        alpha: p.init.alpha ?? DEFAULT_STROKE_ALPHA,
         points: p.points,
         revision: room.humanRevision,
         bbox: strokeBBox(p.points, p.init.width),

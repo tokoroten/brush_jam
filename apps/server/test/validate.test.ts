@@ -1,3 +1,4 @@
+import { MIN_STROKE_ALPHA } from '@brushjam/shared';
 import { describe, expect, it } from 'vitest';
 import { validateClientMessage } from '../src/validate.js';
 import { applyClientMessage, addMember, createRoom } from '../src/room.js';
@@ -167,5 +168,44 @@ describe('set_ai_settings aiProfile', () => {
   it('carries the profile alongside the other settings', () => {
     const out = validateClientMessage({ t: 'set_ai_settings', denoise: 0.8, aiResolution: 512, aiProfile: 'quality' });
     expect(out.ok && out.msg).toMatchObject({ denoise: 0.8, aiResolution: 512, aiProfile: 'quality' });
+  });
+});
+
+/** Stroke opacity: absent means opaque, out of range is clamped, junk is refused. */
+describe('stroke alpha validation', () => {
+  const stroke = (extra: Record<string, unknown> = {}): unknown => ({
+    t: 'stroke_start',
+    stroke: { id: 'abc123', layerId: 'lay123', tool: 'pen', color: '#ff0000', width: 12, points: [{ x: 1, y: 2 }], ...extra },
+  });
+  const parse = (input: unknown): ReturnType<typeof validateClientMessage> => validateClientMessage(input);
+
+  it('accepts a stroke with no alpha at all', () => {
+    const out = parse(stroke());
+    expect(out.ok).toBe(true);
+    expect(out.ok && out.msg.t === 'stroke_start' && out.msg.stroke.alpha).toBeUndefined();
+  });
+
+  it('passes a valid alpha through', () => {
+    const out = parse(stroke({ alpha: 0.4 }));
+    expect(out.ok && out.msg.t === 'stroke_start' && out.msg.stroke.alpha).toBe(0.4);
+  });
+
+  it('clamps an alpha above 1', () => {
+    const out = parse(stroke({ alpha: 5 }));
+    expect(out.ok && out.msg.t === 'stroke_start' && out.msg.stroke.alpha).toBe(1);
+  });
+
+  it('clamps an alpha at or below zero to the minimum', () => {
+    for (const bad of [0, -1]) {
+      const out = parse(stroke({ alpha: bad }));
+      expect(out.ok && out.msg.t === 'stroke_start' && out.msg.stroke.alpha).toBe(MIN_STROKE_ALPHA);
+    }
+  });
+
+  it('refuses an alpha that is not a number', () => {
+    for (const bad of ['0.5', null, {}, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const out = parse(stroke({ alpha: bad }));
+      expect(out.ok).toBe(false);
+    }
   });
 });

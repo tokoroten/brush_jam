@@ -1,4 +1,5 @@
 import type { Point } from './geometry.js';
+import { MAX_STROKE_ALPHA, MIN_STROKE_ALPHA } from './constants.js';
 import { fnv1a, noiseHash } from './noise.js';
 
 /** Structural subset of CanvasRenderingContext2D used by the shared renderer. */
@@ -38,7 +39,20 @@ export interface RenderableStroke {
   tool: 'pen' | 'eraser' | 'noise';
   color: string;
   width: number;
+  /** Opacity of the whole stroke, 0.05-1; absent means opaque. */
+  alpha?: number;
   points: Point[];
+}
+
+/**
+ * The eraser always removes fully - a half-strength eraser is a different
+ * tool, not a setting - and anything else is clamped into range.
+ */
+export function alphaOf(stroke: { tool: string; alpha?: number }): number {
+  if (stroke.tool === 'eraser') return 1;
+  const raw = typeof stroke.alpha === 'number' ? stroke.alpha : 1;
+  if (!Number.isFinite(raw)) return 1;
+  return Math.max(MIN_STROKE_ALPHA, Math.min(MAX_STROKE_ALPHA, raw));
 }
 
 export interface RenderStrokesOptions {
@@ -105,9 +119,92 @@ export function renderStrokes(
     ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
     ctx.strokeStyle = s.color;
     ctx.fillStyle = s.color;
+    const alpha = alphaOf(s);
+    if (alpha >= 1) {
+      ctx.globalAlpha = 1;
+      strokePath(ctx, s, offsetX, offsetY);
+      continue;
+    }
+    // A stroke is one mark, so its opacity applies once. Drawing the segments
+    // straight onto the target at globalAlpha would darken every join and
+    // every place the stroke crosses itself - and the segments cannot simply
+    // be merged into a single path, because pressure varies their width. So
+    // the stroke is rasterised opaque and composited once, which is also
+    // exactly what the live preview does.
+    if (createCanvas) {
+      drawFlattened(ctx, s, offsetX, offsetY, createCanvas, alpha, bounds);
+      continue;
+    }
+    // No temp canvas available: the joins will darken, but the stroke is at
+    // least the right colour and roughly the right strength.
+    ctx.globalAlpha = alpha;
     strokePath(ctx, s, offsetX, offsetY);
+    ctx.globalAlpha = 1;
   }
   ctx.restore();
+}
+
+/** The temp canvas a stroke is rasterised into, in target space. */
+function tempFor(
+  stroke: RenderableStroke,
+  offsetX: number,
+  offsetY: number,
+  createCanvas: (width: number, height: number) => CanvasLike,
+  bounds?: { width: number; height: number },
+): { canvas: CanvasLike; ctx: Ctx2DLike; left: number; top: number; width: number; height: number } | null {
+  const box = strokeBounds(stroke);
+  let left = box.x - offsetX;
+  let top = box.y - offsetY;
+  let right = left + box.width;
+  let bottom = top + box.height;
+  if (bounds) {
+    // Clipped to what the target can show, but with a margin: a pixel's
+    // coverage depends on the geometry around it, so cutting the shape exactly
+    // at the edge gave the boundary row a different value than the same stroke
+    // rendered without a crop. One stroke width plus a pixel is all it takes,
+    // and the target clips the excess when this is composited.
+    const pad = Math.ceil(stroke.width) + 2;
+    left = Math.max(-pad, left);
+    top = Math.max(-pad, top);
+    right = Math.min(bounds.width + pad, right);
+    bottom = Math.min(bounds.height + pad, bottom);
+  }
+  const width = Math.ceil(right - left);
+  const height = Math.ceil(bottom - top);
+  if (width <= 0 || height <= 0) return null;
+  const canvas = createCanvas(width, height);
+  return { canvas, ctx: canvas.getContext('2d') as Ctx2DLike, left, top, width, height };
+}
+
+/**
+ * Rasterise the stroke at full strength into its own canvas, then composite
+ * that once at `alpha`. Overlaps within the stroke merge before the opacity is
+ * applied, so a self-crossing stroke has one uniform strength throughout.
+ */
+function drawFlattened(
+  ctx: Ctx2DLike,
+  stroke: RenderableStroke,
+  offsetX: number,
+  offsetY: number,
+  createCanvas: (width: number, height: number) => CanvasLike,
+  alpha: number,
+  bounds?: { width: number; height: number },
+): void {
+  const temp = tempFor(stroke, offsetX, offsetY, createCanvas, bounds);
+  if (!temp) return;
+  temp.ctx.save();
+  temp.ctx.lineCap = 'round';
+  temp.ctx.lineJoin = 'round';
+  temp.ctx.globalAlpha = 1;
+  temp.ctx.strokeStyle = stroke.color;
+  temp.ctx.fillStyle = stroke.color;
+  strokePath(temp.ctx, stroke, offsetX + temp.left, offsetY + temp.top);
+  temp.ctx.restore();
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(temp.canvas as never, temp.left, temp.top);
+  ctx.globalAlpha = 1;
 }
 
 /** The shape itself, with whatever style/composite the caller has set. */
@@ -145,27 +242,13 @@ function drawNoiseStroke(
   createCanvas: (width: number, height: number) => CanvasLike,
   bounds?: { width: number; height: number },
 ): void {
-  const box = strokeBounds(stroke);
-  // target-space placement, clipped only when the caller declared the bounds
-  let left = box.x - offsetX;
-  let top = box.y - offsetY;
-  let right = left + box.width;
-  let bottom = top + box.height;
-  if (bounds) {
-    left = Math.max(0, left);
-    top = Math.max(0, top);
-    right = Math.min(bounds.width, right);
-    bottom = Math.min(bounds.height, bottom);
-  }
-  const width = Math.ceil(right - left);
-  const height = Math.ceil(bottom - top);
-  if (width <= 0 || height <= 0) return;
-
-  const temp = createCanvas(width, height);
-  const tctx = temp.getContext('2d') as Ctx2DLike;
+  const temp = tempFor(stroke, offsetX, offsetY, createCanvas, bounds);
+  if (!temp) return;
+  const { ctx: tctx, left, top, width, height } = temp;
   tctx.save();
   tctx.lineCap = 'round';
   tctx.lineJoin = 'round';
+  tctx.globalAlpha = 1;
   tctx.strokeStyle = '#000000';
   tctx.fillStyle = '#000000';
   // the temp canvas starts at (left, top) in target space
@@ -190,7 +273,10 @@ function drawNoiseStroke(
   }
   tctx.putImageData(image as never, 0, 0);
 
+  // Composited once, at the stroke's own opacity: the noise is already
+  // flattened here, so overlaps inside the stroke cannot accumulate.
   ctx.globalCompositeOperation = 'source-over';
-  // drawImage (not putImageData) so the noise composites with what is below
-  ctx.drawImage(temp as never, left, top);
+  ctx.globalAlpha = alphaOf(stroke);
+  ctx.drawImage(temp.canvas as never, left, top);
+  ctx.globalAlpha = 1;
 }
