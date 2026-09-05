@@ -74,8 +74,9 @@ def test_start_cmd() -> None:
     script = cmd[2]
     check("start cmd is bash -lc", cmd[:2] == ["bash", "-lc"])
     check("receiver is inlined", "BaseHTTPRequestHandler" in script and "__RECEIVER_PY__" not in script)
-    check("start cmd runs the receiver", "python3 /workspace/receiver.py" in script)
-    check("start cmd runs bootstrap", "bash /workspace/app/bootstrap.sh" in script)
+    check("start cmd runs the receiver", 'python3 "$WS/receiver.py"' in script)
+    check("start cmd runs bootstrap", 'bash "$WS/app/bootstrap.sh"' in script)
+    check("start cmd claims an upload before extracting", 'mv "$WS/app.tgz" "$claim"' in script)
     check("start cmd carries no secret", "sk-" not in script and "hf_" not in script)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "start.sh"
@@ -179,6 +180,61 @@ def test_receiver() -> None:
             server.shutdown()
 
 
+def test_install_pending() -> None:
+    """The boot loop's claim-and-extract step, driven directly in bash.
+
+    The bug this pins down: an upload that arrives while the previous one is
+    being extracted was acknowledged by the receiver and then never installed,
+    because the loop compared the tarball's mtime with a stamp written after
+    extraction finished. Nothing here looks at a timestamp - the file's
+    existence is the pending flag and renaming it is the claim.
+    """
+    bash = shutil.which("bash")
+    if not bash:
+        check("install_pending (bash unavailable)", True)
+        return
+    import subprocess
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        # GNU tar reads "C:/x" as a remote host, so the bash side gets the
+        # POSIX form of the path this shell would use.
+        posix = ws.as_posix()
+        if len(posix) > 1 and posix[1] == ":":
+            posix = "/" + posix[0].lower() + posix[2:]
+
+        def make_tarball(marker: str) -> None:
+            payload = ws / "payload.txt"
+            payload.write_text(marker, encoding="utf-8")
+            with tarfile.open(ws / "app.tgz", "w:gz") as tar:
+                tar.add(payload, arcname="marker.txt")
+            payload.unlink()
+
+        def install() -> int:
+            script = f'START_SH_FUNCTIONS_ONLY=1 WORKSPACE_DIR="{posix}" . "{(HERE / "start.sh").as_posix()}"; install_pending'
+            return subprocess.run([bash, "-c", script], capture_output=True, text=True).returncode
+
+        check("nothing pending is not an install", install() != 0)
+
+        make_tarball("A")
+        check("a pending tarball installs", install() == 0)
+        check("the tarball was claimed", not (ws / "app.tgz").exists())
+        check("A is installed", (ws / "app" / "marker.txt").read_text() == "A")
+
+        # B lands during A's extraction: older than anything the loop wrote,
+        # and the only reason it is pending is that the file is there.
+        make_tarball("B")
+        os.utime(ws / "app.tgz", (0, 0))
+        check("an upload that raced the extraction still installs", install() == 0)
+        check("B replaced A", (ws / "app" / "marker.txt").read_text() == "B")
+
+        # A tarball that is not one must not wipe the running install.
+        (ws / "app.tgz").write_bytes(b"not a tarball")
+        check("a corrupt tarball is refused", install() != 0)
+        check("the previous install survives it", (ws / "app" / "marker.txt").read_text() == "B")
+        check("the corrupt tarball is cleared", not (ws / "app.tgz").exists())
+
+
 def test_watch_boot() -> None:
     """The deploy has to show progress by itself; `log` is for detail."""
     replies = [
@@ -216,6 +272,7 @@ if __name__ == "__main__":
     test_tarball()
     test_start_cmd()
     test_receiver()
+    test_install_pending()
     test_watch_boot()
     print()
     if failures:

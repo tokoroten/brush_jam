@@ -5,45 +5,69 @@
 # registry to push to, so the whole bootstrap has to arrive this way.
 #
 # Responsibilities, in order: publish the receiver so the pod can be talked to
-# at all, then wait for a tarball, extract it, and run its bootstrap.sh in a
-# loop so that a re-upload (which pkills the server) restarts the new code.
+# at all, then wait for a tarball, install it, and run its bootstrap.sh in a
+# loop so that a re-upload (which stops the server) restarts the new code.
 set -u
 
-mkdir -p /workspace
-touch /workspace/boot.log
-echo "waiting-for-upload" > /workspace/phase
+WS="${WORKSPACE_DIR:-/workspace}"
+mkdir -p "$WS"
+touch "$WS/boot.log"
 
-cat > /workspace/receiver.py <<'RECEIVER_PY_EOF'
+# An upload is "pending" precisely while /workspace/app.tgz exists, and it is
+# claimed by renaming it away - one atomic step, no timestamps. Comparing the
+# tarball's mtime against a stamp written *after* extraction lost an upload for
+# good: a tarball that arrived during the previous extraction was acknowledged
+# by the receiver, then looked older than the stamp and was never installed.
+install_pending() {
+  [ -f "$WS/app.tgz" ] || return 1
+  local claim="$WS/app.claimed.tgz"
+  rm -f "$claim"
+  mv "$WS/app.tgz" "$claim" || return 1
+  echo "extract" > "$WS/phase"
+  echo "[start] extracting $(stat -c %s "$claim") bytes" >> "$WS/boot.log"
+  rm -rf "$WS/app.new"
+  mkdir -p "$WS/app.new"
+  if ! tar xzf "$claim" -C "$WS/app.new"; then
+    echo "[start] that tarball did not extract; waiting for another upload" >> "$WS/boot.log"
+    rm -rf "$WS/app.new"
+    rm -f "$claim"
+    echo "waiting-for-upload" > "$WS/phase"
+    return 1
+  fi
+  rm -rf "$WS/app.old"
+  if [ -d "$WS/app" ]; then mv "$WS/app" "$WS/app.old"; fi
+  mv "$WS/app.new" "$WS/app"
+  mv -f "$claim" "$WS/app.installed.tgz"
+  echo "[start] installed" >> "$WS/boot.log"
+  return 0
+}
+
+# Sourced by deploy/runpod/test_deploy.py to exercise install_pending.
+if [ -n "${START_SH_FUNCTIONS_ONLY:-}" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+echo "waiting-for-upload" > "$WS/phase"
+
+cat > "$WS/receiver.py" <<'RECEIVER_PY_EOF'
 __RECEIVER_PY__
 RECEIVER_PY_EOF
 
-python3 /workspace/receiver.py >> /workspace/receiver.log 2>&1 &
+python3 "$WS/receiver.py" >> "$WS/receiver.log" 2>&1 &
 
 while true; do
-  if [ ! -f /workspace/app.tgz ]; then
+  # Always install a pending upload first, and loop back to look again: one
+  # may have landed while the last one was being extracted, and starting the
+  # server on the older code would strand it there.
+  if install_pending; then
+    continue
+  fi
+  if [ ! -d "$WS/app" ]; then
     sleep 3
     continue
   fi
-  if [ ! -f /workspace/.stamp ] || [ /workspace/app.tgz -nt /workspace/.stamp ]; then
-    echo "extract" > /workspace/phase
-    echo "[start] extracting $(stat -c %s /workspace/app.tgz) bytes" >> /workspace/boot.log
-    rm -rf /workspace/app.new
-    mkdir -p /workspace/app.new
-    if tar xzf /workspace/app.tgz -C /workspace/app.new; then
-      rm -rf /workspace/app.old
-      if [ -d /workspace/app ]; then mv /workspace/app /workspace/app.old; fi
-      mv /workspace/app.new /workspace/app
-      touch /workspace/.stamp
-    else
-      echo "[start] tarball did not extract; waiting for another upload" >> /workspace/boot.log
-      rm -f /workspace/app.tgz
-      echo "waiting-for-upload" > /workspace/phase
-      sleep 3
-      continue
-    fi
-  fi
-  bash /workspace/app/bootstrap.sh >> /workspace/boot.log 2>&1
-  echo "[start] server exited ($?); restarting in 3s" >> /workspace/boot.log
-  echo "restarting" > /workspace/phase
+  bash "$WS/app/bootstrap.sh" >> "$WS/boot.log" 2>&1
+  echo "[start] server exited ($?); restarting in 3s" >> "$WS/boot.log"
+  echo "restarting" > "$WS/phase"
   sleep 3
 done

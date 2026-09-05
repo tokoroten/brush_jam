@@ -215,6 +215,11 @@ def cmd_deploy(args: argparse.Namespace) -> None:
             "ports": ["8787/http", "8788/http"],
             "env": pod_env(env, token),
             "dockerStartCmd": docker_start_cmd(),
+            # Hosts differ wildly in bandwidth; a slow one turns the 10 GB
+            # first boot into an hour. Ask for a fast one and enough vCPUs.
+            "minDownloadMbps": args.min_download,
+            "minVCPUPerGPU": args.min_vcpu,
+            **({"dataCenterIds": args.data_center} if args.data_center else {}),
         },
     )
     pod_id = pod["id"]
@@ -353,6 +358,9 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--wait", type=float, default=900, help="seconds to wait for the receiver")
     p.add_argument("--boot-wait", type=float, default=1800, help="seconds to wait for the first model load")
     p.add_argument("--force", action="store_true", help="deploy even though .pod exists")
+    p.add_argument("--min-download", type=int, default=800, help="minimum host download Mbps (default 800)")
+    p.add_argument("--min-vcpu", type=int, default=4, help="minimum vCPUs per GPU (default 4)")
+    p.add_argument("--data-center", action="append", help="restrict to a data center id (repeatable), e.g. EU-RO-1")
     p.set_defaults(func=cmd_deploy)
 
     p = sub.add_parser("build", help="build the tarball only")
