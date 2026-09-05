@@ -46,3 +46,13 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.uv]
 default-groups = []
+
+# torch must come from the CUDA index, not PyPI (PyPI ships the CPU build on
+# Windows). Same pin as apps/stream-worker, so the wheels come from one cache.
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
