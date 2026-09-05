@@ -128,7 +128,7 @@ class SocketConnection:
         self._buffered -= sum(len(item) for item in self._buffer)
         self._buffer = []
 
-    def revoke(self) -> None:
+    def revoke(self, code: int = 1012) -> None:
         """Cut this socket off *now*, without draining what is queued.
 
         `close_now` puts a sentinel behind every pending frame, so a slow reader
@@ -151,11 +151,11 @@ class SocketConnection:
         # The transport close cannot be awaited from here; it is the last thing
         # the cancelled writer does, and this covers the case where it is
         # already finished.
-        asyncio.ensure_future(self._close_transport())
+        asyncio.ensure_future(self._close_transport(code))
 
-    async def _close_transport(self) -> None:
+    async def _close_transport(self, code: int = 1012) -> None:
         try:
-            await self.socket.close(code=1012)
+            await self.socket.close(code=code)
         except Exception:
             pass
 

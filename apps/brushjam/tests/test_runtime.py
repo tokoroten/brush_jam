@@ -192,3 +192,42 @@ async def test_capabilities_are_pushed_into_live_rooms() -> None:
 )
 def test_limit_error_detection(message: str, expected: bool) -> None:
     assert looks_like_limit_error(message) is expected
+
+
+class RevokableSocket(FakeSocket):
+    """A socket that records the close code it was cut off with."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.revoked_with: List[int] = []
+
+    def revoke(self, code: int = 1012) -> None:
+        self.revoked_with.append(code)
+        self.closed = True
+        self.open = False
+
+
+def test_a_superseded_socket_is_told_why_it_was_closed() -> None:
+    """4001, not a transport error.
+
+    Two tabs sharing a session token used to evict each other for as long as
+    they were open: each close looked like a dropped connection, so the client
+    reconnected, which evicted the other tab, which reconnected...
+    """
+    from brushjam.constants import CLOSE_SUPERSEDED
+
+    room = RoomRuntime("r1", MockBackend(0), config())
+    first = RevokableSocket()
+    room.join(first, "Alice", "tok-alice-0001")
+    room.join(RevokableSocket(), "Alice", "tok-alice-0001")
+    assert first.revoked_with == [CLOSE_SUPERSEDED]
+
+
+def test_a_socket_dropped_for_being_slow_is_not_called_superseded() -> None:
+    from brushjam.constants import CLOSE_SUPERSEDED
+
+    room = RoomRuntime("r1", MockBackend(0), config())
+    socket = RevokableSocket()
+    socket.buffered_bytes = MAX_BUFFERED_BYTES + 1
+    room.join(socket, "Alice")
+    assert socket.revoked_with and socket.revoked_with != [CLOSE_SUPERSEDED]

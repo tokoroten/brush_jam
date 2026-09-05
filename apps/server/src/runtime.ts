@@ -1,4 +1,4 @@
-import { intersectRect, type Rect, type ServerMessage } from '@brushjam/shared';
+import { CLOSE_SUPERSEDED, intersectRect, type Rect, type ServerMessage } from '@brushjam/shared';
 import type { WebSocket } from 'ws';
 import type { Config } from './config.js';
 import { AIScheduler, type MaskHandle, type RenderJob } from './ai/scheduler.js';
@@ -151,7 +151,19 @@ export class RoomRuntime {
       // TCP connection the server has not noticed yet): the newest wins.
       this.sockets.delete(member.userId);
       try {
-        previous.terminate();
+        // A distinct code, not a transport error: the replaced tab has to know
+        // it was superseded and stop reconnecting, or two tabs sharing a
+        // session token evict each other forever. terminate() follows in case
+        // the peer is dead and never completes the closing handshake.
+        previous.close(CLOSE_SUPERSEDED, 'superseded');
+        const kill = setTimeout(() => {
+          try {
+            previous.terminate();
+          } catch {
+            /* already gone */
+          }
+        }, 1000);
+        (kill as unknown as { unref?: () => void }).unref?.();
       } catch {
         /* already gone */
       }

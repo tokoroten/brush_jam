@@ -54,3 +54,13 @@ export const PROFILE_HINT_MS: Record<AIProfileName, number> = { fast: 2400, qual
 export const AI_RESOLUTIONS = [512, 768, 1024] as const;
 export const MIN_AI_RESOLUTION = 512;
 export const MAX_AI_RESOLUTION = 2048;
+
+/**
+ * Close code for a connection replaced by a newer one with the same identity.
+ * In the application range on purpose: a takeover is not a transport failure,
+ * and reconnecting on it is how two tabs sharing a session token evict each
+ * other for as long as they are both open.
+ */
+export const CLOSE_SUPERSEDED = 4001;
+/** Close code for "this server is full" - retried, but slowly. */
+export const CLOSE_CAPACITY = 1013;

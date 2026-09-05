@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Pro
 
 from .ai.backends import AIBackend
 from .config import Config
+from .constants import CLOSE_SUPERSEDED
 from .geometry import Rect, intersect_rect
 from .ids import short_id
 from .imageinfo import check_image
@@ -66,6 +67,31 @@ MAX_IMAGE_BYTES_PER_ROOM = 64 * 1024 * 1024
 CAPABILITY_POLL_MS = 60_000
 
 
+
+def _revoke(socket: Any, code: int = 1012) -> None:
+    """Cut a socket off, with the close code that says why.
+
+    Written defensively because the tests drive rooms with sockets that
+    implement only part of `Connection`, and an older one takes no code.
+    """
+    revoke = getattr(socket, "revoke", None)
+    if not callable(revoke):
+        try:
+            socket.close_now()
+        except Exception:
+            pass  # already gone
+        return
+    try:
+        revoke(code)
+    except TypeError:
+        try:
+            revoke()
+        except Exception:
+            pass
+    except Exception:
+        pass  # already gone
+
+
 class Connection(Protocol):
     """The socket-shaped surface the runtime needs."""
 
@@ -75,7 +101,7 @@ class Connection(Protocol):
     def close_now(self) -> None:
         ...
 
-    def revoke(self) -> None:
+    def revoke(self, code: int = 1012) -> None:
         """Cut the socket off immediately, discarding anything queued."""
         ...
 
@@ -279,11 +305,10 @@ class RoomRuntime:
             # Same identity resumed while the old socket still looked alive: the
             # newest wins, and the old one loses its identity synchronously.
             # Draining its queue first would let it keep sending as this user.
-            revoke = getattr(previous, "revoke", None)
-            try:
-                revoke() if callable(revoke) else previous.close_now()
-            except Exception:
-                pass  # already gone
+            # A distinct code, not a transport error: the replaced tab must
+            # know it was superseded and stop reconnecting, or two tabs sharing
+            # a session token evict each other for as long as they are open.
+            _revoke(previous, CLOSE_SUPERSEDED)
         msg: Message = {
             "t": "snapshot",
             # Detached containers: this is serialised on another thread while
@@ -332,11 +357,7 @@ class RoomRuntime:
             self._sockets.pop(user_id, None)
             self._leases.pop(user_id, None)
             remove_member(self.state, user_id)
-            revoke = getattr(socket, "revoke", None)
-            try:
-                revoke() if callable(revoke) else socket.close_now()
-            except Exception:
-                pass
+            _revoke(socket)
             return user_id
         # The snapshot first, then everything that arrived while it was being
         # built - not the other way round, and not instead of them.

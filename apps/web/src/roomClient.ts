@@ -1,4 +1,6 @@
 import {
+  CLOSE_CAPACITY,
+  CLOSE_SUPERSEDED,
   MAX_DENOISE,
   type AIProfileName,
   type AIState,
@@ -31,7 +33,7 @@ export interface ClientDeps {
 export interface SocketLike {
   readyState: number;
   onopen: (() => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event?: { code?: number }) => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
   onerror?: (() => void) | null;
   close(): void;
@@ -47,6 +49,12 @@ const browserDeps: ClientDeps = {
 /** WebSocket.OPEN, without needing the global to exist. */
 const SOCKET_OPEN = 1;
 export const RECONNECT_MS = 1000;
+/**
+ * A full server is not a blip: retrying every second only adds load, so the
+ * capacity close backs off from five seconds to a minute.
+ */
+export const CAPACITY_RECONNECT_MS = 5000;
+export const MAX_RECONNECT_MS = 60000;
 
 export interface LiveStroke {
   userId: string;
@@ -115,9 +123,18 @@ export class RoomClient {
   /** World canvas size, learned from the snapshot (never hard-coded). */
   canvasSize = 1;
   connected = false;
+  /**
+   * True once the server replaced this connection with a newer one for the
+   * same identity - another tab of the same room. Reconnecting here would
+   * evict that tab, which would reconnect and evict this one, forever; so this
+   * client stops and the UI offers to take the room back deliberately.
+   */
+  superseded = false;
 
   private socket: SocketLike | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Grows while the server keeps saying it is full; reset by a real open. */
+  private capacityRetryMs = CAPACITY_RECONNECT_MS;
   private version = 0;
   private listeners = new Set<() => void>();
   private closed = false;
@@ -154,6 +171,7 @@ export class RoomClient {
    */
   connect(): void {
     this.closed = false;
+    this.superseded = false;
     this.cancelReconnect();
     this.detach(this.socket);
     this.socket = null;
@@ -167,19 +185,30 @@ export class RoomClient {
     this.socket = socket;
     socket.onopen = () => {
       this.connected = true;
+      this.capacityRetryMs = CAPACITY_RECONNECT_MS;
       this.bump();
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       // a socket we already replaced or disposed must not drive state
       if (this.socket !== socket) return;
       this.connected = false;
+      const code = event?.code;
+      if (code === CLOSE_SUPERSEDED) {
+        // Another tab took this identity. Reconnecting would take it straight
+        // back and start an eviction loop between the two tabs.
+        this.superseded = true;
+        this.bump();
+        return;
+      }
       this.bump();
       if (this.closed) return;
+      const delay = code === CLOSE_CAPACITY ? this.capacityRetryMs : RECONNECT_MS;
+      if (code === CLOSE_CAPACITY) this.capacityRetryMs = Math.min(MAX_RECONNECT_MS, this.capacityRetryMs * 2);
       this.cancelReconnect();
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
         this.connect();
-      }, RECONNECT_MS);
+      }, delay);
     };
     socket.onmessage = (event) => {
       let msg: ServerMessage;

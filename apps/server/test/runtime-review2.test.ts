@@ -1,5 +1,5 @@
 import { createCanvas } from '@napi-rs/canvas';
-import type { ServerMessage } from '@brushjam/shared';
+import { CLOSE_SUPERSEDED, type ServerMessage } from '@brushjam/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MockBackend } from '../src/ai/backends/index.js';
 import type { BackendCapabilities } from '../src/ai/backends/types.js';
@@ -588,5 +588,37 @@ describe('a rejected request cannot drive a retry loop', () => {
     await registry.refreshCapabilities();
     expect(retries()).toBe(settled + 1);
     registry.dispose();
+  });
+});
+
+/** Astra finding 3: a replaced tab has to be able to tell it was replaced. */
+describe('superseded connections', () => {
+  class ClosableSocket {
+    readonly sent: string[] = [];
+    readyState = 1;
+    closedWith: [number, string] | null = null;
+    terminated = false;
+    send(data: string): void {
+      this.sent.push(data);
+    }
+    close(code?: number, reason?: string): void {
+      this.readyState = 3;
+      this.closedWith = [code ?? 1000, reason ?? ''];
+    }
+    terminate(): void {
+      this.terminated = true;
+    }
+  }
+
+  it('closes the replaced socket with 4001, not a transport error', () => {
+    const room = new RoomRuntime('supersede1', backend, config);
+    const first = new ClosableSocket();
+    const userId = room.join(first as never, 'Alice', 'tok-alice-0001');
+    const second = new ClosableSocket();
+    expect(room.join(second as never, 'Alice', 'tok-alice-0001')).toBe(userId);
+    expect(first.closedWith).toEqual([CLOSE_SUPERSEDED, 'superseded']);
+    // terminate() is the fallback for a peer that never answers the close.
+    expect(first.terminated).toBe(false);
+    room.dispose();
   });
 });

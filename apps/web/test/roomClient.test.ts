@@ -1,13 +1,13 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { describe, expect, it, vi } from 'vitest';
-import { CANVAS_SIZE, type Layer, type RoomSnapshot, type ServerMessage } from '@brushjam/shared';
+import { CANVAS_SIZE, CLOSE_CAPACITY, CLOSE_SUPERSEDED, type Layer, type RoomSnapshot, type ServerMessage } from '@brushjam/shared';
 import { setScratchCanvasFactory } from '../src/raster.js';
-import { RoomClient, RECONNECT_MS, type ClientDeps, type SocketLike } from '../src/roomClient.js';
+import { CAPACITY_RECONNECT_MS, RoomClient, RECONNECT_MS, type ClientDeps, type SocketLike } from '../src/roomClient.js';
 
 class FakeSocket implements SocketLike {
   readyState = 0;
   onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number }) => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: (() => void) | null = null;
   closed = false;
@@ -848,5 +848,119 @@ describe('action errors', () => {
     client.noteActionError('first');
     client.noteActionError('second');
     expect(client.actionError?.message).toBe('second');
+  });
+});
+
+/** Astra finding 3: two tabs sharing a session token evicted each other forever. */
+describe('close codes', () => {
+  class CodedSocket extends FakeSocket {
+    closeWith(code: number): void {
+      this.readyState = 3;
+      this.onclose?.({ code });
+    }
+  }
+
+  function codedSockets(): { deps: Pick<ClientDeps, 'openSocket'>; all: CodedSocket[] } {
+    const all: CodedSocket[] = [];
+    return { all, deps: { openSocket: (url) => { const s = new CodedSocket(url); all.push(s); return s; } } };
+  }
+
+  it('stops reconnecting when another tab takes the identity', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = codedSockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.open();
+      all[0]!.closeWith(CLOSE_SUPERSEDED);
+
+      expect(client.superseded).toBe(true);
+      expect(client.connected).toBe(false);
+      vi.advanceTimersByTime(60 * RECONNECT_MS);
+      expect(all).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconnects on demand after being superseded', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = codedSockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.open();
+      all[0]!.closeWith(CLOSE_SUPERSEDED);
+
+      client.connect();
+      expect(all).toHaveLength(2);
+      expect(client.superseded).toBe(false);
+      all[1]!.open();
+      expect(client.connected).toBe(true);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('backs off when the server says it is full', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = codedSockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.closeWith(CLOSE_CAPACITY);
+
+      // A full server is not a blip: nothing at one second, a retry at five.
+      vi.advanceTimersByTime(RECONNECT_MS + 10);
+      expect(all).toHaveLength(1);
+      vi.advanceTimersByTime(CAPACITY_RECONNECT_MS);
+      expect(all).toHaveLength(2);
+
+      // Still full: the wait doubles.
+      all[1]!.closeWith(CLOSE_CAPACITY);
+      vi.advanceTimersByTime(CAPACITY_RECONNECT_MS + 10);
+      expect(all).toHaveLength(2);
+      vi.advanceTimersByTime(CAPACITY_RECONNECT_MS);
+      expect(all).toHaveLength(3);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('goes back to the one-second retry once a connection succeeds', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = codedSockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.closeWith(CLOSE_CAPACITY);
+      vi.advanceTimersByTime(CAPACITY_RECONNECT_MS + 10);
+      all[1]!.open();
+
+      all[1]!.closeWith(1006); // a transport failure, not capacity
+      vi.advanceTimersByTime(RECONNECT_MS + 10);
+      expect(all).toHaveLength(3);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still reconnects after a close with no code at all', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = codedSockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.open();
+      all[0]!.close();
+      vi.advanceTimersByTime(RECONNECT_MS + 10);
+      expect(all).toHaveLength(2);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
