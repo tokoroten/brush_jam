@@ -6,7 +6,8 @@
     "canvasSize": 1024,
     "resolution": 768,
     "adjustable": true,
-    "profile": "fast"
+    "profile": "fast",
+    "seed": 424242
   },
   "users": [
     "Alice",
@@ -45,6 +46,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -140,6 +142,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -232,6 +235,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -361,6 +365,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -493,6 +498,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -649,6 +655,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -806,6 +813,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -988,6 +996,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -1153,6 +1162,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -1320,6 +1330,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -1474,6 +1485,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -1647,6 +1659,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -1831,6 +1844,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -2030,6 +2044,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -2215,6 +2230,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -2390,6 +2406,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -2596,6 +2613,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -2769,6 +2787,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -2931,6 +2950,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -3101,6 +3121,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -3172,6 +3193,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -3243,6 +3265,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -3309,6 +3332,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.7,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -3365,7 +3389,8 @@
             "negativePrompt": "",
             "aiResolution": 768,
             "aiProfile": "fast",
-            "negativePromptActive": true
+            "negativePromptActive": true,
+            "seed": 424242
           }
         ],
         "relay": [],
@@ -3384,6 +3409,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.85,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 768,
         "aiResolutionMax": 1024,
@@ -3440,7 +3466,8 @@
             "negativePrompt": "",
             "aiResolution": 1024,
             "aiProfile": "quality",
-            "negativePromptActive": true
+            "negativePromptActive": true,
+            "seed": 424242
           }
         ],
         "relay": [],
@@ -3459,6 +3486,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.85,
+        "seed": 424242,
         "negativePrompt": "",
         "aiResolution": 1024,
         "aiResolutionMax": 1024,
@@ -3516,7 +3544,8 @@
             "negativePrompt": "text, watermark",
             "aiResolution": 512,
             "aiProfile": "quality",
-            "negativePromptActive": true
+            "negativePromptActive": true,
+            "seed": 424242
           }
         ],
         "relay": [],
@@ -3535,6 +3564,151 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.85,
+        "seed": 424242,
+        "negativePrompt": "text, watermark",
+        "aiResolution": 512,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "quality",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "set_ai_settings",
+        "seed": 31337
+      },
+      "result": {
+        "broadcast": [
+          {
+            "t": "ai_settings_changed",
+            "denoise": 0.85,
+            "negativePrompt": "text, watermark",
+            "aiResolution": 512,
+            "aiProfile": "quality",
+            "negativePromptActive": true,
+            "seed": 31337
+          }
+        ],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": true
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.85,
+        "seed": 31337,
+        "negativePrompt": "text, watermark",
+        "aiResolution": 512,
+        "aiResolutionMax": 1024,
+        "aiResolutionAdjustable": true,
+        "aiProfile": "quality",
+        "aiProfiles": [
+          "fast",
+          "quality"
+        ],
+        "maxDenoise": 0.95,
+        "negativePromptActive": true,
+        "members": [
+          {
+            "userId": "U0",
+            "name": "Alice",
+            "color": "#e6194b"
+          },
+          {
+            "userId": "U1",
+            "name": "Bob",
+            "color": "#3cb44b"
+          }
+        ],
+        "layers": [
+          {
+            "id": "L0",
+            "name": "Layer 1",
+            "kind": "draw",
+            "visible": true,
+            "locked": false,
+            "opacity": 1,
+            "order": 1,
+            "includeInAI": true,
+            "offsetX": 40,
+            "offsetY": -10
+          }
+        ],
+        "strokes": [],
+        "undone": [],
+        "aiState": "idle"
+      }
+    },
+    {
+      "by": 0,
+      "msg": {
+        "t": "set_ai_settings",
+        "seed": 31337
+      },
+      "result": {
+        "broadcast": [],
+        "relay": [],
+        "toSender": [],
+        "dirty": [],
+        "promptChanged": false
+      },
+      "snapshot": {
+        "roomId": "trace01",
+        "youUserId": "U0",
+        "prompt": "a quiet harbour",
+        "humanRevision": 12,
+        "aiRevision": 0,
+        "aiGeneration": 0,
+        "canvasSize": 1024,
+        "aiWindow": 768,
+        "aiApply": 1024,
+        "denoise": 0.85,
+        "seed": 31337,
         "negativePrompt": "text, watermark",
         "aiResolution": 512,
         "aiResolutionMax": 1024,
@@ -3606,6 +3780,7 @@
         "aiWindow": 768,
         "aiApply": 1024,
         "denoise": 0.85,
+        "seed": 31337,
         "negativePrompt": "text, watermark",
         "aiResolution": 512,
         "aiResolutionMax": 1024,

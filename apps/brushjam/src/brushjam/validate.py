@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .constants import (
+    MAX_SEED,
     AI_PROFILES,
     MAX_AI_RESOLUTION,
     MAX_DENOISE,
@@ -257,8 +258,16 @@ def validate_client_message(raw: Any) -> ValidationResult:
                     f"set_ai_settings aiProfile must be one of {', '.join(AI_PROFILES)}"
                 )
             msg["aiProfile"] = raw["aiProfile"]
+        if "seed" in raw:
+            if not _is_num(raw["seed"]) or float(raw["seed"]) % 1 != 0:
+                return _bad("set_ai_settings seed must be a whole number")
+            if raw["seed"] < 0 or raw["seed"] > MAX_SEED:
+                return _bad(f"set_ai_settings seed must be between 0 and {MAX_SEED}")
+            msg["seed"] = int(raw["seed"])
         if len(msg) == 1:
-            return _bad("set_ai_settings needs denoise, negativePrompt, aiResolution or aiProfile")
+            return _bad(
+                "set_ai_settings needs denoise, negativePrompt, aiResolution, aiProfile or seed"
+            )
         return ValidationResult(True, msg)
 
     return _bad(f"unknown message type: {t[:32]}")

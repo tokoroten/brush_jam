@@ -4,6 +4,10 @@ import {
   DENOISE_STEP,
   PROFILE_DEFAULTS,
   MAX_AI_RESOLUTION,
+  MAX_SEED,
+  clampSeed,
+  isSeed,
+  randomSeed,
   MIN_AI_RESOLUTION,
   translateRect,
   MAX_DENOISE,
@@ -89,6 +93,12 @@ export interface RoomState {
   maxDenoise: number;
   /** Per profile: does the negative prompt reach the sampler at all? */
   negativeActive: Record<AIProfileName, boolean>;
+  /**
+   * The room's sampling seed. Fixed, not drawn per generation: with a fresh
+   * seed each time, adding one stroke reshuffled the whole picture and nobody
+   * could tell their own change from the noise. Re-rolling is deliberate.
+   */
+  seed: number;
   humanRevision: number;
   aiRevision: number;
   /**
@@ -160,6 +170,7 @@ export function createRoom(
   adjustableResolution = true,
   profile: AIProfileName = 'fast',
   limits: RoomLimits = {},
+  seed?: number,
 ): RoomState {
   const profiles = limits.profiles?.length ? limits.profiles : [...AI_PROFILES];
   const resolutionMax = clampResolution(limits.maxResolution ?? resolution, MAX_AI_RESOLUTION);
@@ -179,6 +190,9 @@ export function createRoom(
     aiProfiles: profiles,
     maxDenoise,
     negativeActive: limits.negativePromptActive ?? { fast: true, quality: true },
+    // Random per room, so two rooms drawing the same thing do not come out
+    // identical, and stable within one.
+    seed: seed === undefined ? randomSeed() : clampSeed(seed),
     humanRevision: 0,
     aiRevision: 0,
     aiGeneration: 0,
@@ -312,6 +326,7 @@ export function snapshot(
     aiWindow: ai.window,
     aiApply: ai.apply,
     denoise: room.denoise,
+    seed: room.seed,
     negativePrompt: room.negativePrompt,
     aiResolution: room.aiResolution,
     aiResolutionMax: room.aiResolutionMax,
@@ -661,6 +676,10 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (msg.aiResolution !== undefined && !room.aiResolutionAdjustable) {
         return refuse('the AI resolution is fixed in patch mode');
       }
+      if (msg.seed !== undefined && !isSeed(msg.seed)) {
+        return refuse(`seed must be a whole number between 0 and ${MAX_SEED}`);
+      }
+      const seed = msg.seed === undefined ? room.seed : clampSeed(msg.seed);
       if (msg.aiProfile !== undefined && !AI_PROFILES.includes(msg.aiProfile)) {
         return refuse('aiProfile must be fast or quality');
       }
@@ -686,10 +705,12 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         denoise === room.denoise &&
         negativePrompt === room.negativePrompt &&
         aiResolution === room.aiResolution &&
-        aiProfile === room.aiProfile
+        aiProfile === room.aiProfile &&
+        seed === room.seed
       ) {
         return empty();
       }
+      room.seed = seed;
       room.denoise = denoise;
       room.negativePrompt = negativePrompt;
       room.aiResolution = aiResolution;
@@ -703,6 +724,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
             aiResolution,
             aiProfile,
             negativePromptActive: room.negativeActive[aiProfile] !== false,
+            seed,
           },
         ],
         relay: [],
@@ -734,6 +756,7 @@ export interface RenderSnapshot {
   negativePrompt: string;
   aiResolution: number;
   aiProfile: AIProfileName;
+  seed: number;
   layers: Layer[];
   strokes: Stroke[];
   undone: ReadonlySet<string>;
@@ -748,6 +771,7 @@ export function captureRenderSnapshot(room: RoomState): RenderSnapshot {
     negativePrompt: room.negativePrompt,
     aiResolution: room.aiResolution,
     aiProfile: room.aiProfile,
+    seed: room.seed,
     layers: sortedLayers(room).map((l) => ({ ...l })),
     strokes: [...room.strokes],
     undone: new Set(room.undone),

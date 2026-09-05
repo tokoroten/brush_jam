@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import logging
 import math
+import random
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from .constants import (
+    MAX_SEED,
     AI_PROFILES,
     CANVAS_SIZE,
     DEFAULT_STROKE_ALPHA,
@@ -155,6 +157,29 @@ def _js_round(v: float) -> float:
     return math.floor(v + 0.5)
 
 
+def clamp_seed(value: Any) -> int:
+    """A sampling seed: whole, in range, and never negative."""
+    number = int(value)
+    if number < 0 or number > MAX_SEED:
+        number %= MAX_SEED + 1
+    return number
+
+
+def is_seed(value: Any) -> bool:
+    """Whether a client sent something that can be a seed at all."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and float(value).is_integer()
+        and 0 <= value <= MAX_SEED
+    )
+
+
+def random_seed() -> int:
+    return random.randrange(MAX_SEED + 1)
+
+
 def clamp_denoise(value: float) -> float:
     if not _finite(value):
         return DEFAULT_DENOISE
@@ -217,6 +242,11 @@ class RoomState:
     ai_profiles: List[str]
     max_denoise: float
     negative_active: Dict[str, bool]
+    #: The room's sampling seed. Fixed, not drawn per generation: with a fresh
+    #: seed every time, adding one stroke reshuffled the entire picture, so
+    #: nobody could tell their own change from the noise. Re-rolling it is a
+    #: deliberate act (the dice in the UI).
+    seed: int = 0
     human_revision: int = 0
     ai_revision: int = 0
     ai_generation: int = 0
@@ -292,6 +322,7 @@ def create_room(
     limits: Optional[RoomLimits] = None,
     max_points: int = MAX_ROOM_POINTS,
     max_snapshot_bytes: int = MAX_ROOM_SNAPSHOT_BYTES,
+    seed: Optional[int] = None,
 ) -> RoomState:
     limits = limits or RoomLimits()
     resolution = canvas_size if resolution is None else resolution
@@ -316,6 +347,9 @@ def create_room(
         ai_profiles=profiles,
         max_denoise=max_denoise,
         negative_active=dict(limits.negative_prompt_active or {"fast": True, "quality": True}),
+        # Random per room, so two rooms drawing the same thing do not come out
+        # identical, and stable within one.
+        seed=random_seed() if seed is None else clamp_seed(seed),
         layers=[
             {
                 "id": short_id(6),
@@ -459,6 +493,7 @@ def snapshot(room: RoomState, you_user_id: str, ai_state: str, ai: Dict[str, Any
         "aiWindow": ai["window"],
         "aiApply": ai["apply"],
         "denoise": room.denoise,
+        "seed": room.seed,
         "negativePrompt": room.negative_prompt,
         "aiResolution": room.ai_resolution,
         "aiResolutionMax": room.ai_resolution_max,
@@ -982,6 +1017,9 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         # change here would broadcast a setting that silently does nothing.
         if "aiResolution" in msg and not room.ai_resolution_adjustable:
             return _refuse("the AI resolution is fixed in patch mode")
+        if "seed" in msg and not is_seed(msg["seed"]):
+            return _refuse(f"seed must be a whole number between 0 and {MAX_SEED}")
+        seed = room.seed if "seed" not in msg else clamp_seed(msg["seed"])
         if "aiProfile" in msg and msg["aiProfile"] not in AI_PROFILES:
             return _refuse("aiProfile must be fast or quality")
         if "aiProfile" in msg and msg["aiProfile"] not in room.ai_profiles:
@@ -1013,8 +1051,10 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             and negative_prompt == room.negative_prompt
             and ai_resolution == room.ai_resolution
             and ai_profile == room.ai_profile
+            and seed == room.seed
         ):
             return _empty()
+        room.seed = seed
         room.denoise = denoise
         room.negative_prompt = negative_prompt
         room.ai_resolution = ai_resolution
@@ -1028,6 +1068,7 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
                     "aiResolution": ai_resolution,
                     "aiProfile": ai_profile,
                     "negativePromptActive": room.negative_active.get(ai_profile, True) is not False,
+                    "seed": seed,
                 }
             ],
             prompt_changed=True,
@@ -1063,6 +1104,7 @@ class RenderSnapshot:
     negative_prompt: str
     ai_resolution: int
     ai_profile: str
+    seed: int
     layers: List[Layer]
     strokes: List[Stroke]
     undone: Set[str]
@@ -1077,6 +1119,7 @@ def capture_render_snapshot(room: RoomState) -> RenderSnapshot:
         negative_prompt=room.negative_prompt,
         ai_resolution=room.ai_resolution,
         ai_profile=room.ai_profile,
+        seed=room.seed,
         layers=[dict(l) for l in sorted_layers(room)],
         strokes=list(room.strokes),
         undone=set(room.undone),

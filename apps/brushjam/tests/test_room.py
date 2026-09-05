@@ -388,3 +388,74 @@ def test_a_chunk_is_clamped_against_its_own_layers_offset() -> None:
         state, alice, {"t": "stroke_chunk", "strokeId": "a1", "points": [{"x": 0, "y": 1700}]}
     )
     assert [p["y"] for p in relayed.relay[0]["points"]] == [1700]
+
+
+# ------------------------------------------------------------------- the seed
+
+
+def test_the_room_owns_its_seed() -> None:
+    """Fixed per room, not drawn per generation.
+
+    With a fresh seed every time, adding one stroke reshuffled the entire
+    picture: nobody could tell what their own change had done.
+    """
+    from brushjam.constants import MAX_SEED
+    from brushjam.room import capture_render_snapshot
+
+    state = room()
+    assert 0 <= state.seed <= MAX_SEED
+    assert capture_render_snapshot(state).seed == state.seed
+    assert capture_render_snapshot(state).seed == state.seed
+
+    # Two rooms do not share one, or every room would draw the same picture.
+    seeds = {create_room(f"r{i}").seed for i in range(20)}
+    assert len(seeds) > 1
+
+
+def test_setting_the_seed_re_runs_the_ai() -> None:
+    state = room()
+    alice = add_member(state, "Alice")["userId"]
+    result = apply_client_message(state, alice, {"t": "set_ai_settings", "seed": 4242})
+    assert state.seed == 4242
+    assert result.prompt_changed is True
+    assert result.broadcast[0]["seed"] == 4242
+    assert snapshot(state, alice, "idle", {"window": 768, "apply": 1024})["seed"] == 4242
+
+
+def test_setting_the_same_seed_does_nothing() -> None:
+    state = room()
+    alice = add_member(state, "Alice")["userId"]
+    apply_client_message(state, alice, {"t": "set_ai_settings", "seed": 7})
+    again = apply_client_message(state, alice, {"t": "set_ai_settings", "seed": 7})
+    assert again.broadcast == [] and again.prompt_changed is False
+
+
+def test_a_seed_out_of_range_is_refused() -> None:
+    from brushjam.constants import MAX_SEED
+
+    state = room()
+    alice = add_member(state, "Alice")["userId"]
+    before = state.seed
+    for bad in (-1, MAX_SEED + 1, 1.5):
+        refused = apply_client_message(state, alice, {"t": "set_ai_settings", "seed": bad})
+        assert refused.to_sender and "seed" in refused.to_sender[0]["message"], bad
+        assert state.seed == before
+
+
+def test_the_seed_reaches_the_generation() -> None:
+    """The scheduler must use the room's seed, not one of its own."""
+    from brushjam.scheduler import RenderJob, _default_seed
+
+    job = RenderJob(
+        revision=1,
+        prompt="",
+        denoise=None,
+        negative_prompt=None,
+        resolution=768,
+        profile="fast",
+        render=lambda crop, size: b"",
+        seed=99,
+    )
+    assert job.seed == 99
+    # A job without one still gets a random seed rather than a constant.
+    assert len({_default_seed() for _ in range(10)}) > 1

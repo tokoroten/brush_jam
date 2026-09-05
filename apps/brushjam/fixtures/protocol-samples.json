@@ -639,11 +639,39 @@
     {
       "type": "set_ai_settings",
       "input": {
+        "t": "set_ai_settings",
+        "seed": 0
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "set_ai_settings",
+          "seed": 0
+        }
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "seed": 2147483647
+      },
+      "result": {
+        "ok": true,
+        "msg": {
+          "t": "set_ai_settings",
+          "seed": 2147483647
+        }
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
         "t": "set_ai_settings"
       },
       "result": {
         "ok": false,
-        "error": "set_ai_settings needs denoise, negativePrompt, aiResolution or aiProfile"
+        "error": "set_ai_settings needs denoise, negativePrompt, aiResolution, aiProfile or seed"
       }
     },
     {
@@ -677,6 +705,50 @@
       "result": {
         "ok": false,
         "error": "set_ai_settings aiProfile must be one of fast, quality"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "seed": -1
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings seed must be between 0 and 2147483647"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "seed": 2147483648
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings seed must be between 0 and 2147483647"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "seed": 1.5
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings seed must be a whole number"
+      }
+    },
+    {
+      "type": "set_ai_settings",
+      "input": {
+        "t": "set_ai_settings",
+        "seed": null
+      },
+      "result": {
+        "ok": false,
+        "error": "set_ai_settings seed must be a whole number"
       }
     },
     {

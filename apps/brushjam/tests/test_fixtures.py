@@ -106,6 +106,7 @@ def test_reducer_trace_matches_node() -> None:
             max_resolution=1024,
             negative_prompt_active={"fast": True, "quality": True},
         ),
+        seed=spec["seed"],
     )
     users = [
         join_member(room, "Alice", "tok-alice-0001")["userId"],

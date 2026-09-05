@@ -76,6 +76,12 @@ export interface RoomSnapshot {
   aiApply: number;
   /** Room-level AI settings, shared by everyone like the prompt. */
   denoise: number;
+  /**
+   * The room's sampling seed. Fixed rather than random per generation, so
+   * adding a stroke changes the drawing instead of reshuffling the whole
+   * picture; the dice in the UI is how you ask for a different one.
+   */
+  seed: number;
   /** Speed/quality workflow choice, shared like the prompt. */
   aiProfile: AIProfileName;
   /**
@@ -133,7 +139,14 @@ export type ClientMessage =
   | { t: 'layer_delete'; id: string }
   | { t: 'layer_reorder'; ids: string[] }
   | { t: 'set_prompt'; prompt: string }
-  | { t: 'set_ai_settings'; denoise?: number; negativePrompt?: string; aiResolution?: number; aiProfile?: AIProfileName };
+  | {
+      t: 'set_ai_settings';
+      denoise?: number;
+      negativePrompt?: string;
+      aiResolution?: number;
+      aiProfile?: AIProfileName;
+      seed?: number;
+    };
 
 export type ServerMessage =
   | { t: 'snapshot'; snapshot: RoomSnapshot }
@@ -158,6 +171,7 @@ export type ServerMessage =
       aiResolution: number;
       aiProfile: AIProfileName;
       negativePromptActive: boolean;
+      seed: number;
     }
   /**
    * What the backend can do, when that changes under a live room - a worker

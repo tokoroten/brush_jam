@@ -6,6 +6,9 @@ import {
   DEFAULT_NEGATIVE_PROMPT,
   DENOISE_STEP,
   MAX_DENOISE,
+  MAX_SEED,
+  clampSeed,
+  randomSeed,
   MAX_LAYERS,
   MAX_STROKE_ALPHA,
   MIN_STROKE_ALPHA,
@@ -145,6 +148,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const negativeField = useSharedDraft(client.negativePrompt, (value) =>
     client.send({ t: 'set_ai_settings', negativePrompt: value }),
   );
+  const seedField = useSharedDraft(client.seed, (value) => client.send({ t: 'set_ai_settings', seed: value }));
 
   const dragRef = useRef<Drag | null>(null);
   /** Image id of a paste we are still waiting for the server to turn into a layer. */
@@ -553,6 +557,48 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               onBlur={denoiseField.onBlur}
             />
           </label>
+          <label title="the room's sampling seed; the same drawing with the same seed comes out the same">
+            seed
+            <input
+              className="seed"
+              type="number"
+              min={0}
+              max={MAX_SEED}
+              step={1}
+              value={seedField.value}
+              onChange={(e) => {
+                // A half-typed number is not a seed; ignore it rather than
+                // sending a 0 nobody asked for.
+                const next = Number(e.target.value);
+                if (e.target.value === '' || !Number.isFinite(next)) return;
+                seedField.set(clampSeed(next));
+              }}
+              onFocus={seedField.onFocus}
+              onBlur={seedField.onBlur}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                seedField.flush();
+                e.currentTarget.blur();
+              }}
+            />
+          </label>
+          <button
+            className="dice"
+            title="random seed"
+            onClick={() => {
+              // The dice is the whole point of a fixed seed: immediate, no
+              // debounce, a different picture from the same drawing.
+              seedField.set(randomSeed());
+              seedField.flush();
+            }}
+          >
+            ⚀
+          </button>
+          {seedField.foreign === null ? null : (
+            <button className="hint foreign" onClick={seedField.adopt}>
+              seed changed by another player: {seedField.foreign}
+            </button>
+          )}
           {client.aiResolutionAdjustable ? (
           <label title="generation resolution; the result is scaled to the canvas">
             AI resolution

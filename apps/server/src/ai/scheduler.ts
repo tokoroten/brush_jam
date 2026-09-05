@@ -31,6 +31,11 @@ export interface RenderJob {
   resolution?: number;
   /** Which workflow to run; picks the step count too. */
   profile?: AIProfileName;
+  /**
+   * The room's seed, captured with everything else. Absent only for callers
+   * that predate it (tests), which fall back to a random one per generation.
+   */
+  seed?: number;
   render(crop: Rect, size: number): Promise<Buffer>;
 }
 
@@ -300,7 +305,7 @@ export class AIScheduler {
           denoise: job.denoise ?? this.opts.denoise,
           steps: this.stepsFor(job.profile),
           profile: job.profile ?? 'quality',
-          seed: (this.opts.seed ?? defaultSeed)(),
+          seed: this.opts.seed ? this.opts.seed() : (job.seed ?? defaultSeed()),
           tag: `${this.opts.tag ?? 'room'}_r${forRevision}`,
         },
         this.controller.signal,
@@ -410,7 +415,7 @@ export class AIScheduler {
           denoise: job.denoise ?? this.opts.denoise,
           steps: this.stepsFor(job.profile),
           profile: job.profile ?? 'quality',
-          seed: (this.opts.seed ?? defaultSeed)(),
+          seed: this.opts.seed ? this.opts.seed() : (job.seed ?? defaultSeed()),
           tag: `${this.opts.tag ?? 'room'}_r${forRevision}`,
         },
         this.controller.signal,
@@ -556,4 +561,8 @@ export class AIScheduler {
 }
 
 const area = (rects: readonly Rect[]): number => rects.reduce((sum, r) => sum + r.width * r.height, 0);
+/**
+ * Only for a job with no seed of its own: the room owns the seed now, so that
+ * a stroke changes the picture instead of reshuffling it.
+ */
 const defaultSeed = (): number => Math.floor(Math.random() * 2 ** 31);

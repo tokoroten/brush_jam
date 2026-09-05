@@ -223,6 +223,7 @@ def _reference_snapshot(image: Image.Image, scale: float, x: float = 0, y: float
         negative_prompt="",
         ai_resolution=256,
         ai_profile="fast",
+        seed=1234,
         layers=[layer],
         strokes=[],
         undone=set(),

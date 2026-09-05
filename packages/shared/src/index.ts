@@ -1,4 +1,5 @@
 export * from './constants.js';
+export * from './seed.js';
 export * from './geometry.js';
 export * from './dirty.js';
 export * from './crop.js';

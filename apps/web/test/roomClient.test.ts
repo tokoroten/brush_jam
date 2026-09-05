@@ -122,6 +122,7 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     aiWindow: 1024,
     aiApply: 768,
     denoise: 0.55,
+    seed: 1234,
     negativePrompt: '',
     aiResolution: 1024,
     aiResolutionMax: 1024,
@@ -455,7 +456,7 @@ describe('ai settings', () => {
     expect(client.aiResolutionMax).toBe(768);
     expect(client.negativePrompt).toBe('no text');
 
-    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '', aiResolution: 768, aiProfile: 'fast', negativePromptActive: true });
+    client.receive({ t: 'ai_settings_changed', denoise: 0.35, negativePrompt: '', aiResolution: 768, aiProfile: 'fast', negativePromptActive: true, seed: 1234 });
     await tick();
     expect(client.denoise).toBe(0.35);
     expect(client.negativePrompt).toBe('');
@@ -547,6 +548,7 @@ describe('AI profile', () => {
     aiResolution: aiProfile === 'fast' ? 768 : 1024,
     aiProfile,
     negativePromptActive: aiProfile === 'quality',
+    seed: 1234,
   });
 
   it('takes the profile from the snapshot', async () => {
@@ -639,7 +641,7 @@ describe('AI result bookkeeping', () => {
     await tick();
 
     // the room switches to quality while a fast run is still in flight
-    client.receive({ t: 'ai_settings_changed', denoise: 0.7, negativePrompt: '', aiResolution: 1024, aiProfile: 'quality', negativePromptActive: true });
+    client.receive({ t: 'ai_settings_changed', denoise: 0.7, negativePrompt: '', aiResolution: 1024, aiProfile: 'quality', negativePromptActive: true, seed: 1234 });
     await tick();
     client.receive(aiResult(1, 3700, 'fast'));
     await tick();
@@ -675,6 +677,7 @@ describe('negative prompt activity', () => {
       aiResolution: 1024,
       aiProfile: 'quality',
       negativePromptActive: true,
+      seed: 1234,
     });
     await tick();
     expect(client.negativePromptActive).toBe(true);

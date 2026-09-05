@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CANVAS_SIZE, MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_DENOISE, MIN_STROKE_ALPHA } from '@brushjam/shared';
+import { CANVAS_SIZE, MAX_DENOISE, MAX_SEED, MAX_NEGATIVE_PROMPT, MIN_DENOISE, MIN_STROKE_ALPHA } from '@brushjam/shared';
 import {
   captureRenderSnapshot,
   snapshot,
@@ -515,6 +515,7 @@ describe('AI profile', () => {
         aiResolution: 1024,
         aiProfile: 'quality',
         negativePromptActive: true,
+        seed: state.seed,
       },
     ]);
   });
@@ -922,5 +923,48 @@ describe('the stroke clamp is a world-space limit', () => {
     const out = applyClientMessage(state, alice, { t: 'stroke_chunk', strokeId: 'a3', points: [{ x: 0, y: 1700 }] });
     const relayed = out.relay[0] as { points: { y: number }[] };
     expect(relayed.points.map((p) => p.y)).toEqual([1700]);
+  });
+});
+
+
+/** The room owns its sampling seed, so a stroke changes the picture rather than reshuffling it. */
+describe('the room seed', () => {
+  it('is random per room and stable within one', () => {
+    const state = createRoom('seed1');
+    expect(Number.isInteger(state.seed)).toBe(true);
+    expect(state.seed).toBeGreaterThanOrEqual(0);
+    expect(state.seed).toBeLessThanOrEqual(MAX_SEED);
+    expect(captureRenderSnapshot(state).seed).toBe(state.seed);
+    expect(captureRenderSnapshot(state).seed).toBe(state.seed);
+
+    const seeds = new Set(Array.from({ length: 20 }, (_, i) => createRoom(`seed-many-${i}`).seed));
+    expect(seeds.size).toBeGreaterThan(1);
+  });
+
+  it('re-runs the AI when it changes, like a prompt change', () => {
+    const { state, alice } = room();
+    const out = applyClientMessage(state, alice, { t: 'set_ai_settings', seed: 4242 });
+    expect(state.seed).toBe(4242);
+    expect(out.promptChanged).toBe(true);
+    expect((out.broadcast[0] as { seed: number }).seed).toBe(4242);
+    expect(snapshot(state, alice, 'idle', { window: 1024, apply: 1024 }).seed).toBe(4242);
+  });
+
+  it('does nothing when the seed is unchanged', () => {
+    const { state, alice } = room();
+    applyClientMessage(state, alice, { t: 'set_ai_settings', seed: 7 });
+    const again = applyClientMessage(state, alice, { t: 'set_ai_settings', seed: 7 });
+    expect(again.broadcast).toEqual([]);
+    expect(again.promptChanged).toBeFalsy();
+  });
+
+  it('refuses a seed outside the range', () => {
+    const { state, alice } = room();
+    const before = state.seed;
+    for (const bad of [-1, MAX_SEED + 1, 1.5]) {
+      const out = applyClientMessage(state, alice, { t: 'set_ai_settings', seed: bad });
+      expect(JSON.stringify(out.toSender)).toContain('seed');
+      expect(state.seed).toBe(before);
+    }
   });
 });

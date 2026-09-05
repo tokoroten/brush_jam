@@ -1,4 +1,4 @@
-import { MAX_AI_RESOLUTION, MAX_DENOISE, MAX_NEGATIVE_PROMPT, MIN_AI_RESOLUTION, MIN_DENOISE, type ClientMessage, type Layer, type LayerKind, type Point,
+import { MAX_AI_RESOLUTION, MAX_DENOISE, MAX_SEED, MAX_NEGATIVE_PROMPT, MIN_AI_RESOLUTION, MIN_DENOISE, type ClientMessage, type Layer, type LayerKind, type Point,
   AI_PROFILES,
   type AIProfileName, MAX_STROKE_ALPHA, MIN_STROKE_ALPHA } from '@brushjam/shared';
 
@@ -172,13 +172,19 @@ export function validateClientMessage(raw: unknown): ValidationResult {
         }
         msg.aiProfile = raw.aiProfile as AIProfileName;
       }
+      if (raw.seed !== undefined) {
+        if (!isNum(raw.seed) || !Number.isInteger(raw.seed)) return bad('set_ai_settings seed must be a whole number');
+        if (raw.seed < 0 || raw.seed > MAX_SEED) return bad(`set_ai_settings seed must be between 0 and ${MAX_SEED}`);
+        msg.seed = raw.seed;
+      }
       if (
         msg.denoise === undefined &&
         msg.negativePrompt === undefined &&
         msg.aiResolution === undefined &&
-        msg.aiProfile === undefined
+        msg.aiProfile === undefined &&
+        msg.seed === undefined
       ) {
-        return bad('set_ai_settings needs denoise, negativePrompt, aiResolution or aiProfile');
+        return bad('set_ai_settings needs denoise, negativePrompt, aiResolution, aiProfile or seed');
       }
       return { ok: true, msg };
     }

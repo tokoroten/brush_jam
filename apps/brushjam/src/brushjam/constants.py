@@ -44,6 +44,8 @@ PROFILE_HINT_MS: Dict[str, int] = {"fast": 2400, "quality": 10_300}
 AI_RESOLUTIONS = [512, 768, 1024]
 MIN_AI_RESOLUTION = 512
 MAX_AI_RESOLUTION = 2048
+#: Sampling seeds are 31-bit: what every backend and every JSON parser agrees on.
+MAX_SEED = 2**31 - 1
 
 #: Close code for a connection replaced by a newer one with the same identity.
 #: In the application range on purpose: to a client, a takeover is not a

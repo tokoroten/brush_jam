@@ -75,6 +75,7 @@ export class RoomRuntime {
             negativePrompt: snap.negativePrompt,
             resolution: snap.aiResolution,
             profile: snap.aiProfile,
+            seed: snap.seed,
             render: (crop, size) => renderCropInput(snap, crop, size),
           };
         },
@@ -349,6 +350,7 @@ export class RoomRuntime {
       aiResolution: this.state.aiResolution,
       aiProfile: this.state.aiProfile,
       negativePromptActive: this.state.negativeActive[this.state.aiProfile] !== false,
+      seed: this.state.seed,
     });
     // Retry once, at the size the backend will actually accept.
     if (changed) this.scheduler.nudge();

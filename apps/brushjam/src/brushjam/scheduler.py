@@ -67,6 +67,9 @@ class RenderJob:
     profile: Optional[str]
     #: Blocking; the scheduler runs it off the event loop.
     render: Callable[[Rect, int], bytes]
+    #: The room's seed, captured with everything else. None only for callers
+    #: that predate it (tests), which fall back to a random one.
+    seed: Optional[int] = None
 
 
 class SchedulerHost(Protocol):
@@ -361,7 +364,16 @@ class AIScheduler:
             mask = await _settled(asyncio.to_thread(self.host.build_full_mask, resolution))
             mask_ms = _now_ms() - t_mask
             negative = job.negative_prompt or ""
-            request_seed = (self.opts.seed or _default_seed)()
+            # The room's seed, unless something overrode it: the tools and the
+            # parity tests pin it, and a room without one (an old caller) still
+            # gets a random one rather than a constant.
+            request_seed = (
+                self.opts.seed()
+                if self.opts.seed
+                else job.seed
+                if job.seed is not None
+                else _default_seed()
+            )
             t_render = _now_ms()
             image_png = await _settled(asyncio.to_thread(job.render, rect, resolution))
             render_ms = _now_ms() - t_render

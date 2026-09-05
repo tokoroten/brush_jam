@@ -2,7 +2,7 @@
  * Per-edit latency measurement against an ALREADY RUNNING server.
  *
  *   pnpm --filter @brushjam/server latency [--url http://127.0.0.1:8787] [--n 10]
- *     [--profile fast|quality] [--resolution 512|768|1024] [--denoise 0.1-1.0]
+ *     [--profile fast|quality] [--resolution 512|768|1024] [--denoise 0.1-1.0] [--seed n]
  *     [--json out.json]
  *
  * The three settings flags are applied to the room before the first stroke and
@@ -21,7 +21,7 @@
  */
 import { writeFileSync } from 'node:fs';
 import WebSocket from 'ws';
-import { AI_RESOLUTIONS } from '@brushjam/shared';
+import { AI_RESOLUTIONS, MAX_SEED } from '@brushjam/shared';
 import type { ServerMessage } from '@brushjam/shared';
 
 interface Options {
@@ -35,6 +35,7 @@ interface Options {
   profile?: 'fast' | 'quality';
   resolution?: number;
   denoise?: number;
+  seed?: number;
   /** Where to write the machine-readable result, if anywhere. */
   jsonPath?: string;
 }
@@ -75,6 +76,15 @@ function parseArgs(argv: string[]): Options {
         process.exit(1);
       }
       opts.denoise = n;
+    } else if (arg === '--seed' && value) {
+      // Pinning it makes two runs comparable: the room keeps one seed now, so
+      // without this a re-run measures a different picture.
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 0 || n > MAX_SEED) {
+        console.error(`[latency] --seed must be a whole number between 0 and ${MAX_SEED}, not "${value}"`);
+        process.exit(1);
+      }
+      opts.seed = n;
     } else if (arg === '--json' && value) opts.jsonPath = value;
   }
   return opts;
@@ -201,7 +211,8 @@ socket.on('message', (raw) => {
     const wanted =
       (opts.profile !== undefined && opts.profile !== msg.snapshot.aiProfile) ||
       (opts.resolution !== undefined && opts.resolution !== msg.snapshot.aiResolution) ||
-      (opts.denoise !== undefined && Math.abs(opts.denoise - msg.snapshot.denoise) > 1e-6);
+      (opts.denoise !== undefined && Math.abs(opts.denoise - msg.snapshot.denoise) > 1e-6) ||
+      (opts.seed !== undefined && opts.seed !== msg.snapshot.seed);
     if (wanted) {
       awaitingSettings = true;
       socket.send(
@@ -210,6 +221,7 @@ socket.on('message', (raw) => {
           ...(opts.profile === undefined ? {} : { aiProfile: opts.profile }),
           ...(opts.resolution === undefined ? {} : { aiResolution: opts.resolution }),
           ...(opts.denoise === undefined ? {} : { denoise: opts.denoise }),
+          ...(opts.seed === undefined ? {} : { seed: opts.seed }),
         }),
       );
       return;
@@ -298,7 +310,7 @@ function report(): void {
     count: opts.count,
     // What was asked for and what the room actually ran with - the second is
     // the one that explains the numbers.
-    requested: { profile: opts.profile, resolution: opts.resolution, denoise: opts.denoise },
+    requested: { profile: opts.profile, resolution: opts.resolution, denoise: opts.denoise, seed: opts.seed },
     applied,
     canvasSize,
     summary: { totalMs: total, notifiedMs: notified, pipelineMs: pipeline },

@@ -112,12 +112,18 @@ const PROTOCOL_SAMPLES: { type: string; valid: unknown[]; invalid: unknown[] }[]
     valid: [
       { t: 'set_ai_settings', denoise: 0.8 },
       { t: 'set_ai_settings', aiResolution: 768, aiProfile: 'quality', negativePrompt: 'blurry' },
+      { t: 'set_ai_settings', seed: 0 },
+      { t: 'set_ai_settings', seed: 2147483647 },
     ],
     invalid: [
       { t: 'set_ai_settings' },
       { t: 'set_ai_settings', denoise: 0.99 },
       { t: 'set_ai_settings', aiResolution: 700 },
       { t: 'set_ai_settings', aiProfile: 'turbo' },
+      { t: 'set_ai_settings', seed: -1 },
+      { t: 'set_ai_settings', seed: 2147483648 },
+      { t: 'set_ai_settings', seed: 1.5 },
+      { t: 'set_ai_settings', seed: null },
     ],
   },
   {
@@ -342,16 +348,30 @@ const STEPS: Step[] = [
   { by: 1, msg: { t: 'set_ai_settings', denoise: 0.85 } },
   { by: 1, msg: { t: 'set_ai_settings', aiProfile: 'quality' } },
   { by: 1, msg: { t: 'set_ai_settings', aiResolution: 512, negativePrompt: 'text, watermark' } },
+  { by: 0, msg: { t: 'set_ai_settings', seed: 31337 } },
+  { by: 0, msg: { t: 'set_ai_settings', seed: 31337 } },
   { by: 1, msg: { t: 'set_ai_settings', aiResolution: 2048 } },
 ];
 
 function reducerFixture(): unknown {
-  const room = createRoom('trace01', 0.7, 1024, 768, true, 'fast', {
-    profiles: ['fast', 'quality'],
-    maxDenoise: 0.95,
-    maxResolution: 1024,
-    negativePromptActive: { fast: true, quality: true },
-  });
+  // A pinned seed: the room picks a random one, and the Python replay cannot
+  // be asked to produce Node's random bytes.
+  const seed = 424242;
+  const room = createRoom(
+    'trace01',
+    0.7,
+    1024,
+    768,
+    true,
+    'fast',
+    {
+      profiles: ['fast', 'quality'],
+      maxDenoise: 0.95,
+      maxResolution: 1024,
+      negativePromptActive: { fast: true, quality: true },
+    },
+    seed,
+  );
   const alice = joinMember(room, 'Alice', 'tok-alice-0001');
   const bob = joinMember(room, 'Bob', 'tok-bob-0001');
   const users = [alice.userId, bob.userId];
@@ -395,7 +415,7 @@ function reducerFixture(): unknown {
 
   return {
     note: 'createRoom("trace01", 0.7, 1024, 768, true, "fast", {fast+quality, 0.95, 1024}); Alice then Bob join.',
-    room: { id: 'trace01', denoise: 0.7, canvasSize: 1024, resolution: 768, adjustable: true, profile: 'fast' },
+    room: { id: 'trace01', denoise: 0.7, canvasSize: 1024, resolution: 768, adjustable: true, profile: 'fast', seed },
     users: ['Alice', 'Bob'],
     steps,
   };

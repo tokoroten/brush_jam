@@ -91,6 +91,8 @@ export class RoomClient {
   /** Room-level AI settings, shared like the prompt. */
   denoise = 0.55;
   negativePrompt = '';
+  /** The room's sampling seed; re-rolling it is what changes the picture. */
+  seed = 0;
   /** Generation size, and the largest this server allows. */
   aiResolution = 1024;
   aiResolutionMax = 1024;
@@ -413,6 +415,7 @@ export class RoomClient {
         this.prompt = s.prompt;
         if (s.canvasSize !== this.canvasSize) this.resizeRasters(s.canvasSize);
         this.denoise = s.denoise;
+        this.seed = s.seed;
         this.negativePrompt = s.negativePrompt;
         this.aiResolution = s.aiResolution;
         this.aiResolutionMax = s.aiResolutionMax;
@@ -538,6 +541,7 @@ export class RoomClient {
         break;
       case 'ai_settings_changed':
         this.denoise = msg.denoise;
+        this.seed = msg.seed;
         this.negativePrompt = msg.negativePrompt;
         this.aiResolution = msg.aiResolution;
         this.aiProfile = msg.aiProfile;

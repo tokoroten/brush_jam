@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { MAX_SEED, clampSeed, randomSeed } from '@brushjam/shared';
 import {
   DRAFT_DEBOUNCE_MS,
   adoptForeign,
@@ -57,6 +58,55 @@ class Field {
 
   /** Another player set the value. */
   foreignChange(value: string): void {
+    this.server = value;
+    this.state = changedDraft(this.state, value);
+  }
+}
+
+/** The same field, holding a number - the seed control. */
+class NumberField {
+  state: DraftState<number>;
+  server: number;
+  readonly sent: number[] = [];
+  private readonly inFlight: number[] = [];
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(server: number) {
+    this.server = server;
+    this.state = initialDraft(server);
+  }
+
+  type(value: number): void {
+    this.state = editDraft(this.state, value);
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.flush(), DRAFT_DEBOUNCE_MS);
+  }
+
+  flush(): void {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    if (!this.state.dirty) return;
+    if (this.state.pending !== null && this.state.pending === this.state.draft) return;
+    const value = this.state.draft;
+    this.sent.push(value);
+    this.state = sentDraft(this.state, value, this.server);
+    if (value !== this.server) this.inFlight.push(value);
+  }
+
+  /** The dice button: set and send, without waiting out the debounce. */
+  roll(value: number): void {
+    this.type(value);
+    this.flush();
+  }
+
+  deliverEcho(): void {
+    const value = this.inFlight.shift();
+    if (value === undefined) return;
+    this.server = value;
+    this.state = changedDraft(this.state, value);
+  }
+
+  foreignChange(value: number): void {
     this.server = value;
     this.state = changedDraft(this.state, value);
   }
@@ -247,5 +297,68 @@ describe('a room-wide field being typed into', () => {
     expect(state.pending).toBe(0.8);
     state = changedDraft(state, 0.8);
     expect(state).toMatchObject({ draft: 0.8, dirty: false, pending: null });
+  });
+});
+
+/**
+ * The seed field is the same machine with numbers in it, plus a dice: the
+ * whole point of a fixed seed is being able to ask for a different picture
+ * from the same drawing, and that must not wait out a debounce.
+ */
+describe('the seed control', () => {
+  it('sends a re-roll immediately, with no debounce', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new NumberField(1234);
+      field.roll(555); // what the dice button does: set, then flush
+      expect(field.sent).toEqual([555]);
+      expect(field.state.draft).toBe(555);
+      vi.advanceTimersByTime(2 * DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual([555]); // and not twice
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a typed seed until it is flushed', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new NumberField(1234);
+      field.type(42);
+      expect(field.sent).toEqual([]);
+      field.flush(); // Enter or blur
+      expect(field.sent).toEqual([42]);
+      field.deliverEcho();
+      expect(field.state.dirty).toBe(false);
+      expect(field.state.draft).toBe(42);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('offers another player’s re-roll instead of stealing the one being typed', () => {
+    const field = new NumberField(1234);
+    field.state = focusDraft(field.state);
+    field.type(42);
+    field.foreignChange(999);
+    expect(field.state.draft).toBe(42);
+    expect(field.state.foreign).toBe(999);
+
+    field.state = adoptForeign(field.state);
+    expect(field.state.draft).toBe(999);
+  });
+
+  it('clamps whatever is typed into the range', () => {
+    expect(clampSeed(-1)).toBe(MAX_SEED);
+    expect(clampSeed(MAX_SEED + 1)).toBe(0);
+    expect(clampSeed(12.7)).toBe(12);
+    expect(clampSeed(0)).toBe(0);
+    expect(clampSeed(MAX_SEED)).toBe(MAX_SEED);
+  });
+
+  it('rolls inside the range', () => {
+    const rolls = Array.from({ length: 200 }, () => randomSeed());
+    expect(rolls.every((s) => Number.isInteger(s) && s >= 0 && s <= MAX_SEED)).toBe(true);
+    expect(new Set(rolls).size).toBeGreaterThan(1);
   });
 });

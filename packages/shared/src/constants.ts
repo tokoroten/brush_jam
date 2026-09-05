@@ -64,3 +64,6 @@ export const MAX_AI_RESOLUTION = 2048;
 export const CLOSE_SUPERSEDED = 4001;
 /** Close code for "this server is full" - retried, but slowly. */
 export const CLOSE_CAPACITY = 1013;
+
+/** Sampling seeds are 31-bit, which every backend and every JSON parser agrees on. */
+export const MAX_SEED = 2 ** 31 - 1;

@@ -182,6 +182,7 @@ class RoomRuntime:
                     negative_prompt=snap.negative_prompt,
                     resolution=snap.ai_resolution,
                     profile=snap.ai_profile,
+                    seed=snap.seed,
                     render=lambda crop, size: render_crop_input(snap, crop, size),
                 )
 
@@ -632,6 +633,7 @@ class RoomRuntime:
                 "aiResolution": self.state.ai_resolution,
                 "aiProfile": self.state.ai_profile,
                 "negativePromptActive": active,
+                "seed": self.state.seed,
             }
         )
         # Retry once, at the size the backend will actually accept.
