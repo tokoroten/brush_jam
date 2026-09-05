@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Mapping, Optional
 from urllib.parse import urlparse
@@ -31,9 +32,12 @@ STREAM_DEFAULTS = {"resolution": 768, "denoise": 0.8}
 #: Backends those defaults apply to.
 FEW_STEP_BACKENDS = ("stream", "inproc")
 
-#: Where the checkpoint lives on the machine this was built on. Shared with
-#: ComfyUI deliberately: one 7 GB file, two consumers.
-DEFAULT_INPROC_CHECKPOINT = r"E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors"
+#: The repository root, so the model defaults land inside the checkout rather
+#: than wherever the process happened to be started from.
+REPO_ROOT = Path(__file__).resolve().parents[4]
+#: Small enough to download on demand (the DMD2 LoRA, the fp16-fix VAE), so
+#: this one has a default. The checkpoint does not: it is 6-7 GB and personal.
+DEFAULT_INPROC_LORA_DIR = str(REPO_ROOT / "models" / "loras")
 
 
 class ConfigError(Exception):
@@ -97,8 +101,11 @@ class Config:
     runpod_endpoint_id: str = ""
     runpod_api_key: str = ""
     runpod_timeout_ms: int = 300_000
-    #: Checkpoint the in-process pipeline loads. Shared with ComfyUI on purpose.
+    #: Checkpoint the in-process pipeline loads. Required for `inproc`; there is
+    #: no sensible default for a 7 GB file that is not in the repository.
     inproc_checkpoint: str = ""
+    #: Where the LoRA and VAE are downloaded to. Inside the checkout by default.
+    inproc_lora_dir: str = ""
     #: Serve the whole contract with no model anywhere (CI, and the pre-GPU
     #: milestones): the pipeline echoes its input.
     inproc_dry_run: bool = False
@@ -289,10 +296,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         runpod_timeout_ms=int(
             _num(env, "RUNPOD_TIMEOUT_MS", 300_000, min=1000, max=3_600_000, integer=True, errors=errors)
         ),
-        inproc_checkpoint=(
-            env.get("INPROC_CHECKPOINT")
-            or env.get("STREAM_CHECKPOINT")
-            or DEFAULT_INPROC_CHECKPOINT
+        inproc_checkpoint=(env.get("INPROC_CHECKPOINT") or env.get("STREAM_CHECKPOINT") or ""),
+        inproc_lora_dir=(
+            env.get("INPROC_LORA_DIR") or env.get("STREAM_LORA_DIR") or DEFAULT_INPROC_LORA_DIR
         ),
         inproc_dry_run=_flag(env.get("INPROC_DRY_RUN") or env.get("STREAM_DRY_RUN")),
         inproc_preload=not _flag(env.get("INPROC_NO_PRELOAD")),

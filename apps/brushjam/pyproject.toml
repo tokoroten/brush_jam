@@ -3,6 +3,7 @@ name = "brushjam"
 version = "0.1.0"
 description = "Brush Jam: one Python process serving the client, the room protocol and inference"
 readme = "README.md"
+license = "MIT"
 # 3.10 is what apps/stream-worker targets, and its pipeline moves in here for
 # the `inproc` backend, so the torch/diffusers pin must stay installable.
 requires-python = ">=3.10,<3.13"

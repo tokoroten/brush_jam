@@ -3,6 +3,7 @@ name = "brushjam-stream-worker"
 version = "0.1.0"
 description = "Model-resident few-step SDXL img2img worker for Brush Jam"
 readme = "README.md"
+license = "MIT"
 # 3.10 is the version the StreamDiffusion ecosystem targets; it was kept after
 # the evaluation (see docs/STREAM_WORKER.md) so that fork stays installable in
 # this venv without a Python change. diffusers/torch work on 3.10-3.12.

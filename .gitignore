@@ -13,3 +13,4 @@ smoke-out/
 
 deploy/runpod/.pod
 deploy/runpod/app.tgz
+models/

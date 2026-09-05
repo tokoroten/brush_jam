@@ -33,6 +33,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
+from ..config import DEFAULT_INPROC_LORA_DIR
+
 log = logging.getLogger("brushjam.ai.pipeline")
 
 #: Multiple of 8 is a VAE requirement; anything above max_size is refused rather
@@ -40,8 +42,12 @@ log = logging.getLogger("brushjam.ai.pipeline")
 SIZE_MULTIPLE = 8
 MIN_SIZE = 256
 
-DEFAULT_CHECKPOINT = r"E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors"
-DEFAULT_LORA_DIR = r"E:\ComfyUI\models\loras"
+#: There is no default checkpoint. Any SDXL .safetensors works, it is 6-7 GB,
+#: and it is the one thing this program cannot guess: INPROC_CHECKPOINT says
+#: where yours is (apps/brushjam/scripts/download_models.py will fetch one).
+#: The LoRA and the fp16-fix VAE are small and downloaded on demand, so they
+#: default to a directory inside the checkout - one definition, in config.
+DEFAULT_LORA_DIR = DEFAULT_INPROC_LORA_DIR
 
 #: The checkpoint's own SDXL VAE sets force_upcast=True, so diffusers casts it
 #: to fp32 on every call - see docs/STREAM_WORKER.md 4.4.
@@ -103,7 +109,7 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass
 class PipelineSettings:
-    checkpoint: Path = field(default_factory=lambda: Path(_env("CHECKPOINT", DEFAULT_CHECKPOINT)))
+    checkpoint: Path = field(default_factory=lambda: Path(_env("CHECKPOINT", "")))
     lora_dir: Path = field(default_factory=lambda: Path(_env("LORA_DIR", DEFAULT_LORA_DIR)))
     #: dmd2 over lcm: faster, and it reinterprets a drawing a denoise step
     #: earlier (docs/experiments/2026-09-05-stream/REPORT.md section 8).
@@ -309,8 +315,16 @@ class InprocPipeline:
         s = self.settings
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available; the inproc backend needs a GPU")
+        if not str(s.checkpoint):
+            raise FileNotFoundError(
+                "no checkpoint configured: set INPROC_CHECKPOINT in .env to an "
+                "SDXL .safetensors file (apps/brushjam/scripts/download_models.py "
+                "will download one)"
+            )
         if not s.checkpoint.exists():
-            raise FileNotFoundError(f"checkpoint not found: {s.checkpoint}")
+            raise FileNotFoundError(
+                f"checkpoint not found: {s.checkpoint} (INPROC_CHECKPOINT)"
+            )
 
         t0 = time.perf_counter()
         pipe = StableDiffusionXLImg2ImgPipeline.from_single_file(

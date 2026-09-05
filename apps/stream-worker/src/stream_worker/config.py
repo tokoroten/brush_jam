@@ -6,8 +6,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_CHECKPOINT = r"E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors"
-DEFAULT_LORA_DIR = r"E:\ComfyUI\models\loras"
+#: No default: the checkpoint is a 6-7 GB file that cannot live in the repo,
+#: so STREAM_CHECKPOINT has to name it. Any SDXL .safetensors works.
+DEFAULT_CHECKPOINT = ""
+#: Small enough to download on demand, so this one defaults into the checkout.
+DEFAULT_LORA_DIR = str(Path(__file__).resolve().parents[4] / "models" / "loras")
 
 # Both are 4-step SDXL distillation LoRAs. LCM is the default; DMD2 is the
 # fallback documented in docs/STREAM_WORKER.md.

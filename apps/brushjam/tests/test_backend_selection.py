@@ -131,10 +131,13 @@ async def test_explicit_inproc_refuses_rather_than_silently_becoming_the_mock(
     with pytest.raises(RuntimeError, match="torch/diffusers are not installed"):
         await create_backend(config(AI_BACKEND="inproc"), Log())
     monkeypatch.setattr(backends, "torch_available", lambda: True)
-    with pytest.raises(RuntimeError, match="checkpoint not found"):
+    with pytest.raises(RuntimeError, match="INPROC_CHECKPOINT points at a file"):
         await create_backend(
             config(AI_BACKEND="inproc", INPROC_CHECKPOINT="Z:/nope/model.safetensors"), Log()
         )
+    # And with nothing configured at all, the message has to say what to set.
+    with pytest.raises(RuntimeError, match="INPROC_CHECKPOINT"):
+        await create_backend(config(AI_BACKEND="inproc"), Log())
 
 
 async def test_runpod_needs_its_credentials(no_probes) -> None:

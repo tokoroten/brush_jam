@@ -125,9 +125,13 @@ def _inproc_ready(config: "Config") -> Optional[str]:
         return "torch/diffusers are not installed (uv sync --extra inproc)"
     checkpoint = Path(config.inproc_checkpoint)
     if not config.inproc_checkpoint:
-        return "no checkpoint is configured (INPROC_CHECKPOINT)"
+        return (
+            "no checkpoint is configured: set INPROC_CHECKPOINT in .env to an SDXL "
+            ".safetensors file (uv run --project apps/brushjam python "
+            "apps/brushjam/scripts/download_models.py downloads one)"
+        )
     if not checkpoint.exists():
-        return f"checkpoint not found: {checkpoint}"
+        return f"INPROC_CHECKPOINT points at a file that does not exist: {checkpoint}"
     return None
 
 
@@ -137,6 +141,8 @@ def _make_inproc(config: "Config") -> InprocBackend:
     settings = PipelineSettings()
     if config.inproc_checkpoint:
         settings.checkpoint = Path(config.inproc_checkpoint)
+    if config.inproc_lora_dir:
+        settings.lora_dir = Path(config.inproc_lora_dir)
     return InprocBackend(settings, dry_run=config.inproc_dry_run)
 
 
