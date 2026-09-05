@@ -247,3 +247,48 @@ def test_a_traversal_path_falls_back_to_the_spa(tmp_path: Path) -> None:
     with TestClient(create_app(cfg, MockBackend(latency_ms=0))) as c:
         body = c.get("/../secret.txt").text
     assert "secret" not in body
+
+
+def test_an_image_forgotten_mid_decode_is_not_inserted_afterwards() -> None:
+    """Pruning has to actually release memory.
+
+    The decode deliberately runs outside the lock, so a `forget_images` during
+    it used to find nothing to remove and the decoding thread then inserted an
+    image no room referenced any more.
+    """
+    from brushjam import raster
+
+    forget_images(["racing"])
+    data = to_png(Image.new("RGBA", (48, 48), (7, 7, 7, 255)))
+    before = decoded_cache_stats()
+
+    started = threading.Event()
+    proceed = threading.Event()
+    real_open = Image.open
+
+    def slow_open(*args: Any, **kwargs: Any) -> Any:
+        started.set()
+        proceed.wait(2.0)
+        return real_open(*args, **kwargs)
+
+    result: List[Any] = []
+
+    def decode() -> None:
+        result.append(_decode("racing", data))
+
+    raster.Image.open = slow_open  # type: ignore[assignment]
+    try:
+        worker = threading.Thread(target=decode)
+        worker.start()
+        assert started.wait(2.0)
+        # The room holding this image goes away while the decode is in flight.
+        forget_images(["racing"])
+        proceed.set()
+        worker.join(2.0)
+    finally:
+        raster.Image.open = real_open  # type: ignore[assignment]
+
+    # The caller still got its image...
+    assert len(result) == 1 and result[0].size == (48, 48)
+    # ...but nothing unreferenced was left behind in the cache.
+    assert decoded_cache_stats() == before

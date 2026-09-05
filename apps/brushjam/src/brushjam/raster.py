@@ -43,6 +43,9 @@ _cache_lock = threading.Lock()
 #: room.
 _image_cache: "OrderedDict[str, Tuple[np.ndarray, int]]" = OrderedDict()
 _cached_pixels = 0
+#: Bumped whenever an id is forgotten, so a decode that started before the
+#: forget knows its result is no longer wanted.
+_forget_epoch: "Dict[str, int]" = {}
 
 
 def decoded_cache_stats() -> Dict[str, int]:
@@ -55,10 +58,18 @@ def forget_images(ids: Iterable[str]) -> None:
     global _cached_pixels
     with _cache_lock:
         for image_id in list(ids):
+            # Recorded even when nothing is cached: a decode may be in flight
+            # for this id right now, and its result must not be inserted after
+            # the room that referenced it has gone.
+            _forget_epoch[image_id] = _forget_epoch.get(image_id, 0) + 1
             entry = _image_cache.pop(image_id, None)
             if entry is None:
                 continue
             _cached_pixels -= entry[1]
+        if len(_forget_epoch) > 4096:
+            for key in list(_forget_epoch):
+                if key not in _image_cache:
+                    del _forget_epoch[key]
 
 
 def _evict_until_under_budget(budget: int = DECODED_PIXEL_BUDGET) -> None:
@@ -76,6 +87,7 @@ def _decode(image_id: str, data: bytes) -> Image.Image:
         if hit is not None:
             _image_cache.move_to_end(image_id)
             return Image.fromarray(hit[0], "RGBA")
+        epoch = _forget_epoch.get(image_id, 0)
 
     # Decoding is slow and is deliberately done outside the lock: two threads
     # racing on the same id decode twice, and the accounting below makes that
@@ -93,6 +105,11 @@ def _decode(image_id: str, data: bytes) -> Image.Image:
             # Somebody else won the race; use theirs so the budget counts one.
             _image_cache.move_to_end(image_id)
             return Image.fromarray(existing[0], "RGBA")
+        if _forget_epoch.get(image_id, 0) != epoch:
+            # Forgotten while this decode was running. The caller still gets
+            # its image - the array is theirs - but the cache does not keep a
+            # copy of something nothing references any more.
+            return Image.fromarray(pixels_array, "RGBA")
         _image_cache[image_id] = (pixels_array, pixels)
         _cached_pixels += pixels
         _evict_until_under_budget()

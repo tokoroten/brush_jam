@@ -19,6 +19,7 @@ import logging
 import threading
 import time
 import uuid
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
@@ -204,9 +205,13 @@ class InprocBackend:
         except asyncio.CancelledError:
             # The caller has given up. The thread is still inside the diffusion
             # loop and cannot be stopped from here, so ask it to stop at its
-            # next step and leave it to unwind; the executor's single slot keeps
-            # the next request behind it.
+            # next step - and then WAIT for it. Returning while the GPU is
+            # still busy would hand the scheduler's admission slot to another
+            # room that would rasterise and start its own watchdog while
+            # queued behind work nobody is waiting for.
             self._cancelled.add(request_id)
+            with suppress(BaseException):
+                await asyncio.shield(future)
             raise
         except GenerationCancelled as err:
             raise asyncio.CancelledError() from err

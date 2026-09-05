@@ -120,13 +120,27 @@ enforced before anything is allocated:
 | `UNJOINED_ROOM_TTL_MS` | `300000` | how long a room nobody joined holds its slot |
 | `MAX_ROOM_SOCKETS` | `16` | sockets in one room (every join rebroadcasts the member list) |
 | `MAX_TOTAL_SOCKETS` | `256` | sockets in the process |
-| `MAX_ROOM_POINTS` | `2000000` | aggregate committed points in one room |
+| `MAX_ROOM_POINTS` | `2000000` | aggregate committed points in one room (max 5,000,000) |
+| `MAX_ROOM_SNAPSHOT_BYTES` | `6291456` | what a room's log may serialise to (max 7 MiB) |
 | `ROOM_IDLE_MS` | `1800000` | how long an empty room keeps its rasters |
 
-`MAX_ROOM_POINTS` is the one that matters: the stroke count alone was never a
-bound, because 20,000 strokes of 50,000 points is a billion point dicts and the
-whole log is serialised into every joiner's snapshot. Past it, `stroke_end` is
-cancelled with a reason rather than committed.
+`MAX_ROOM_SNAPSHOT_BYTES` is the one that matters, because it is the limit that
+decides whether the room stays joinable: a log that serialises past the 8 MiB
+outbound frame cap is a room every later join and every reconnect must refuse.
+It is *measured* per committed stroke, not estimated - points are clamped but
+not rounded, so a client sending `1.2345678901234567` serialises to nearly
+three times what a well-behaved one does, and a per-point constant large enough
+to bound that would shrink an ordinary session to a fraction of the budget.
+`MAX_ROOM_POINTS` bounds process memory alongside it. Past either, `stroke_end`
+is cancelled with reason `quota` rather than committed, and deleting or
+clearing a layer gives the budget back.
+
+Every path that can bring a room into existence - the POST, an upload to an
+unknown id, and a link nobody has opened yet - goes through one rate-limited
+`create_named`; `get` is the lookup that creates nothing. Socket capacity is
+one synchronous reservation taken before the handshake's first await, so
+concurrent connections cannot all pass the same check, and a reconnect that
+replaces a socket already in the room needs no free slot.
 
 One more thing is process-wide rather than per-room: **generation admission**.
 Every room shares one FIFO slot, acquired *before* rasterising, so N active

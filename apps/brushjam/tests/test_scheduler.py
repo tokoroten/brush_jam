@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -287,3 +288,111 @@ async def test_the_watchdog_does_not_count_time_spent_queueing() -> None:
     assert "error" not in second_host.states()
     first.stop()
     second.stop()
+
+
+class ThreadBackend:
+    """A backend whose work is on a thread, so cancelling the caller does not
+    stop it - the in-process pipeline's situation."""
+
+    name = "thread"
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.running = False
+        self.finished = False
+        self.started = asyncio.Event()
+
+    async def capabilities(self) -> BackendCapabilities:
+        return BackendCapabilities(["fast", "quality"], 2048, 0.95)
+
+    def _work(self) -> bytes:
+        import time as _time
+
+        self.running = True
+        try:
+            _time.sleep(self.seconds)
+            return b"patch"
+        finally:
+            self.running = False
+            self.finished = True
+
+    async def generate(self, req: GenerateRequest) -> bytes:
+        self.started.set()
+        future = asyncio.ensure_future(asyncio.to_thread(self._work))
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # What InprocBackend does: wait for the thread before letting go.
+            from contextlib import suppress
+
+            with suppress(BaseException):
+                await asyncio.shield(future)
+            raise
+
+
+async def test_a_timed_out_run_holds_admission_until_its_thread_finishes() -> None:
+    """Releasing the slot early hands the next room a device that is still
+    busy - and it would rasterise and start its own watchdog while queued."""
+    admission = GenerationAdmission()
+    slow = ThreadBackend(seconds=0.4)
+    host = FakeHost()
+    scheduler = make(host, slow, admission=admission, watchdog_ms=60, error_backoff_ms=10_000)
+
+    scheduler.mark_dirty([{"x": 0, "y": 0, "width": 1, "height": 1}])
+    await slow.started.wait()
+    await asyncio.sleep(0.15)  # past the watchdog, inside the thread's sleep
+
+    # The watchdog has fired, but the thread has not finished, so the slot is
+    # still taken.
+    assert slow.running is True
+    admitted = asyncio.ensure_future(_take(admission))
+    await asyncio.sleep(0.05)
+    assert not admitted.done(), "admission was released while the thread ran"
+
+    await asyncio.sleep(0.4)
+    assert slow.finished is True
+    await asyncio.wait_for(admitted, 1)
+    scheduler.stop()
+
+
+async def _take(admission: GenerationAdmission) -> None:
+    async with admission.admit():
+        return None
+
+
+async def test_the_watchdog_covers_the_render_not_only_the_backend() -> None:
+    """A render that never returns used to hold admission unwatched."""
+    host, backend = FakeHost(), FakeBackend()
+    stuck = threading.Event()
+
+    def render(crop, size):
+        host.renders += 1
+        stuck.wait(2.0)
+        return b"input"
+
+    def begin_job() -> RenderJob:
+        return RenderJob(
+            revision=host.revision,
+            prompt="a town",
+            denoise=0.7,
+            negative_prompt="",
+            resolution=512,
+            profile="fast",
+            render=render,
+        )
+
+    host.begin_job = begin_job  # type: ignore[assignment]
+    scheduler = make(host, backend, watchdog_ms=50, error_backoff_ms=10_000)
+    scheduler.mark_dirty([{"x": 0, "y": 0, "width": 1, "height": 1}])
+
+    await settle(200)
+    # The watchdog has fired, but the render thread is still going, so nothing
+    # is reported and nothing is released until it stops.
+    assert host.states()[-1] == "generating"
+    assert backend.requests == [], "a timed-out render still reached the backend"
+
+    stuck.set()
+    await settle(200)
+    assert host.states()[-1] == "error"
+    assert "timed out" in (host.messages[-1].get("message") or "")
+    scheduler.stop()

@@ -16,7 +16,7 @@ import logging
 import random
 import re
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
@@ -289,7 +289,10 @@ class AIScheduler:
         # coroutine; rendering first would cost a supersampled raster per room.
         admit = admission.admit() if admission is not None else _no_admission()
         async with admit:
-            # The watchdog measures a generation, not a queue: it starts here.
+            # The watchdog measures the whole admitted run - mask, render,
+            # backend and apply - and none of the queueing before it. Anything
+            # it interrupts is waited out before the slot is released, so a
+            # timeout cannot hand the next room a GPU that is still busy.
             started_at = _now_ms()
             return await self._run_admitted(
                 job, rect, resolution, for_revision, prompt_epoch, started_at
@@ -306,15 +309,60 @@ class AIScheduler:
     ) -> None:
         timed_out = False
         try:
+            try:
+                # The watchdog covers everything this room does with the slot,
+                # not just the backend call: a render or an apply that never
+                # returns would otherwise hold admission indefinitely, unwatched.
+                await asyncio.wait_for(
+                    self._generate_once(
+                        job, rect, resolution, for_revision, prompt_epoch, started_at
+                    ),
+                    self.opts.watchdog_ms / 1000,
+                )
+            except asyncio.TimeoutError:
+                timed_out = True
+                raise
+            self._after_run(0)
+        except asyncio.CancelledError:
+            self._in_flight = False
+            raise
+        except Exception as err:  # noqa: BLE001 - every failure is reportable
+            if self._stopped:
+                self._in_flight = False
+                return
+            # the work was not done, so it is still owed
+            self._changed = True
+            message = "generation timed out" if timed_out else str(err) or err.__class__.__name__
+            self._note_error(message, None if timed_out else err)
+            if self._stuck_on is not None:
+                # A request the backend refuses outright will be refused again.
+                self._set_state("error", f"{message} - not retrying until something changes")
+                self._in_flight = False
+                return
+            self._set_state("error", message)
+            self._backoff_until = _now_ms() + self.opts.error_backoff_ms
+            self._after_run(self.opts.error_backoff_ms)
+
+    async def _generate_once(
+        self,
+        job: RenderJob,
+        rect: Rect,
+        resolution: int,
+        for_revision: int,
+        prompt_epoch: int,
+        started_at: float,
+    ) -> None:
+        """One admitted run. Raises; the caller owns the error policy."""
+        if True:  # keeps the body's indentation stable in review
             # First use at a size builds and PNG-encodes a full-canvas mask;
             # off the loop, because that pauses every other room's sockets.
             t_mask = _now_ms()
-            mask = await asyncio.to_thread(self.host.build_full_mask, resolution)
+            mask = await _settled(asyncio.to_thread(self.host.build_full_mask, resolution))
             mask_ms = _now_ms() - t_mask
             negative = job.negative_prompt or ""
             request_seed = (self.opts.seed or _default_seed)()
             t_render = _now_ms()
-            image_png = await asyncio.to_thread(job.render, rect, resolution)
+            image_png = await _settled(asyncio.to_thread(job.render, rect, resolution))
             render_ms = _now_ms() - t_render
             req = GenerateRequest(
                 profile=job.profile or "quality",
@@ -330,21 +378,19 @@ class AIScheduler:
                 tag=f"{self.opts.tag}_r{for_revision}",
             )
             t_backend = _now_ms()
-            try:
-                patch = await asyncio.wait_for(
-                    self.backend.generate(req), self.opts.watchdog_ms / 1000
-                )
-            except asyncio.TimeoutError:
-                timed_out = True
-                raise
+            # NOT wrapped in `_settled`: a backend that can be given up on
+            # should be, and the one that cannot - the in-process pipeline -
+            # waits for its own GPU thread before it lets go, which is where
+            # that knowledge belongs.
+            patch = await self.backend.generate(req)
 
             if for_revision < self._last_accepted:
                 self._set_state("idle")
             else:
                 backend_ms = _now_ms() - t_backend
                 t_apply = _now_ms()
-                applied = await self.host.apply_result(
-                    patch, rect, rect, mask.alpha, for_revision
+                applied = await _settled(
+                    self.host.apply_result(patch, rect, rect, mask.alpha, for_revision)
                 )
                 apply_ms = _now_ms() - t_apply
                 self._last_accepted = for_revision
@@ -384,26 +430,6 @@ class AIScheduler:
                     # The prompt changed while this was generating.
                     self._changed = True
                 self._set_state("idle", None, latency_ms)
-            self._after_run(0)
-        except asyncio.CancelledError:
-            self._in_flight = False
-            raise
-        except Exception as err:  # noqa: BLE001 - every failure is reportable
-            if self._stopped:
-                self._in_flight = False
-                return
-            # the work was not done, so it is still owed
-            self._changed = True
-            message = "generation timed out" if timed_out else str(err) or err.__class__.__name__
-            self._note_error(message, None if timed_out else err)
-            if self._stuck_on is not None:
-                # A request the backend refuses outright will be refused again.
-                self._set_state("error", f"{message} - not retrying until something changes")
-                self._in_flight = False
-                return
-            self._set_state("error", message)
-            self._backoff_until = _now_ms() + self.opts.error_backoff_ms
-            self._after_run(self.opts.error_backoff_ms)
 
     def _steps_for(self, profile: Optional[str]) -> int:
         """The fast profile is only fast because it runs fewer steps."""
@@ -433,6 +459,26 @@ class AIScheduler:
             return
         if self._pending or self._changed:
             self._schedule(delay_ms)
+
+
+async def _settled(awaitable: Awaitable[Any]) -> Any:
+    """Await, and if we are cancelled, wait for the work to actually stop.
+
+    Dropping the caller does not stop a thread. Returning while the executor
+    is still busy would release the admission slot to a room that then
+    rasterises and starts its own watchdog while queued behind work nobody is
+    waiting for - which is what admission exists to prevent.
+
+    Only for work that genuinely cannot be interrupted: anything cancellable
+    should just be cancelled.
+    """
+    task = asyncio.ensure_future(awaitable)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        with suppress(BaseException):
+            await asyncio.shield(task)
+        raise
 
 
 @asynccontextmanager
