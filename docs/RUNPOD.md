@@ -1,5 +1,8 @@
 # RunPod serverless backend
 
+> **Status (2026-09-05 11:xx JST): torn down at the user's request.** The endpoint `srmomg5bp1e2hm`, template `mv8u4g9k6w` and network volume `pqx6rs7f48` were deleted via the REST API (all returned 204); `RUNPOD_ENDPOINT_ID` was removed from `.env`. Re-deploying means repeating the steps below (about 30 minutes, ~$0.05 plus the volume rent). The measured numbers remain valid as a reference.
+
+
 `AI_BACKEND=runpod` runs the **same ComfyUI workflow** the local backend builds,
 on a RunPod serverless endpoint instead of a local ComfyUI. It is a transport
 change, not a pipeline change: the same `buildWorkflow()` output, the same
