@@ -122,25 +122,6 @@ minutes of thrashing. Stop one before starting the other.
 slower - about 3.7 s for `fast` at 768 and 10.3 s for `quality` at 1024 - and
 it needs its own process and its own VRAM.
 
-### Legacy: the Node server and the stream worker
-
-*Being retired - see [`docs/RETIRE_NODE_CHECKLIST.md`](docs/RETIRE_NODE_CHECKLIST.md).
-The Python server in `apps/brushjam` replaces both and is what the sections
-above describe.*
-
-The original room server is `apps/server` (Node/TypeScript) and the original
-out-of-process model host is `apps/stream-worker` (Python). They still work:
-
-```bash
-cd apps/stream-worker && uv run stream-worker   # model on :8790, ~40 s to warm
-pnpm dev:stream                                 # Node server :8787 + web :5173
-pnpm dev:lan                                    # ...both on the LAN
-```
-
-The Python server can still use a stream worker over HTTP with
-`AI_BACKEND=stream`, which is the one part of this that is not going away: it
-is how a model on another machine is reached.
-
 ## Documents
 
 | document | what it is |
@@ -185,19 +166,6 @@ tools/                 scripts against a running server, over HTTP/WS only
   scripts/latency.ts     per-edit latency, with --profile / --resolution / --json
   scripts/playtest-sim.ts N users for M minutes, then convergence checks
   scripts/smoke.ts       one real generation end to end
-
-apps/server/           LEGACY - Node 22 + ws + node:http, being retired
-  src/room.ts            authoritative room reducer (strokes, undo, layers, prompt)
-  src/validate.ts        runtime validation of every client message
-  src/imageInfo.ts       PNG/JPEG/WebP header probe and upload limits
-  src/runtime.ts         room runtime: sockets, AI canvas, patch store
-  src/server.ts          HTTP routes + WebSocket upgrade + static client
-  src/raster.ts          @napi-rs/canvas: AI input, soft mask, AI canvas compositing
-  src/ai/scheduler.ts    debounce, single in-flight, crop choice, stale handling
-  src/ai/backends/       comfyui | mock | runpod
-  scripts/export-fixtures.ts writes the parity fixtures the Python suite replays
-  scripts/quality-grid.ts    denoise sweep straight through a backend
-  scripts/runpod-smoke.ts    one live generation against the RunPod endpoint
 
 apps/web/              Vite + React 19
   src/App.tsx            name gate, home page, /r/<id> routing
@@ -311,8 +279,8 @@ honoured, but the same checks run and print a warning.
 ## ComfyUI requirements
 
 ComfyUI 0.28.0 with `waiNSFWIllustrious_v150.safetensors` and core nodes only.
-The workflow is built in TypeScript (`apps/server/src/ai/backends/comfyui.ts`,
-node ids fixed so tests can assert on it):
+The workflow is built in `apps/brushjam/src/brushjam/ai/backends/comfyui.py`
+(node ids fixed so tests can assert on it):
 
 ```
 CheckpointLoaderSimple → 2× CLIPTextEncode
@@ -559,24 +527,6 @@ time, and reports three numbers per edit, min/median/max:
 
 It starts nothing itself, so the `/healthz` line tells you which backend was
 really measured.
-
-### Denoise / quality grid
-
-*Legacy: this drives the Node server's backends directly rather than a running
-server, so it goes with `apps/server`.*
-
-```
-pnpm --filter @brushjam/server quality-grid                   # 4 drawings x 4 denoise at 768
-AI_BACKEND=mock pnpm --filter @brushjam/server quality-grid   # instant, no GPU
-```
-
-Renders four synthetic drawings (line art, stick figure + blob, line art with a
-noise sky, mostly noise) and sweeps denoise through whatever backend the config
-selects, calling `generate()` directly - no server, no WebSocket, fixed seed,
-full-white mask. Writes `docs/experiments/<date>/` with one PNG per cell, a
-labelled contact sheet `grid.png` and `results.json` with per-cell latency, then
-prints a summary table. Options: `--res`, `--out`, `--drawings`, `--denoise`.
-See [docs/experiments/README.md](docs/experiments/README.md).
 
 ## Measured behaviour
 

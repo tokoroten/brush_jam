@@ -1,4 +1,4 @@
-"""GPU-free stand-in. Port of apps/server/src/ai/backends/mock.ts.
+"""GPU-free stand-in. Port of the retired Node server's src/ai/backends/mock.ts.
 
 A deterministic stylisation (posterise + a prompt-derived hue shift + edge
 darkening) applied inside the mask. Same contract as the real backends, so the

@@ -1,7 +1,7 @@
 """The three HTTP backends, driven through an httpx transport instead of a
 network: workflow shape, capability semantics, decoding and cleanup.
 
-Mirrors apps/server/test/{comfyui,comfyui-cleanup,stream,runpod}.test.ts.
+Mirrors the retired Node server's test/{comfyui,comfyui-cleanup,stream,runpod}.test.ts.
 """
 
 from __future__ import annotations

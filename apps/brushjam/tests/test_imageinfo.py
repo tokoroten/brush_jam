@@ -1,4 +1,4 @@
-"""Upload preflight (apps/server/test/imageInfo.test.ts)."""
+"""Upload preflight (the retired Node server's test/imageInfo.test.ts)."""
 
 from __future__ import annotations
 

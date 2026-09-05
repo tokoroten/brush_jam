@@ -1,5 +1,10 @@
 # Brush Jam — MVP Implementation Plan (vertical slice)
 
+> **Historical.** This plan describes the original TypeScript server in
+> `apps/server`, which has been replaced by the single Python process in
+> `apps/brushjam` and deleted. The design it describes is still the design;
+> only the file paths have moved. See [`PYTHON_SERVER.md`](PYTHON_SERVER.md).
+
 Derived from `BRUSHJAM_CONTEXT.md` §23 phases 1–3 and §26. Everything here is MVP scope. Nothing marked Post-MVP in the context doc is to be built.
 
 ## 0. Local environment facts (verified 2026-09-05)

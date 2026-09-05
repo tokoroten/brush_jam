@@ -1,4 +1,4 @@
-"""Backend selection. Port of apps/server/src/ai/backends/index.ts, plus the
+"""Backend selection. Port of the retired Node server's src/ai/backends/index.ts, plus the
 in-process pipeline this port exists for.
 
 An explicit AI_BACKEND always wins. `auto` prefers the in-process model (no HTTP

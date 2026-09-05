@@ -1,4 +1,4 @@
-"""Canvas rendering with Pillow + numpy. Port of apps/server/src/raster.ts and
+"""Canvas rendering with Pillow + numpy. Port of the retired Node server's src/raster.ts and
 the parts of packages/shared/src/render.ts the server uses.
 
 Antialiasing parity with the browser is not required (this output only ever

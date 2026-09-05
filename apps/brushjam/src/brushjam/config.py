@@ -1,4 +1,4 @@
-"""Environment parsing and validation. Port of apps/server/src/config.ts.
+"""Environment parsing and validation. Port of the retired Node server's src/config.ts.
 
 Every value is validated once, at startup, and the process refuses to boot on
 bad input: a fractional or negative AI window would otherwise produce broken

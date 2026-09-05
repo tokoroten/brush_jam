@@ -1,4 +1,4 @@
-"""uvicorn entry point. Port of apps/server/src/index.ts.
+"""uvicorn entry point. Port of the retired Node server's src/index.ts.
 
 `uv run brushjam` serves the built client, REST, the WebSocket and inference on
 one port.

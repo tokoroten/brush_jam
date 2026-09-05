@@ -1,6 +1,6 @@
 """Which backend a configuration actually gets, and why.
 
-Mirrors apps/server/test/backend-selection.test.ts. Selecting a backend must
+Mirrors the retired Node server's test/backend-selection.test.ts. Selecting a backend must
 never load a model or touch the GPU - only an explicit start does that - so
 every case here runs with `INPROC_DRY_RUN` or with the checkpoint missing.
 """

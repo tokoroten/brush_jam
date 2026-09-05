@@ -1,8 +1,11 @@
-"""Cross-language parity: replay what the Node implementation actually did.
+"""Replay what the Node implementation actually did.
 
-The fixtures are written by `apps/server/scripts/export-fixtures.ts` from the
-real Node modules, so a difference here is a difference between the two
-servers, not between two descriptions of them.
+The fixtures were written by the retired Node server's export-fixtures script,
+driving its real modules - the validator, the reducer, the noise hash and the
+shared renderer through a canvas. That server is gone, so these are no longer a
+parity oracle; they are the record of the behaviour this one was built to
+match, and every run replays all of it. They are frozen: nothing can regenerate
+them, which is the point.
 """
 
 from __future__ import annotations

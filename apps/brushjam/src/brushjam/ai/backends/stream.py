@@ -1,5 +1,5 @@
 """HTTP client for the model-resident worker in apps/stream-worker.
-Port of apps/server/src/ai/backends/stream.ts.
+Port of the retired Node server's src/ai/backends/stream.ts.
 
 Kept after the pipeline moved in-process, because the worker is still the way
 to run the model in a separate process (a different machine, or a GPU handover

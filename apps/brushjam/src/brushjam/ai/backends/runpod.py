@@ -1,4 +1,4 @@
-"""RunPod serverless backend. Port of apps/server/src/ai/backends/runpod.ts.
+"""RunPod serverless backend. Port of the retired Node server's src/ai/backends/runpod.ts.
 
 The same workflow JSON as the local ComfyUI backend, posted to RunPod's
 `worker-comfyui` image, so moving to the cloud is a transport change only.

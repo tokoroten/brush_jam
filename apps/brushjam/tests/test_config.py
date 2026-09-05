@@ -1,4 +1,4 @@
-"""Config parsing and validation (apps/server/test/config.test.ts)."""
+"""Config parsing and validation (the retired Node server's test/config.test.ts)."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Experiments
 
-Output of `pnpm --filter @brushjam/server quality-grid`, one directory per run
+Output of the Node server's `quality-grid` script, one directory per run
 date (`YYYY-MM-DD`, local time).
 
 The script renders four synthetic drawings with `@napi-rs/canvas` and the shared
@@ -8,14 +8,11 @@ The script renders four synthetic drawings with `@napi-rs/canvas` and the shared
 config selects (stream worker, ComfyUI or mock) by calling `generate()`
 directly - no server, no WebSocket, fixed seed, full-white mask.
 
-```
-pnpm --filter @brushjam/server quality-grid            # 4 drawings x 4 denoise at 768
-pnpm --filter @brushjam/server quality-grid --res 512 --drawings "a,c" --denoise "0.6,0.8"
-AI_BACKEND=mock pnpm --filter @brushjam/server quality-grid   # instant, no GPU
-```
-
-Options: `--res` (default 768), `--out` (default `docs/experiments`),
-`--drawings a,b,c,d`, `--denoise 0.5,0.65,0.8,0.9`.
+> **The script is gone.** It called `generate()` directly with a fixed seed and
+> a full-white mask, so it could not be a client of a running server, and it
+> went with the Node server it lived in. The reports below stay as records. To
+> sweep denoise again, the honest form is a small script in
+> `apps/brushjam/scripts/` importing the backend the same way.
 
 Each run directory holds:
 

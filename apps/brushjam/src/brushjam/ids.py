@@ -1,4 +1,4 @@
-"""Mirror of apps/server/src/ids.ts."""
+"""Mirror of the retired Node server's src/ids.ts."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""ComfyUI backend. Port of apps/server/src/ai/backends/comfyui.ts.
+"""ComfyUI backend. Port of the retired Node server's src/ai/backends/comfyui.ts.
 
 The workflow JSON is built here, with fixed node ids so the tests can assert on
 it, and the RunPod adapter posts the identical graph to a serverless worker -

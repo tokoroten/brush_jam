@@ -1,4 +1,4 @@
-"""Full-canvas AI scheduler. Port of apps/server/src/ai/scheduler.ts.
+"""Full-canvas AI scheduler. Port of the retired Node server's src/ai/scheduler.ts.
 
 Debounces drawing activity into at most one in-flight generation per room and
 applies only results that are still useful. Human drawing never waits on any of

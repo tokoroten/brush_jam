@@ -6,8 +6,8 @@ UNet, and then answers `POST /generate` in a few hundred milliseconds instead of
 the ~8–15 s a cold ComfyUI graph costs.
 
 It speaks the same request contract as the Brush Jam AI backends
-(`docs/MVP_PLAN.md` §6), so `apps/server` can talk to it through
-`apps/server/src/ai/backends/stream.ts`.
+(`docs/MVP_PLAN.md` §6), so the room server can talk to it through
+`apps/brushjam/src/brushjam/ai/backends/stream.py`.
 
 Why diffusers and not StreamDiffusion: see `docs/STREAM_WORKER.md`.
 

@@ -1,4 +1,4 @@
-"""Backend contract. Port of apps/server/src/ai/backends/types.ts."""
+"""Backend contract. Port of the retired Node server's src/ai/backends/types.ts."""
 
 from __future__ import annotations
 

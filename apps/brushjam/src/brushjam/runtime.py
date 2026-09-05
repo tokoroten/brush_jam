@@ -1,5 +1,5 @@
 """Room runtime: sockets, presence, broadcast, image store, eviction.
-Port of apps/server/src/runtime.ts.
+Port of the retired Node server's src/runtime.ts.
 
 A `Connection` is anything that can be handed a JSON string and told to go away,
 so the tests can drive a room without a real socket.

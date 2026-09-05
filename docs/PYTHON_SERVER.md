@@ -226,25 +226,54 @@ Three things keep the plumbing off the critical path:
    `apps/server/scripts/export-fixtures.ts` writes fixtures from the real Node
    modules and `tests/test_fixtures.py` replays them - that is the parity proof.
 
-## Regenerating the parity fixtures
+## The parity fixtures are frozen
 
-```bash
-pnpm export-fixtures     # or: pnpm --filter @brushjam/server export-fixtures
-```
+`apps/brushjam/fixtures/` was written by the Node server's `export-fixtures`
+script, driving the **real** reference implementation: its
+`validateClientMessage`, `applyClientMessage`, `snapshot`, `fnv1a`/`noiseRGB`
+and `renderStrokes` through a canvas. 45 protocol samples, 27 noise vectors, a
+29-step reducer trace (result *and* full snapshot after every step), 256 noise
+placement cases at fractional layer offsets, and real canvas pixels for five
+strokes.
 
-It runs the **real** Node `validateClientMessage`, `applyClientMessage`,
-`snapshot`, `fnv1a`/`noiseRGB` and `renderStrokes`, and writes
-`apps/brushjam/fixtures/`: 45 protocol samples, 27 noise vectors, a 27-step
-reducer trace (result *and* full snapshot after every step), and 256 noise
-placement cases at fractional layer offsets. `tests/test_fixtures.py` replays
-all of it.
+That server has been deleted, so nothing can regenerate them. This is
+deliberate: keeping them regenerable would have meant keeping the Node reducer
+alive as a library forever, and the thing worth keeping is the record, not the
+generator. They are no longer a parity oracle - they are the behaviour this
+server was built to match, replayed in full by `tests/test_fixtures.py` on
+every run. A change that breaks one is a change to the wire behaviour, and has
+to be argued for rather than re-recorded.
 
-This is the one script that cannot move out of `apps/server`, because its
-dependency *is* the reference implementation. When the Node server is deleted
-the fixtures stop being regenerable and become what they will be from then on:
-a frozen record of the behaviour the Python server was built to match, still
-replayed on every test run. See
-[`docs/RETIRE_NODE_CHECKLIST.md`](RETIRE_NODE_CHECKLIST.md).
+
+## History: retiring the Node server
+
+`apps/server` - the original TypeScript room server, 530 tests - was deleted
+once this one had been through six rounds of adversarial review and the
+cross-language fixtures showed the two agreeing byte for byte.
+
+What went with it, and what replaced it:
+
+| gone | replacement |
+| --- | --- |
+| the room server and its tests | this server, and `apps/brushjam/tests` |
+| `export-fixtures` | nothing: the fixtures are frozen (above) |
+| `quality-grid` (denoise sweep) | nothing. It called `generate()` directly with a fixed seed and a full-white mask, so it could not be a client of a running server. The reports in `docs/experiments/` stay as records |
+| `runpod-smoke` | `pnpm smoke -- --url ...` against a server running `AI_BACKEND=runpod` |
+| root scripts `dev:stream`, `export-fixtures` | - |
+
+Two environment differences for anyone with an old `.env`:
+
+- **`AI_MODE=patch` is gone.** This server implements full-canvas mode only and
+  refuses to boot on `patch`, with a message saying so.
+- `AI_CFG` and `AI_VAE_TILE` are still parsed and validated, but they only
+  reach the ComfyUI backend. They do nothing for `inproc`.
+
+`apps/stream-worker` was **kept**: the `stream` backend talks to it over HTTP,
+which is how a model on another machine is reached, and the in-process backend
+cannot do that by construction. Its pipeline is now a slightly older copy of
+`apps/brushjam/src/brushjam/ai/pipeline.py` (it fuses the LoRA once at load, so
+it serves `fast` only). The right fix, when someone needs it, is to have the
+worker import the pipeline from `apps/brushjam` rather than keep its own.
 
 ## Review
 

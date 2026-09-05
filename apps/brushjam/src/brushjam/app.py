@@ -1,5 +1,5 @@
 """HTTP routes, the WebSocket endpoint and the static client.
-Port of apps/server/src/server.ts.
+Port of the retired Node server's src/server.ts.
 
 One process serves all of it, so a room's frames, its result PNGs and the page
 that draws them all come from the same origin and the same port.
@@ -288,7 +288,7 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> Response:
         # `ok`, `backend` and `rooms` are what the TS tooling reads
-        # (apps/server/scripts/latency.ts). A resident backend adds the fields
+        # (the retired Node server's scripts/latency.ts). A resident backend adds the fields
         # that tooling used to fetch from the stream worker's own /healthz -
         # steps, guidance, vae, model, lora - so there is one place to look.
         body: Dict[str, Any] = {"ok": True, "backend": backend.name, "rooms": registry.size}

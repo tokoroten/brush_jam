@@ -1,7 +1,7 @@
 # brushjam
 
 One Python process: the built web client, the room protocol (HTTP + WebSocket)
-and inference. A port of `apps/server` (Node) plus `apps/stream-worker`, keeping
+and inference. A port of the retired Node server plus `apps/stream-worker`, keeping
 the wire protocol in `packages/shared/src/protocol.ts` byte-for-byte identical.
 
 ```bash

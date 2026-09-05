@@ -1,5 +1,5 @@
 """Header probe and structural validation for uploads. Port of
-apps/server/src/imageInfo.ts.
+the retired Node server's src/imageInfo.ts.
 
 The structural walk exists because a decoder handed a file with a valid header
 and no image data can do something much worse than raise (the Node server saw

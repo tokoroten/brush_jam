@@ -92,7 +92,7 @@ vars and never appeared in any log. Total download time: **60 seconds** for
 (gitignored). The server loads that file at startup, so for normal use:
 
 ```
-AI_BACKEND=runpod pnpm --filter @brushjam/server dev
+AI_BACKEND=runpod pnpm start
 ```
 
 Scripts do **not** read `.env` - the server's `src/index.ts` does. Pass the two
@@ -101,11 +101,9 @@ variables explicitly when driving a script:
 ```bash
 # one live generation, straight through the backend, no server or WebSocket
 RUNPOD_ENDPOINT_ID=srmomg5bp1e2hm RUNPOD_API_KEY=... \
-  pnpm --filter @brushjam/server runpod-smoke --res 768 --profile fast --runs 3
 
 # denoise sweep
 AI_BACKEND=runpod RUNPOD_ENDPOINT_ID=... RUNPOD_API_KEY=... \
-  pnpm --filter @brushjam/server quality-grid --res 768 --drawings a,c \
     --denoise 0.65,0.8 --profile fast
 ```
 
@@ -262,7 +260,7 @@ the Hugging Face `tianweiy/DMD2` file into `/workspace/models/loras`.
   That is the authorised limit, not a recommendation.
 - **ComfyUI caches by prompt hash.** Re-sending a byte-identical workflow returns
   the previous image in ~200 ms without touching the GPU. This silently
-  invalidated a first round of "warm" measurements here; `runpod-smoke.ts` now
+  invalidated a first round of "warm" measurements here; `runpod-smoke.ts` (since deleted with the Node server)
   varies the seed per run for that reason. Anything that benchmarks this backend
   must vary its input.
 - **Not measured:** behaviour under a real cancel (the abort path calls

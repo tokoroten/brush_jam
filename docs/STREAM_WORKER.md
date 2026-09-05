@@ -1,7 +1,8 @@
 # Stream worker — decision record, benchmarks, and wiring instructions
 
-Scope: `apps/stream-worker` (Python) plus `apps/server/src/ai/backends/stream.ts`.
-Written for the agent that owns `apps/server` / `apps/web`: **section 6 is the
+Scope: `apps/stream-worker` (Python) plus the `stream` backend, now
+`apps/brushjam/src/brushjam/ai/backends/stream.py`.
+Written for the agent that owned the room server / `apps/web`: **section 6 is the
 only part you need to act on.**
 
 Hardware this was measured on: Windows 11, RTX 3070 8 GB, driver 591.86,
@@ -368,7 +369,7 @@ levels, so entering the trajectory at 55 % gives it little to do. `AI_DENOISE`
 Recommendation: use **`AI_DENOISE` around 0.75–0.85**, not 0.55.
 
 **This has since been measured** — not by me, and not on this worker, but on the
-same checkpoint through the ComfyUI backend, by the `apps/server` agent's
+same checkpoint through the ComfyUI backend, by the room-server agent's
 quality grid (`docs/experiments/2026-09-05-comfyui/`). Their finding, on a 48-cell
 sweep of four drawings:
 
@@ -396,7 +397,7 @@ Illustrious-class checkpoints.
 ### 4.6 Against a fair baseline: the worker now wins at every size
 
 The right baseline is not ComfyUI at 14 steps, it is ComfyUI running §5's own
-4-step LoRA workflow. Measured by the `apps/server` agent on this box with
+4-step LoRA workflow. Measured by the room-server agent on this box with
 nothing else resident:
 
 | size | ComfyUI 14-step | ComfyUI 4-step (`AI_FAST`) | this worker (`fp16fix`) |
@@ -416,7 +417,7 @@ it lost at two sizes out of three, and an earlier version of this section
 recommended deleting it in favour of `AI_FAST`. The VAE fix (§4.4) reversed
 that. The recommendation is now **keep the worker, default `STREAM_VAE=fp16fix`**.
 
-Two caveats that survive the reversal, both from the `apps/server` agent's
+Two caveats that survive the reversal, both from the room-server agent's
 quality grids and neither addressed by making things faster:
 
 - **Downsampling destroys the noise pen.** At 768 a noise-pen stroke already
@@ -444,7 +445,7 @@ E:\ComfyUI\models\loras\lcm-lora-sdxl.safetensors     (latent-consistency/lcm-lo
 `tianweiy/DMD2`.)
 
 To make the existing ComfyUI backend 4-step, add one node and change `KSampler`.
-Against `buildWorkflow()` in `apps/server/src/ai/backends/comfyui.ts`:
+Against `buildWorkflow()` in the ComfyUI backend (now `apps/brushjam/src/brushjam/ai/backends/comfyui.py`):
 
 **1. Insert a `LoraLoader` as node `12`, between the checkpoint and everything
 that consumes it:**
@@ -491,7 +492,7 @@ Notes:
 - **`steps` is the real step count at any denoise. Do not scale it.** An earlier
   version of this document said to pass `ceil(steps / denoise)`, on the
   assumption that ComfyUI truncates the schedule the way diffusers does. It does
-  not, and the `apps/server` agent caught the error in review. `comfy/samplers.py`
+  not, and the room-server agent caught the error in review. `comfy/samplers.py`
   `KSampler.set_steps` is explicit:
 
   ```python
@@ -519,9 +520,11 @@ Notes:
 - The LoRA is optional per request only if you build two workflows; simplest is
   a config flag (`COMFYUI_LORA=""` → omit node 12 and keep the current values).
 
-## 6. Wiring instructions for `apps/server` (the only thing you need to do)
+## 6. Wiring instructions for the room server (historical)
 
-`apps/server/src/ai/backends/stream.ts` and `apps/server/test/stream.test.ts`
+The `stream` backend and its tests (then TypeScript, now
+`apps/brushjam/src/brushjam/ai/backends/stream.py` and
+`apps/brushjam/tests/test_backends_http.py`)
 are committed and green (8 tests, stubbed `fetch`). **They are deliberately not
 registered** — registration touches files owned by another agent.
 

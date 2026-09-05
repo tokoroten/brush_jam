@@ -1,4 +1,4 @@
-"""Reducer behaviour the Node suites cover (apps/server/test/room*.test.ts)."""
+"""Reducer behaviour the Node suites cover (the retired Node server's test/room*.test.ts)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Authoritative room reducer. Port of apps/server/src/room.ts.
+"""Authoritative room reducer. Port of the retired Node server's src/room.ts.
 
 Room state is plain data; `apply_client_message` is the only thing that changes
 it and returns the frames to send, exactly like the TypeScript reducer. Nothing

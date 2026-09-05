@@ -1,4 +1,4 @@
-"""Hand port of apps/server/src/validate.ts.
+"""Hand port of the retired Node server's src/validate.ts.
 
 The reducer is allowed to assume well-formed input; anything that fails here is
 answered with an `error` frame. Error strings are copied verbatim so a client
