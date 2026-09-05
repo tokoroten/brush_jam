@@ -7,6 +7,8 @@ servers, not between two descriptions of them.
 
 from __future__ import annotations
 
+import math
+
 import json
 import re
 from typing import Any, Dict, List
@@ -195,3 +197,36 @@ def test_noise_hashes_from_the_same_world_pixel_as_the_browser() -> None:
     # If the fixture stopped covering exact .5 sums, the rounding rule would be
     # untested and this would silently pass.
     assert ties > 0, "no case exercises the Math.round / round() difference"
+
+
+def test_a_fractionally_placed_stroke_matches_the_browsers_pixels() -> None:
+    """Not just where the noise starts - what the target actually holds.
+
+    The shared renderer draws its temp canvas at a *fractional* origin, so the
+    canvas resamples it: every interior pixel of a noise stroke is a bilinear
+    blend of neighbouring random values. Compositing at the floored origin put
+    a completely different colour in each one - (227,29,100) where the browser
+    has (166,63,55) - which no origin-only fixture could see. These samples
+    come from a real canvas, so this is the browser's answer, not a restatement
+    of ours.
+    """
+    from brushjam.raster import LayerRaster, render_strokes
+
+    cases: List[Dict[str, Any]] = load_fixture("noise-placement.json")["pixels"]
+    assert cases and all(case["samples"] for case in cases)
+    checked = 0
+    for case in cases:
+        target = LayerRaster(case["bounds"]["width"], case["bounds"]["height"])
+        render_strokes(target, [case["stroke"]], offset_x=case["offsetX"], offset_y=case["offsetY"])
+        alpha8 = case["alpha8"]
+        for sample in case["samples"]:
+            x, y = sample["x"], sample["y"]
+            alpha = target.alpha[y, x]
+            assert round(float(alpha) * 255) == alpha8, (case["stroke"]["id"], x, y, alpha)
+            # The raster is premultiplied; getImageData is not. Half rounds up
+            # here, as it does in the canvas - Python's round() would send an
+            # exact .5 to the nearest even instead.
+            actual = [math.floor(float(v) * 255.0 / alpha8 + 0.5) for v in target.rgb[y, x]]
+            assert actual == sample["rgb"], (case["stroke"]["id"], x, y, actual, sample["rgb"])
+            checked += 1
+    assert checked > 200, checked

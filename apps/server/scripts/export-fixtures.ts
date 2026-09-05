@@ -11,6 +11,7 @@
  * the identical rule on both sides, since neither implementation can be asked
  * to produce the other's random bytes.
  */
+import { createCanvas } from '@napi-rs/canvas';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -271,7 +272,7 @@ function noisePlacementFixture(): unknown {
       }
     }
   }
-  return { cases };
+  return { cases, pixels: noisePixelCases() };
 }
 
 // ----------------------------------------------------------------- reducer
@@ -401,6 +402,65 @@ function reducerFixture(): unknown {
 }
 
 mkdirSync(OUT_DIR, { recursive: true });
+
+/**
+ * Actual pixels, from a real canvas.
+ *
+ * The stub above records where the noise pen starts hashing; it cannot say
+ * what the target ends up holding, and that is where the second half of the
+ * bug lived: the shared renderer draws its temp canvas at a *fractional*
+ * origin, so the canvas resamples it and every interior pixel of a noise
+ * stroke becomes a blend of neighbouring random values. A port that composites
+ * at the floored origin gets a completely different colour in each one.
+ */
+function noisePixelCases(): unknown[] {
+  const bounds = { width: 256, height: 256 };
+  const specs = [
+    { id: 'u:s1', tool: 'noise' as const, width: 40, alpha: 1, points: [{ x: 100, y: 100 }, { x: 160, y: 100 }], offsetX: -0.5, offsetY: 0 },
+    { id: 'u:s2', tool: 'noise' as const, width: 30, alpha: 1, points: [{ x: 60, y: 60 }, { x: 180, y: 150 }], offsetX: 0.25, offsetY: -0.75 },
+    { id: 'u:s3', tool: 'noise' as const, width: 24, alpha: 1, points: [{ x: 40, y: 200 }, { x: 200, y: 190 }], offsetX: 0, offsetY: 0 },
+    { id: 'u:s4', tool: 'pen' as const, color: '#204080', width: 36, alpha: 0.5, points: [{ x: 50, y: 50 }, { x: 200, y: 120 }], offsetX: -0.5, offsetY: 0.5 },
+    { id: 'u:s5', tool: 'pen' as const, color: '#d02010', width: 36, alpha: 1, points: [{ x: 40, y: 120 }, { x: 210, y: 130 }], offsetX: 0.3, offsetY: -0.2 },
+  ];
+
+  const out: unknown[] = [];
+  for (const spec of specs) {
+    const canvas = createCanvas(bounds.width, bounds.height);
+    const ctx = canvas.getContext('2d');
+    const stroke = {
+      id: spec.id,
+      tool: spec.tool,
+      color: (spec as { color?: string }).color ?? '#000000',
+      width: spec.width,
+      alpha: spec.alpha,
+      points: spec.points,
+    };
+    renderStrokes(ctx as never, [stroke as never], {
+      offsetX: spec.offsetX,
+      offsetY: spec.offsetY,
+      bounds,
+      createCanvas: (w: number, h: number) => createCanvas(w, h) as never,
+    });
+    const data = ctx.getImageData(0, 0, bounds.width, bounds.height).data;
+    // Only pixels the stroke covers completely: an antialiased edge is a
+    // coverage difference between two rasterisers, which parity never claimed.
+    // The alpha a fully covered pixel ends up with: a translucent stroke is
+    // composited once, at its own opacity.
+    const solid = Math.round(spec.alpha * 255);
+    const samples: unknown[] = [];
+    for (let y = 0; y < bounds.height; y++) {
+      for (let x = 0; x < bounds.width; x++) {
+        const i = (y * bounds.width + x) * 4;
+        if (data[i + 3] !== solid) continue;
+        if ((y * bounds.width + x) % 97 !== 0) continue;
+        samples.push({ x, y, rgb: [data[i], data[i + 1], data[i + 2]] });
+      }
+    }
+    out.push({ stroke, offsetX: spec.offsetX, offsetY: spec.offsetY, bounds, alpha8: solid, samples });
+  }
+  return out;
+}
+
 const files: [string, unknown][] = [
   ['protocol-samples.json', protocolFixture()],
   ['noise-samples.json', noiseFixture()],

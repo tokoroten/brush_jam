@@ -9,9 +9,16 @@ import pytest
 from PIL import Image
 
 from brushjam.noise import fnv1a, noise_rgb
-from brushjam.raster import AICanvas, build_full_mask, render_crop_input, to_png
+from brushjam.raster import (
+    AICanvas,
+    build_full_mask,
+    forget_images,
+    render_crop_input,
+    to_png,
+)
 from brushjam.room import (
     RenderSnapshot,
+    RoomImage,
     apply_client_message,
     capture_render_snapshot,
     create_room,
@@ -176,3 +183,116 @@ def test_full_mask_is_opaque_and_composites_the_whole_crop() -> None:
     patch = to_png(Image.new("RGB", (64, 64), (10, 20, 30)))
     out = canvas.composite(patch, {"x": 0, "y": 0, "width": 128, "height": 128}, mask.alpha)
     assert _pixels(out)[64, 64].tolist() == [10, 20, 30]
+
+
+# -------------------------------------------------- enlarged reference images
+
+
+def _reference_snapshot(image: Image.Image, scale: float, x: float = 0, y: float = 0):
+    """A snapshot with one reference layer holding `image` at `scale`."""
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    stored = RoomImage(
+        id="img1",
+        mime="image/png",
+        data=buf.getvalue(),
+        width=image.width,
+        height=image.height,
+        created_at=0,
+    )
+    layer = {
+        "id": "L1",
+        "name": "ref",
+        "kind": "reference",
+        "visible": True,
+        "opacity": 1.0,
+        "locked": False,
+        "includeInAI": True,
+        "imageId": "img1",
+        "scale": scale,
+        "x": x,
+        "y": y,
+        "offsetX": 0,
+        "offsetY": 0,
+    }
+    forget_images(["img1"])
+    return RenderSnapshot(
+        revision=1,
+        prompt="",
+        denoise=0.7,
+        negative_prompt="",
+        ai_resolution=256,
+        ai_profile="fast",
+        layers=[layer],
+        strokes=[],
+        undone=set(),
+        images={"img1": stored},
+    )
+
+
+def test_an_enlarged_reference_only_resamples_what_the_crop_can_see(monkeypatch) -> None:
+    """A legal upload must not become an illegal allocation.
+
+    4096x4096 at the accepted scale of 8 is a 32768x32768 image - 16 GiB as
+    float32 RGBA - for a crop that can show a megapixel of it. Nothing that
+    large may ever be asked for, so the resize is intercepted rather than
+    survived.
+    """
+    source = Image.new("RGBA", (4096, 4096), (10, 200, 30, 255))
+    snap = _reference_snapshot(source, scale=8)
+
+    asked: list = []
+    real_resize = Image.Image.resize
+
+    def spy(self, size, *args, **kwargs):
+        asked.append(size)
+        return real_resize(self, size, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "resize", spy)
+    png = render_crop_input(snap, FULL, 256)
+
+    assert asked, "the reference was never resampled"
+    for width, height in asked:
+        assert width * height <= (256 + 64) * (256 + 64), asked
+    pixels = _pixels(png)
+    assert tuple(pixels[128, 128]) == (10, 200, 30)
+
+
+def test_a_reference_fully_outside_the_crop_is_skipped(monkeypatch) -> None:
+    snap = _reference_snapshot(Image.new("RGBA", (64, 64), (255, 0, 0, 255)), scale=4, x=1000, y=1000)
+    monkeypatch.setattr(
+        Image.Image, "resize", lambda *a, **k: pytest.fail("an invisible reference was resampled")
+    )
+    assert (_pixels(render_crop_input(snap, FULL, 256)) == 255).all()
+
+
+@pytest.mark.parametrize("scale,x,y", [(4, -100, -60), (4, 200, 30), (0.5, 10, 10), (3, 0, 0), (8, -700, -700)])
+def test_the_patch_matches_scaling_the_whole_image(scale, x, y) -> None:
+    """The pixels a crop shows must not depend on how much of the image it saw.
+
+    This is the property the filter-support padding buys: resampling only the
+    visible box has to give the same pixels as resampling everything and
+    throwing most of it away, which is what the code used to do.
+    """
+    from brushjam.raster import _reference_patch
+
+    rng = np.random.default_rng(7)
+    source = Image.fromarray(rng.integers(0, 256, (200, 200, 4), dtype=np.uint8), "RGBA")
+    target_w = max(1, round(200 * scale))
+    target_h = max(1, round(200 * scale))
+
+    placed = _reference_patch(source, target_w, target_h, x, y, 256, 256)
+    assert placed is not None
+    patch, left, top = placed
+    whole = np.asarray(source.resize((target_w, target_h), Image.LANCZOS), dtype=np.float32) / 255.0
+    expected = whole[top - y : top - y + patch.shape[0], left - x : left - x + patch.shape[1]]
+    assert patch.shape == expected.shape
+    # Only the part the crop shows has to agree; the padding exists to feed the
+    # filter, not to be drawn, and the compositor clips it.
+    vy0, vx0 = max(0, -top), max(0, -left)
+    vy1, vx1 = min(patch.shape[0], 256 - top), min(patch.shape[1], 256 - left)
+    # Not bit-exact: Pillow derives its filter coefficients from the box, and a
+    # box whose edges are not whole source pixels rounds a few of them
+    # differently. On a random-noise image - the worst case there is - that is
+    # a handful of pixels off by at most 6/255.
+    assert np.abs(patch[vy0:vy1, vx0:vx1] - expected[vy0:vy1, vx0:vx1]).max() * 255 <= 6

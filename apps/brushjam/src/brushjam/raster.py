@@ -179,14 +179,15 @@ def _js_round(v: float) -> int:
 class TempBox(NamedTuple):
     """The temp raster a stroke is drawn into, in target space.
 
-    `left`/`top` are the integral origin the array is sliced at. `logical_left`
-    and `logical_top` are the same origin *unrounded*, which is what the shared
-    renderer keeps and what the noise hash is addressed from - flooring first
-    shifts a fractionally translated noise layer onto the previous world pixel.
+    `left`/`top` are the canvas's own fractional origin: the shared renderer
+    creates its temp canvas here and hands the same number to drawImage.
+    `logical_left`/`logical_top` are kept as the names the noise hash is
+    addressed from, which is this same unrounded origin - rounding it shifts a
+    fractionally translated noise layer onto the previous world pixel.
     """
 
-    left: int
-    top: int
+    left: float
+    top: float
     width: int
     height: int
     logical_left: float
@@ -194,7 +195,11 @@ class TempBox(NamedTuple):
 
 
 def _temp_box(
-    stroke: Stroke, offset_x: float, offset_y: float, bounds: Optional[Dict[str, int]]
+    stroke: Stroke,
+    offset_x: float,
+    offset_y: float,
+    bounds: Optional[Dict[str, int]],
+    integral: bool = False,
 ) -> Optional[TempBox]:
     box = stroke_bounds(stroke)
     left = box["x"] - offset_x
@@ -210,15 +215,22 @@ def _temp_box(
         top = max(-pad, top)
         right = min(bounds["width"] + pad, right)
         bottom = min(bounds["height"] + pad, bottom)
-    # Integral, because the temp raster is composited by array slicing rather
-    # than by a drawImage that accepts a fractional destination.
-    left_i = math.floor(left)
-    top_i = math.floor(top)
-    width = math.ceil(right - left_i)
-    height = math.ceil(bottom - top_i)
+    # Fractional, exactly as the shared renderer's temp canvas is: it is drawn
+    # with a drawImage at this origin, which resamples. Flooring here first
+    # rasterised the shape against a different pixel grid and then composited
+    # it a fraction of a pixel away from where the browser puts it.
+    #
+    # `integral` is for the strokes the shared renderer draws straight onto the
+    # target with no temp canvas at all (an opaque pen or eraser): there is no
+    # drawImage and so no resampling, and the box is only Python's way of
+    # rasterising a shape it composites by slicing.
+    origin_x = math.floor(left) if integral else left
+    origin_y = math.floor(top) if integral else top
+    width = math.ceil(right - origin_x)
+    height = math.ceil(bottom - origin_y)
     if width <= 0 or height <= 0:
         return None
-    return TempBox(left_i, top_i, width, height, left, top)
+    return TempBox(origin_x, origin_y, width, height, left, top)
 
 
 def _rasterise_shape(stroke: Stroke, left: float, top: float, width: int, height: int) -> np.ndarray:
@@ -338,6 +350,63 @@ class LayerRaster:
         self.alpha[y0:y1, x0:x1] *= inv
 
 
+
+def _place(
+    left: float, top: float, cover: np.ndarray, rgb: Optional[np.ndarray] = None
+) -> Tuple[int, int, np.ndarray, Optional[np.ndarray]]:
+    """Move a temp raster from its fractional origin onto the pixel grid.
+
+    `ctx.drawImage(temp, left, top)` with a fractional `left` does not snap:
+    the canvas samples the temp bilinearly, in premultiplied colour, which
+    blends each pixel with its neighbours. For a solid stroke that is a
+    sub-pixel softening nobody would notice, but noise pixels are independent
+    random values, so compositing at `floor(left)` instead put a *completely
+    different* colour in every interior pixel - (227,29,100) where the browser
+    has (166,63,55).
+
+    Destination pixel `k` has its centre at `k + 0.5`, which lands at `k - f`
+    in the temp, so it is `f * temp[k-1] + (1-f) * temp[k]` - one pixel wider
+    than the source in each fractional direction. Outside the temp is
+    transparent, which is what the canvas samples there too, since the temp's
+    own border is transparent (the box is padded by a stroke width).
+    """
+    fx = left - math.floor(left)
+    fy = top - math.floor(top)
+    il, it = math.floor(left), math.floor(top)
+    if fx == 0.0 and fy == 0.0:
+        return il, it, cover, rgb
+
+    def blend(a: np.ndarray) -> np.ndarray:
+        pad_tail = ((0, 0),) * (a.ndim - 2)
+        if fx:
+            prev = np.pad(a, ((0, 0), (1, 0)) + pad_tail)
+            cur = np.pad(a, ((0, 0), (0, 1)) + pad_tail)
+            a = fx * prev + (1.0 - fx) * cur
+        if fy:
+            prev = np.pad(a, ((1, 0), (0, 0)) + pad_tail)
+            cur = np.pad(a, ((0, 1), (0, 0)) + pad_tail)
+            a = fy * prev + (1.0 - fy) * cur
+        return a
+
+    # Premultiplied, like the canvas: blending colour without its alpha would
+    # drag the fully transparent border's colour into the edge pixels.
+    alpha = blend(cover)
+    if rgb is None:
+        return il, it, np.clip(alpha, 0.0, 1.0), None
+    src = np.broadcast_to(rgb, cover.shape + (3,)) if rgb.ndim < 3 else rgb
+    premul = blend(src.astype(np.float32) * cover[:, :, None])
+
+    # The canvas stores 8-bit premultiplied pixels and rounds half up. Skipping
+    # this is a value or two out on every fractionally placed pixel, which is
+    # exactly what a parity fixture compares.
+    alpha8 = np.clip(np.floor(alpha * 255.0 + 0.5), 0.0, 255.0)
+    premul8 = np.clip(np.floor(premul + 0.5), 0.0, 255.0)
+    out_alpha = alpha8 / 255.0
+    safe = np.where(alpha8 > 0, alpha8, 1.0)[:, :, None]
+    out_rgb = np.clip(premul8 * 255.0 / safe, 0.0, 255.0)
+    return il, it, out_alpha.astype(np.float32), out_rgb.astype(np.float32)
+
+
 def render_strokes(
     target: LayerRaster,
     strokes: Sequence[Stroke],
@@ -352,7 +421,13 @@ def render_strokes(
             continue
         if not s["points"]:
             continue
-        box = _temp_box(s, offset_x, offset_y, bounds)
+        # Which strokes the shared renderer puts through a temp canvas, and
+        # therefore through a resampling drawImage: the noise pen always, and
+        # anything translucent (it is flattened so overlaps cannot accumulate).
+        # An opaque pen or eraser is stroked straight onto the target.
+        alpha = alpha_of(s)
+        resampled = s["tool"] == "noise" or alpha < 1
+        box = _temp_box(s, offset_x, offset_y, bounds, integral=not resampled)
         if box is None:
             continue
         left, top, width, height = box.left, box.top, box.width, box.height
@@ -361,9 +436,12 @@ def render_strokes(
         # itself is one mark at one strength. The box is in target space, so
         # its origin in the stroke's own coordinates is offset by `offset`.
         shape = _rasterise_shape(s, left + offset_x, top + offset_y, width, height)
-        alpha = alpha_of(s)
         if s["tool"] == "eraser":
-            target.destination_out(left, top, shape)
+            if resampled:
+                il, it, cover, _ = _place(left, top, shape * alpha)
+                target.destination_out(il, it, cover)
+            else:
+                target.destination_out(int(left), int(top), shape)
             continue
         if s["tool"] == "noise":
             # Seeded by the stroke id and addressed in *world* coordinates, so a
@@ -373,16 +451,71 @@ def render_strokes(
             rgb = _noise_rgb_grid(fnv1a(s["id"]), world_x, world_y, width, height).astype(
                 np.float32
             )
-            target.source_over(left, top, rgb, shape * alpha)
+            il, it, cover, placed = _place(left, top, shape * alpha, rgb)
+            target.source_over(il, it, placed if placed is not None else rgb, cover)
             continue
         colour = np.array(_parse_color(s["color"]), dtype=np.float32)
         rgb = np.broadcast_to(colour, (height, width, 3))
-        target.source_over(left, top, rgb, shape * alpha)
+        if resampled:
+            il, it, cover, placed = _place(left, top, shape * alpha, rgb)
+            target.source_over(il, it, placed if placed is not None else rgb, cover)
+        else:
+            target.source_over(int(left), int(top), rgb, shape * alpha)
 
 
 # --------------------------------------------------------------------------
 # AI input
 # --------------------------------------------------------------------------
+
+
+def _reference_patch(
+    img: Image.Image,
+    target_w: int,
+    target_h: int,
+    left: int,
+    top: int,
+    crop_w: int,
+    crop_h: int,
+) -> Optional[Tuple[np.ndarray, int, int]]:
+    """The part of a scaled reference image the crop can actually see.
+
+    Scaling first and clipping afterwards is what a naive port does, and it is
+    how a legal upload becomes an illegal allocation: a 4096x4096 PNG at the
+    accepted scale of 8 is a 32768x32768 image, 16 GiB as float32 RGBA, for a
+    crop that can show at most a megapixel of it. So the visible rectangle is
+    computed first and only that is resampled, by handing Pillow the matching
+    source box.
+
+    The box is padded by the filter's support so the pixels that survive are
+    identical to the ones a full resize would have produced - without the pad,
+    the edge of the patch would sample a truncated neighbourhood and a crop
+    would change the image it shows.
+    """
+    # Visible region in the scaled image's own pixels.
+    vx0, vy0 = max(0, -left), max(0, -top)
+    vx1, vy1 = min(target_w, crop_w - left), min(target_h, crop_h - top)
+    if vx1 <= vx0 or vy1 <= vy0:
+        return None
+
+    sx = target_w / img.width
+    sy = target_h / img.height
+    # Pillow's filter support is 3 source pixels, stretched by the reduction
+    # factor when downscaling; +1 covers the fractional box edges.
+    pad_x = math.ceil(3 * max(sx, 1.0)) + 1
+    pad_y = math.ceil(3 * max(sy, 1.0)) + 1
+    px0, py0 = max(0, vx0 - pad_x), max(0, vy0 - pad_y)
+    px1, py1 = min(target_w, vx1 + pad_x), min(target_h, vy1 + pad_y)
+
+    if (target_w, target_h) == img.size:
+        patch = img.crop((px0, py0, px1, py1))
+    else:
+        patch = img.resize(
+            (px1 - px0, py1 - py0),
+            Image.LANCZOS,
+            box=(px0 / sx, py0 / sy, px1 / sx, py1 / sy),
+        )
+    arr = np.asarray(patch, dtype=np.float32) / 255.0
+    return arr, left + px0, top + py0
 
 
 def render_crop_input(snapshot: RenderSnapshot, crop: Rect, size: int) -> bytes:
@@ -406,12 +539,12 @@ def render_crop_input(snapshot: RenderSnapshot, crop: Rect, size: int) -> bytes:
             scale = layer.get("scale") or 1
             target_w = max(1, int(round(stored.width * scale)))
             target_h = max(1, int(round(stored.height * scale)))
-            resized = img if (target_w, target_h) == img.size else img.resize(
-                (target_w, target_h), Image.LANCZOS
-            )
-            arr = np.asarray(resized, dtype=np.float32) / 255.0
             left = int(round((layer.get("x") or 0) - crop["x"]))
             top = int(round((layer.get("y") or 0) - crop["y"]))
+            placed = _reference_patch(img, target_w, target_h, left, top, width, height)
+            if placed is None:
+                continue
+            arr, left, top = placed
             raster.source_over(left, top, arr[:, :, :3] * 255.0, arr[:, :, 3])
         else:
             dx = layer.get("offsetX") or 0
