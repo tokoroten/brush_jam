@@ -17,6 +17,11 @@ input[type='text'], input.prompt, input:not([type]) { background: #1d2026; color
 .members { display: flex; gap: 4px; flex-wrap: wrap; }
 .chip { border: 1px solid; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 .prompt { flex: 1 1 16rem; min-width: 12rem; }
+/* The prompt and, under it, the offer of another player's prompt. The wrapper
+   takes the flex sizing the bare input used to have. */
+.prompt-field { flex: 1 1 16rem; min-width: 12rem; display: flex; flex-direction: column; gap: 2px; }
+.prompt-field .prompt { flex: 1 1 auto; width: 100%; box-sizing: border-box; }
+.hint.foreign { background: none; border: none; padding: 0; text-align: left; font-size: 11px; color: #9aa3b0; text-decoration: underline; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prompt:disabled { opacity: 0.45; cursor: not-allowed; }
 .pill { border-radius: 10px; padding: 2px 8px; font-size: 11px; background: #2b2f36; }
 .pill.generating { background: #3d6bd8; }

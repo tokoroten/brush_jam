@@ -72,6 +72,7 @@ import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pasteLimit, pastePlacement } from './paste.js';
 import { RoomClient } from './roomClient.js';
+import { useSharedDraft } from './sharedDraft.js';
 
 export type Tool = 'pen' | 'noise' | 'eraser' | 'move';
 
@@ -131,16 +132,19 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     });
   };
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
-  const [promptDraft, setPromptDraft] = useState('');
-  const [promptDirty, setPromptDirty] = useState(false);
+  // Room-level fields: what is typed here has to survive the round trip to the
+  // server and everyone else's edits in the meantime. See sharedDraft.ts.
+  const promptField = useSharedDraft(client.prompt, (value) => client.send({ t: 'set_prompt', prompt: value }));
   const [copied, setCopied] = useState(false);
   // Read once per render rather than at module scope: jsdom and SSR have no
   // location, and the value has to follow whatever address the page was opened
   // with (a LAN IP, if the invite is to work for anyone else).
   const inviteUrl = typeof location === 'undefined' ? '' : location.href;
   const [advanced, setAdvanced] = useState(false);
-  const [denoiseDraft, setDenoiseDraft] = useState<number | null>(null);
-  const [negativeDraft, setNegativeDraft] = useState<string | null>(null);
+  const denoiseField = useSharedDraft(client.denoise, (value) => client.send({ t: 'set_ai_settings', denoise: value }));
+  const negativeField = useSharedDraft(client.negativePrompt, (value) =>
+    client.send({ t: 'set_ai_settings', negativePrompt: value }),
+  );
 
   const dragRef = useRef<Drag | null>(null);
   /** Image id of a paste we are still waiting for the server to turn into a layer. */
@@ -158,39 +162,6 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   };
   const activeLayer: Layer | undefined =
     layers.find((l) => l.id === activeLayerId) ?? layers.filter((l) => l.kind === 'draw').at(-1) ?? layers.at(-1);
-
-  useEffect(() => {
-    if (!promptDirty) setPromptDraft(client.prompt);
-  }, [client.prompt, promptDirty]);
-
-  useEffect(() => {
-    if (!promptDirty) return;
-    const timer = setTimeout(() => {
-      client.send({ t: 'set_prompt', prompt: promptDraft });
-      setPromptDirty(false);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [promptDraft, promptDirty, client]);
-
-  // Advanced settings are room-level, so they debounce and echo back exactly
-  // like the prompt: a local draft wins until the server confirms it.
-  useEffect(() => {
-    if (denoiseDraft === null) return;
-    const timer = setTimeout(() => {
-      client.send({ t: 'set_ai_settings', denoise: denoiseDraft });
-      setDenoiseDraft(null);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [denoiseDraft, client]);
-
-  useEffect(() => {
-    if (negativeDraft === null) return;
-    const timer = setTimeout(() => {
-      client.send({ t: 'set_ai_settings', negativePrompt: negativeDraft });
-      setNegativeDraft(null);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [negativeDraft, client]);
 
   // The server assigns the layer id, so selection has to wait for the echo.
   useEffect(() => {
@@ -510,15 +481,26 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             </span>
           ))}
         </div>
-        <input
-          className="prompt"
-          value={promptDraft}
-          placeholder="room prompt, e.g. anime style, fantasy town"
-          onChange={(e) => {
-            setPromptDraft(e.target.value);
-            setPromptDirty(true);
-          }}
-        />
+        <div className="prompt-field">
+          <input
+            className="prompt"
+            value={promptField.value}
+            placeholder="room prompt, e.g. anime style, fantasy town"
+            onChange={(e) => promptField.set(e.target.value)}
+            onFocus={promptField.onFocus}
+            onBlur={promptField.onBlur}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') promptField.flush();
+            }}
+          />
+          {promptField.foreign === null ? null : (
+            // Someone else changed the room prompt while this one was being
+            // typed. Their value is offered, never applied over the cursor.
+            <button className="hint foreign" onClick={promptField.adopt}>
+              prompt changed by another player: {promptField.foreign || '(empty)'}
+            </button>
+          )}
+        </div>
         <div className="segmented" title={profileHint}>
           {AI_PROFILES.map((p) => {
             const supported = client.aiProfiles.includes(p);
@@ -540,20 +522,31 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           advanced
         </button>
         <span className={`pill ${client.aiState}`}>{statusText}</span>
-        <span className={`pill ${client.connected ? 'idle' : 'error'}`}>{client.connected ? 'online' : 'offline'}</span>
+        {client.superseded ? (
+          // Not "offline": nothing is wrong with the network, this room is
+          // open in another tab. Reconnecting is a deliberate act, because it
+          // takes the room back from that tab.
+          <button className="pill error" title="this room is open in another tab" onClick={() => client.connect()}>
+            opened in another tab - reconnect
+          </button>
+        ) : (
+          <span className={`pill ${client.connected ? 'idle' : 'error'}`}>{client.connected ? 'online' : 'offline'}</span>
+        )}
       </header>
 
       {advanced ? (
         <div className="tools">
           <label>
-            denoise {Math.min(denoiseDraft ?? client.denoise, client.maxDenoise).toFixed(2)}
+            denoise {Math.min(denoiseField.value, client.maxDenoise).toFixed(2)}
             <input
               type="range"
               min={MIN_DENOISE}
               max={client.maxDenoise}
               step={DENOISE_STEP}
-              value={Math.min(denoiseDraft ?? client.denoise, client.maxDenoise)}
-              onChange={(e) => setDenoiseDraft(Number(e.target.value))}
+              value={Math.min(denoiseField.value, client.maxDenoise)}
+              onChange={(e) => denoiseField.set(Number(e.target.value))}
+              onPointerUp={denoiseField.flush}
+              onBlur={denoiseField.onBlur}
             />
           </label>
           {client.aiResolutionAdjustable ? (
@@ -576,13 +569,23 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           ) : null}
           <input
             className="prompt"
-            value={negativeDraft ?? client.negativePrompt}
+            value={negativeField.value}
             maxLength={MAX_NEGATIVE_PROMPT}
             placeholder={DEFAULT_NEGATIVE_PROMPT}
             disabled={!client.negativePromptActive}
             title={client.negativePromptActive ? undefined : NEGATIVE_INACTIVE_HINT}
-            onChange={(e) => setNegativeDraft(e.target.value)}
+            onChange={(e) => negativeField.set(e.target.value)}
+            onFocus={negativeField.onFocus}
+            onBlur={negativeField.onBlur}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') negativeField.flush();
+            }}
           />
+          {negativeField.foreign === null ? null : (
+            <button className="hint foreign" onClick={negativeField.adopt}>
+              negative prompt changed by another player: {negativeField.foreign || '(empty)'}
+            </button>
+          )}
           {client.negativePromptActive ? null : <span className="hint">{NEGATIVE_INACTIVE_HINT}</span>}
         </div>
       ) : null}
