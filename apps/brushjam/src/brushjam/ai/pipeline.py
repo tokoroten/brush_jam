@@ -288,6 +288,13 @@ class InprocPipeline:
         #: unchanged profile costs nothing.
         self._profile: Optional[str] = None
         self._has_lora = False
+        #: Whether the fast adapter is currently merged into the UNet weights.
+        self._fused = False
+        #: Set once if this diffusers build cannot fuse, so the fallback is
+        #: reported rather than silently costing a per-step tax forever.
+        self._fuse_unavailable = False
+        #: Cost of the last profile switch, surfaced in the run's timings.
+        self._last_switch_ms = 0.0
 
     # ---------------------------------------------------------------- loading
     def load(self) -> None:
@@ -394,25 +401,85 @@ class InprocPipeline:
     def _select_profile(self, profile: str) -> float:
         """Point the resident model at one profile's scheduler and LoRA state.
 
-        Returns the guidance scale for it. Cheap and idempotent: swapping a
-        scheduler object and toggling adapters is milliseconds, which is what
-        makes a per-request choice reasonable at all.
+        Returns the guidance scale for it. Idempotent: an unchanged profile
+        costs nothing, which is what makes a per-request choice reasonable.
+
+        The LoRA is **fused into the UNet weights** for `fast` and unfused for
+        `quality`, rather than left attached and toggled. An attached PEFT
+        adapter runs its own matmuls on every Linear on every step; the worker
+        this was ported from fused once at load and paid none of that
+        (`apps/stream-worker/src/stream_worker/pipeline.py`). Fusing is a
+        weight operation on weights that are already resident, so the adapter
+        stays loaded and switching never touches the disk.
         """
         if profile not in ("fast", "quality"):
             profile = "quality"
-        if self._profile != profile:
-            scheduler = self._schedulers.get(profile)
-            if scheduler is not None:
-                self.pipe.scheduler = scheduler
-            if self._has_lora:
-                if profile == "fast":
+        if self._profile == profile:
+            self._last_switch_ms = 0.0
+            return self.settings.guidance_for(profile)
+
+        t0 = time.perf_counter()
+        scheduler = self._schedulers.get(profile)
+        if scheduler is not None:
+            self.pipe.scheduler = scheduler
+        if self._has_lora:
+            self._set_lora(profile == "fast")
+        self._last_switch_ms = (time.perf_counter() - t0) * 1000.0
+        self._profile = profile
+        log.info(
+            "profile -> %s (lora %s) in %.0f ms",
+            profile,
+            self._lora_state(),
+            self._last_switch_ms,
+        )
+        return self.settings.guidance_for(profile)
+
+    def _lora_state(self) -> str:
+        if not self._has_lora:
+            return "none"
+        if self._fused:
+            return "fused"
+        return "attached" if self._profile == "fast" else "off"
+
+    def _set_lora(self, on: bool) -> None:
+        """Merge the adapter into the base weights, or take it back out.
+
+        The two must stay consistent: PEFT's own forward *unmerges* a merged
+        layer as soon as adapters are disabled, so `disable_lora()` while fused
+        would quietly undo the fuse on the first step. Enable-then-fuse, and
+        unfuse-then-disable.
+        """
+        if not self._fuse_unavailable:
+            try:
+                if on:
                     self.pipe.enable_lora()
                     self.pipe.set_adapters(["fast"], adapter_weights=[1.0])
+                    if not self._fused:
+                        # Only the UNet: this LoRA has no text-encoder keys, and
+                        # the text encoders are parked in system RAM anyway.
+                        self.pipe.fuse_lora(
+                            components=["unet"], adapter_names=["fast"], lora_scale=1.0
+                        )
+                        self._fused = True
                 else:
+                    if self._fused:
+                        self.pipe.unfuse_lora(components=["unet"])
+                        self._fused = False
                     self.pipe.disable_lora()
-            log.info("profile -> %s (lora %s)", profile, "on" if profile == "fast" else "off")
-            self._profile = profile
-        return self.settings.guidance_for(profile)
+                return
+            except Exception:  # noqa: BLE001
+                # A build without fuse support, or a fuse that refused. Fall
+                # back to the attached adapter, which is correct but pays the
+                # per-step cost.
+                log.warning("fuse_lora unavailable, falling back to an attached adapter", exc_info=True)
+                self._fuse_unavailable = True
+                self._fused = False
+
+        if on:
+            self.pipe.enable_lora()
+            self.pipe.set_adapters(["fast"], adapter_weights=[1.0])
+        else:
+            self.pipe.disable_lora()
 
     def warmup(self, size: int) -> None:
         """One throwaway generation so CUDA kernels and autotuning are paid for."""
@@ -504,6 +571,8 @@ class InprocPipeline:
             guidance = self._select_profile(profile)
             timings["profile_fast"] = 1.0 if profile == "fast" else 0.0
             timings["guidance"] = guidance
+            timings["profile_switch_ms"] = round(self._last_switch_ms, 2)
+            timings["lora_fused"] = 1.0 if self._fused else 0.0
 
             t = time.perf_counter()
             cfg_on = guidance > 1.0
@@ -617,6 +686,7 @@ class InprocPipeline:
         self.pipe = None
         self.warm = False
         self._profile = None
+        self._fused = False
         self._embed_cache.clear()
         if self._torch is not None:
             import gc

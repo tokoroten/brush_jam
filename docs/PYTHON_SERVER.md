@@ -53,12 +53,28 @@ One resident checkpoint serves both room profiles, switched **per request**:
 | `fast` | DMD2 4-step, attached | `LCMScheduler` | 4 | 1.0 | inert (no CFG branch) |
 | `quality` | detached | `EulerAncestralDiscreteScheduler` | 14 | 5.5 | active |
 
-The LoRA is **attached, not fused**. Fusing was right for a fast-only worker -
-no per-step PEFT overhead, no second copy of the deltas - but it cannot be
-undone cheaply, which is exactly what made a quality profile impossible there.
-Switching is `enable_lora()` + `set_adapters(["fast"])` or `disable_lora()`
-plus a scheduler swap: milliseconds, which is what makes a per-request choice
-reasonable at all.
+The LoRA stays **loaded** and is **fused and unfused per profile**. The worker
+this was ported from fused once at load and dropped the adapter, so it paid no
+per-step cost and could never offer a quality profile. Leaving the adapter
+merely attached is the opposite mistake: PEFT then runs its own matmuls on
+every Linear on every step, which measured as roughly a doubling of `fast` at
+768. So: `fuse_lora(components=["unet"], adapter_names=["fast"])` for `fast`,
+`unfuse_lora(components=["unet"])` for `quality`. The weights are already
+resident, so a switch is a weight operation, never a disk load.
+
+Order matters and is not interchangeable: PEFT's forward *unmerges* a merged
+layer as soon as adapters are disabled, so it is enable-then-fuse going in and
+unfuse-then-disable coming out. A build that cannot fuse falls back to the
+attached adapter and says so in the log. `/healthz` reports `lora_fused`, and
+each run's timings carry `profile_switch_ms`.
+
+Unfusing has to give the quality profile its model back. PEFT merges by adding
+`B @ A * scale` and unmerges by subtracting the same product, so the only
+question is fp16 rounding: on a 1280x1280 projection at rank 64 the residual
+after a cycle is under 0.1% of the change the fuse made, and ten cycles do not
+drift (`tests/test_inproc.py`). `scripts/verify_unfuse.py` checks the same
+thing end to end on the real model, comparing a quality render before any fuse
+against one after a fuse/unfuse cycle at the same seed.
 
 Everything else is kept as the worker measured it:
 

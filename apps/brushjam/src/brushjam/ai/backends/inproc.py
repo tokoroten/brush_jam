@@ -126,6 +126,9 @@ class InprocBackend:
             "steps": s.fast_steps if profile != "quality" else s.quality_steps,
             "guidance": s.guidance_for(profile or "fast"),
             "lora": s.lora,
+            # Whether the fast adapter is merged into the UNet weights right
+            # now, which is the difference between ~2 s and ~4 s at 768.
+            "lora_fused": bool(getattr(self.pipeline, "_fused", False)),
             "vae": s.vae,
             "profile": profile,
             "negative_prompt_active": s.negative_prompt_active(),

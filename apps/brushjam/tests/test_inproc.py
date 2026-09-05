@@ -118,6 +118,7 @@ class FakePipe:
         self.scheduler: Any = "initial"
         self.calls: List[str] = []
         self.adapters: List[str] = []
+        self.fused = False
 
     def enable_lora(self) -> None:
         self.calls.append("enable_lora")
@@ -129,31 +130,88 @@ class FakePipe:
         self.calls.append(f"set_adapters:{','.join(names)}")
         self.adapters = list(names)
 
+    def fuse_lora(self, components=None, adapter_names=None, lora_scale=1.0) -> None:
+        self.calls.append(f"fuse_lora:{','.join(components or [])}:{lora_scale}")
+        self.fused = True
 
-def a_pipeline() -> InprocPipeline:
+    def unfuse_lora(self, components=None) -> None:
+        self.calls.append(f"unfuse_lora:{','.join(components or [])}")
+        self.fused = False
+
+
+class NoFusePipe(FakePipe):
+    """A build whose fuse_lora refuses - the fallback must still be correct."""
+
+    def fuse_lora(self, components=None, adapter_names=None, lora_scale=1.0) -> None:
+        raise RuntimeError("this build cannot fuse")
+
+
+def a_pipeline(pipe: Any = None) -> InprocPipeline:
     pipeline = InprocPipeline(settings())
-    pipeline.pipe = FakePipe()
+    pipeline.pipe = pipe or FakePipe()
     pipeline._schedulers = {"fast": "LCMScheduler", "quality": "EulerAncestralDiscreteScheduler"}
     pipeline._has_lora = True
     return pipeline
 
 
-def test_switching_profile_attaches_and_detaches_the_lora() -> None:
+def test_switching_profile_fuses_and_unfuses_the_lora() -> None:
     pipeline = a_pipeline()
     pipe = pipeline.pipe
 
     assert pipeline._select_profile("fast") == 1.0  # DMD2 is guidance-distilled
     assert pipe.scheduler == "LCMScheduler"
-    assert pipe.calls == ["enable_lora", "set_adapters:fast"]
+    # Enable BEFORE fusing: PEFT unmerges a merged layer the moment adapters
+    # are disabled, so the two must not be reordered.
+    assert pipe.calls == ["enable_lora", "set_adapters:fast", "fuse_lora:unet:1.0"]
+    assert pipe.fused is True and pipeline._fused is True
 
     assert pipeline._select_profile("quality") == 5.5
     assert pipe.scheduler == "EulerAncestralDiscreteScheduler"
-    assert pipe.calls[-1] == "disable_lora"
+    # ...and unfuse BEFORE disabling, for the same reason.
+    assert pipe.calls[-2:] == ["unfuse_lora:unet", "disable_lora"]
+    assert pipe.fused is False and pipeline._fused is False
 
     # Idempotent: staying on a profile costs nothing.
     before = list(pipe.calls)
     pipeline._select_profile("quality")
     assert pipe.calls == before
+
+
+def test_the_adapter_is_never_fused_twice() -> None:
+    pipeline = a_pipeline()
+    pipe = pipeline.pipe
+    pipeline._select_profile("fast")
+    pipeline._select_profile("quality")
+    pipeline._select_profile("fast")
+    assert pipe.calls.count("fuse_lora:unet:1.0") == 2
+    assert pipe.calls.count("unfuse_lora:unet") == 1
+    # The adapter is never reloaded: switching is a weight operation on weights
+    # that are already resident.
+    assert pipe.adapters == ["fast"]
+
+
+def test_a_build_that_cannot_fuse_falls_back_to_the_attached_adapter() -> None:
+    pipeline = a_pipeline(NoFusePipe())
+    pipe = pipeline.pipe
+
+    pipeline._select_profile("fast")
+    assert pipeline._fuse_unavailable is True
+    assert pipeline._fused is False
+    assert pipe.calls[-1] == "set_adapters:fast"
+
+    pipeline._select_profile("quality")
+    # No unfuse: nothing was ever merged, and unfusing would be a lie.
+    assert "unfuse_lora:unet" not in pipe.calls
+    assert pipe.calls[-1] == "disable_lora"
+
+
+def test_the_switch_cost_is_recorded_and_zero_when_nothing_changes() -> None:
+    pipeline = a_pipeline()
+    pipeline._select_profile("fast")
+    assert pipeline._last_switch_ms >= 0.0
+    pipeline._last_switch_ms = 12.0
+    pipeline._select_profile("fast")
+    assert pipeline._last_switch_ms == 0.0
 
 
 def test_the_lcm_lora_wants_a_little_guidance_and_dmd2_wants_none() -> None:
@@ -249,3 +307,51 @@ def test_status_publishes_what_the_tooling_reads() -> None:
         assert key in status, key
     assert status["max_size"] == 1024
     assert status["lora"] == "dmd2"
+
+
+def test_unfusing_restores_the_base_weights_in_fp16() -> None:
+    """The whole fuse/unfuse design rests on unfuse being lossless enough.
+
+    PEFT merges by adding `B @ A * scale` to the base weight and unmerges by
+    subtracting the same product, so the only question is fp16 rounding. This
+    checks it on a layer the size of an SDXL attention projection, at a LoRA
+    rank and magnitude in the range a 4-step distillation LoRA actually uses,
+    and checks that repeated switching does not drift.
+    """
+    torch = pytest.importorskip("torch")
+    peft = pytest.importorskip("peft")
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential()
+    model.add_module("to_q", torch.nn.Linear(1280, 1280, bias=False))
+    model = model.half()
+    original = model.to_q.weight.detach().clone()
+
+    wrapped = get_peft_model(
+        model, LoraConfig(r=64, lora_alpha=64, target_modules=["to_q"], lora_dropout=0.0)
+    )
+    layer = wrapped.base_model.model.to_q
+    with torch.no_grad():
+        layer.lora_A["default"].weight.normal_(0, 0.02)
+        layer.lora_B["default"].weight.normal_(0, 0.02)
+    layer.half()
+
+    layer.merge()
+    fused = layer.base_layer.weight.detach().clone()
+    applied = (fused.float() - original.float()).abs().max().item()
+    assert applied > 1e-3, "the fixture LoRA must actually change the weights"
+
+    layer.unmerge()
+    residual = (layer.base_layer.weight.float() - original.float()).abs().max().item()
+    # Under a thousandth of the change the fuse made: far below fp16's own
+    # representable step at these magnitudes.
+    assert residual < applied / 100
+
+    for _ in range(9):
+        layer.merge()
+        layer.unmerge()
+    drifted = (layer.base_layer.weight.float() - original.float()).abs().max().item()
+    # Each cycle subtracts the same product it added, so the error does not
+    # accumulate across a session's worth of profile switches.
+    assert drifted <= residual * 2
