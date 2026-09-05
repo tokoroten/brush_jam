@@ -135,12 +135,25 @@ to bound that would shrink an ordinary session to a fraction of the budget.
 is cancelled with reason `quota` rather than committed, and deleting or
 clearing a layer gives the budget back.
 
+Both budgets count strokes still being drawn, not only committed ones: four
+50,000-point strokes each from sixteen members is 3.2 million point dicts that
+a commit-time check would never see, so points are charged as they arrive and
+released when the stroke ends, is cancelled, is abandoned, or its author or
+layer goes away.
+
+Upload bodies have their own admission - one per address, four at a time,
+48 MiB in flight - taken before a byte is read, because the body is in memory
+before the room limiter or the image store gets a say.
+
 Every path that can bring a room into existence - the POST, an upload to an
 unknown id, and a link nobody has opened yet - goes through one rate-limited
 `create_named`; `get` is the lookup that creates nothing. Socket capacity is
 one synchronous reservation taken before the handshake's first await, so
-concurrent connections cannot all pass the same check, and a reconnect that
-replaces a socket already in the room needs no free slot.
+concurrent connections cannot all pass the same check. A reconnect does not
+take a second slot and does not skip the check either: it takes over the exact
+lease held by the socket it replaces, so the counters never move and the old
+route's release finds nothing to give back. A room is never swept while a
+handshake holds a slot in it.
 
 One more thing is process-wide rather than per-room: **generation admission**.
 Every room shares one FIFO slot, acquired *before* rasterising, so N active

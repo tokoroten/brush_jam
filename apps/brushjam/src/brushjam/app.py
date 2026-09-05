@@ -123,6 +123,11 @@ class SocketConnection:
         self._open = False
         self._queue.put_nowait(None)
 
+    def discard_held(self) -> None:
+        """Drop what was buffered for a join that is not going to happen."""
+        self._buffered -= sum(len(item) for item in self._buffer)
+        self._buffer = []
+
     def revoke(self) -> None:
         """Cut this socket off *now*, without draining what is queued.
 
@@ -326,24 +331,40 @@ def create_app(
         declared = request.headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
             return JSONResponse({"error": "image too large"}, status_code=413)
-        body = bytearray()
-        async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > MAX_IMAGE_BYTES:
-                return JSONResponse({"error": "image too large"}, status_code=413)
-        # An upload to an id nobody has opened yet creates the room, so it is
-        # rate limited exactly like a POST to /api/rooms.
-        target = registry.get_or_create(room_id, _client_of(request))
-        if target is None:
+        # Admission BEFORE the body is read: a 12 MiB bytearray is accumulated
+        # here before the room limiter or the image store has any say, so this
+        # is what bounds a spike from modest unauthenticated concurrency. The
+        # reservation is for the largest the body may be, because
+        # content-length is optional and not to be trusted.
+        client = _client_of(request)
+        slot = registry.uploads.acquire(client, MAX_IMAGE_BYTES)  # == MAX_IMAGE_BYTES_PER_SLOT
+        if slot is None:
             return JSONResponse(
-                {"error": "no room right now; too many rooms, or too many from here"},
+                {"error": "too many uploads in flight; try again shortly"},
                 status_code=429,
-                headers={"retry-after": "60"},
+                headers={"retry-after": "5"},
             )
-        stored = await target.add_image(bytes(body), mime)
-        if "error" in stored:
-            return JSONResponse(stored, status_code=400)
-        return JSONResponse(stored)
+        try:
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_IMAGE_BYTES:
+                    return JSONResponse({"error": "image too large"}, status_code=413)
+            # An upload to an id nobody has opened yet creates the room, so it
+            # is rate limited exactly like a POST to /api/rooms.
+            target = registry.get_or_create(room_id, client)
+            if target is None:
+                return JSONResponse(
+                    {"error": "no room right now; too many rooms, or too many from here"},
+                    status_code=429,
+                    headers={"retry-after": "60"},
+                )
+            stored = await target.add_image(bytes(body), mime)
+            if "error" in stored:
+                return JSONResponse(stored, status_code=400)
+            return JSONResponse(stored)
+        finally:
+            slot.release()
 
     @app.get("/rooms/{room_id}/images/{image_id}")
     async def get_image(room_id: str, image_id: str) -> Response:
@@ -380,9 +401,9 @@ def create_app(
 
         # One synchronous check-and-take, before the first await: two
         # handshakes that both passed a check before either incremented would
-        # both be admitted. A reconnect that replaces a socket already here
-        # needs no slot.
-        reservation = registry.reserve_socket(room, resume=room.resumes_existing_socket(token))
+        # both be admitted. A reconnect takes over the lease of the socket it
+        # replaces rather than opening a second one.
+        reservation = registry.reserve_socket(room, token)
         if reservation is None:
             await socket.accept()
             await socket.close(code=1013, reason=registry.can_accept_socket(room) or "full")
@@ -394,7 +415,7 @@ def create_app(
             await socket.accept()
             connection = SocketConnection(socket)
             user_id = await room.join_async(
-                connection, socket.query_params.get("name") or "", token
+                connection, socket.query_params.get("name") or "", token, reservation
             )
             while True:
                 data = await socket.receive_text()

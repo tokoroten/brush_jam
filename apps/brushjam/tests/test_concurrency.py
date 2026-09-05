@@ -292,3 +292,32 @@ def test_an_image_forgotten_mid_decode_is_not_inserted_afterwards() -> None:
     assert len(result) == 1 and result[0].size == (48, 48)
     # ...but nothing unreferenced was left behind in the cache.
     assert decoded_cache_stats() == before
+
+
+async def test_settling_survives_being_cancelled_more_than_once() -> None:
+    """A shutdown arriving behind a watchdog must not abandon the wait."""
+    from brushjam.settle import settle_future
+
+    done = threading.Event()
+    finished: List[str] = []
+
+    def work() -> str:
+        done.wait(2.0)
+        finished.append("done")
+        return "done"
+
+    future = asyncio.ensure_future(asyncio.to_thread(work))
+    waiter = asyncio.ensure_future(settle_future(future))
+    await asyncio.sleep(0.05)
+
+    waiter.cancel()
+    await asyncio.sleep(0.01)
+    waiter.cancel()  # the second one used to abandon the settlement
+    await asyncio.sleep(0.01)
+    assert not waiter.done(), "gave up while the thread was still running"
+
+    done.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert finished == ["done"]
+    assert future.done()

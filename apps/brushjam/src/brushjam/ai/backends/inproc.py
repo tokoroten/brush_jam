@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 from PIL import Image
 
 from ...raster import to_png
+from ...settle import settle_future, settled
 from ..pipeline import (
     DryRunPipeline,
     GenerationCancelled,
@@ -76,10 +77,19 @@ class InprocBackend:
             if self._loaded:
                 return
             loop = asyncio.get_running_loop()
-            try:
-                await loop.run_in_executor(self._executor, self.pipeline.load)
+
+            def run_load() -> None:
+                # The flags are set on the thread, not by the awaiting task:
+                # a load cancelled at the await still finishes, and a retry
+                # that found `_loaded` false would load the model twice.
+                self.pipeline.load()
                 self._loaded = True
                 self._error = None
+
+            try:
+                await settle_future(loop.run_in_executor(self._executor, run_load))
+            except asyncio.CancelledError:
+                raise
             except Exception as err:  # noqa: BLE001
                 self._error = f"{type(err).__name__}: {err}"
                 log.exception("model load failed")
@@ -165,7 +175,12 @@ class InprocBackend:
         # device lock, so anything done there delays the next request's
         # diffusion for no reason.
         t = time.perf_counter()
-        image, mask = await asyncio.to_thread(_decode_inputs, req.image_png, req.mask_png)
+        # Settled, not merely awaited: a cancellation here would otherwise
+        # return while a decode thread is still running, and the scheduler
+        # would hand its admission slot to a room that starts more of the same.
+        image, mask = await settled(
+            asyncio.to_thread(_decode_inputs, req.image_png, req.mask_png)
+        )
         decode_in_ms = (time.perf_counter() - t) * 1000.0
         # Clamped to max_denoise, not to 1.0: above it the model stops
         # reinterpreting the drawing and starts replacing it.
@@ -211,7 +226,9 @@ class InprocBackend:
             # queued behind work nobody is waiting for.
             self._cancelled.add(request_id)
             with suppress(BaseException):
-                await asyncio.shield(future)
+                # Loops through repeated cancellation: a shutdown arriving
+                # behind the watchdog must not abandon the wait.
+                await settle_future(future)
             raise
         except GenerationCancelled as err:
             raise asyncio.CancelledError() from err
@@ -220,7 +237,7 @@ class InprocBackend:
         # `compress_level=1` on purpose: this PNG exists only to hand the image
         # to the compositor in the same process. Level 6 costs ~5x the CPU for
         # bytes nobody transmits.
-        out = await asyncio.to_thread(to_png, result.image, 1)
+        out = await settled(asyncio.to_thread(to_png, result.image, 1))
         encode_out_ms = (time.perf_counter() - t) * 1000.0
 
         timings = dict(result.timings)

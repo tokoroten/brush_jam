@@ -8,6 +8,7 @@ pipeline, which honours the same contract (including cancellation).
 from __future__ import annotations
 
 import asyncio
+import threading
 import io
 from typing import Any, Dict, List
 
@@ -355,3 +356,34 @@ def test_unfusing_restores_the_base_weights_in_fp16() -> None:
     # Each cycle subtracts the same product it added, so the error does not
     # accumulate across a session's worth of profile switches.
     assert drifted <= residual * 2
+
+
+async def test_a_cancelled_load_still_finishes_and_is_not_repeated() -> None:
+    """Cancelling the awaiting task does not stop the thread.
+
+    If `_loaded` were set by the awaiting task rather than on the thread, the
+    retry would find it false and load the model - tens of seconds and several
+    gigabytes - a second time.
+    """
+    loads = []
+    started = threading.Event()
+    proceed = threading.Event()
+
+    class SlowLoad(DryRunPipeline):
+        def load(self) -> None:
+            started.set()
+            proceed.wait(3.0)
+            loads.append(1)
+            super().load()
+
+    backend = InprocBackend(settings(), pipeline=SlowLoad(settings()))
+    first = asyncio.ensure_future(backend.load())
+    await asyncio.get_running_loop().run_in_executor(None, started.wait, 3.0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    # The thread is still going; it finishes on its own.
+    proceed.set()
+    await backend.load()
+    assert loads == [1], "the model was loaded twice"
+    assert backend.loaded is True

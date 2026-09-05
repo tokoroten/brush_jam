@@ -16,11 +16,12 @@ import logging
 import random
 import re
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from .constants import CANVAS_SIZE, DEFAULT_NEGATIVE_PROMPT
+from .settle import settled as _settled
 from .ai.backends import AIBackend, BackendHttpError, GenerateRequest
 from .geometry import Rect
 from .protocol import Message
@@ -459,26 +460,6 @@ class AIScheduler:
             return
         if self._pending or self._changed:
             self._schedule(delay_ms)
-
-
-async def _settled(awaitable: Awaitable[Any]) -> Any:
-    """Await, and if we are cancelled, wait for the work to actually stop.
-
-    Dropping the caller does not stop a thread. Returning while the executor
-    is still busy would release the admission slot to a room that then
-    rasterises and starts its own watchdog while queued behind work nobody is
-    waiting for - which is what admission exists to prevent.
-
-    Only for work that genuinely cannot be interrupted: anything cancellable
-    should just be cancelled.
-    """
-    task = asyncio.ensure_future(awaitable)
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        with suppress(BaseException):
-            await asyncio.shield(task)
-        raise
 
 
 @asynccontextmanager

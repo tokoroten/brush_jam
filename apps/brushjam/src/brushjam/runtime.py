@@ -49,6 +49,15 @@ MAX_ROOMS = 64
 MAX_BUFFERED_BYTES = 8 * 1024 * 1024
 #: Rate-limit buckets held at once. Address cardinality is not ours to choose.
 MAX_RATE_BUCKETS = 4096
+#: Uploads whose bodies may be in memory at once, process-wide, and the bytes
+#: they may hold between them. An upload body is read into a bytearray before
+#: any room, image or socket limit has a say, so this is the only thing
+#: standing between modest concurrency and a large transient spike.
+MAX_CONCURRENT_UPLOADS = 4
+MAX_UPLOAD_BYTES_IN_FLIGHT = 48 * 1024 * 1024
+#: What one upload is charged. content-length is optional and not to be
+#: trusted, so a slot reserves the largest body the route will accept.
+MAX_IMAGE_BYTES_PER_SLOT = 12 * 1024 * 1024
 MAX_IMAGES_PER_ROOM = 32
 #: An uploaded image gets this long to become a layer before it is swept.
 IMAGE_GRACE_MS = 2 * 60_000
@@ -120,6 +129,9 @@ class RoomRuntime:
         #: await, released in the route's finally - so this, not the member
         #: count, is what the room cap is about.
         self.reserved_sockets = 0
+        #: The lease each joined member's socket holds, so a reconnect can take
+        #: over the one it replaces rather than opening a second.
+        self._leases: "Dict[str, Any]" = {}
         self._patches: "Dict[str, bytes]" = {}
         self._image_bytes = 0
         #: Uploads past their limit check but still decoding, so they count too.
@@ -230,7 +242,13 @@ class RoomRuntime:
 
     # -- membership -------------------------------------------------------
 
-    def _begin_join(self, socket: Connection, name: str, token: Optional[str]) -> Tuple[str, Message]:
+    def _begin_join(
+        self,
+        socket: Connection,
+        name: str,
+        token: Optional[str],
+        lease: Optional[Any] = None,
+    ) -> Tuple[str, Message]:
         """Membership, the connection mapping and the snapshot, all in one
         synchronous step.
 
@@ -248,6 +266,10 @@ class RoomRuntime:
         previous = self._sockets.get(user_id)
         # Install first, revoke second.
         self._sockets[user_id] = socket
+        if lease is not None:
+            self._leases[user_id] = lease
+        else:
+            self._leases.pop(user_id, None)
         if previous is not None and previous is not socket:
             # Same identity resumed while the old socket still looked alive: the
             # newest wins, and the old one loses its identity synchronously.
@@ -287,36 +309,29 @@ class RoomRuntime:
             # Superseded again while its snapshot was being serialised. The
             # newer connection owns the identity; this one is already revoked.
             return user_id
-        if len(data) > MAX_BUFFERED_BYTES:
-            # One frame already over the slow-client cap. Queueing it would put
-            # the room past a limit that exists to bound exactly this.
+        self.ever_joined = True
+        if not socket.open:
+            return user_id
+        if socket.buffered_bytes + len(data) > MAX_BUFFERED_BYTES:
+            # Snapshot plus everything held while it was being built: they are
+            # released together, so they have to fit together. Revoking rather
+            # than closing discards the held buffer too - there is no point
+            # keeping frames for a connection that never got its snapshot.
             log.warning(
-                "[room %s] snapshot for %s is %d bytes; refusing the join",
+                "[room %s] snapshot for %s does not fit (%d + %d bytes)",
                 self.state.id,
                 user_id,
                 len(data),
+                socket.buffered_bytes,
             )
             self._sockets.pop(user_id, None)
+            self._leases.pop(user_id, None)
             remove_member(self.state, user_id)
             revoke = getattr(socket, "revoke", None)
             try:
                 revoke() if callable(revoke) else socket.close_now()
             except Exception:
                 pass
-            return user_id
-        self.ever_joined = True
-        if not socket.open:
-            return user_id
-        if socket.buffered_bytes > MAX_BUFFERED_BYTES:
-            # The same rule every other frame gets: a client this far behind is
-            # dropped rather than allowed to buffer without limit.
-            log.warning(
-                "[room %s] dropping slow client %s (%d bytes buffered)",
-                self.state.id,
-                user_id,
-                socket.buffered_bytes,
-            )
-            socket.close_now()
             return user_id
         # The snapshot first, then everything that arrived while it was being
         # built - not the other way round, and not instead of them.
@@ -331,11 +346,18 @@ class RoomRuntime:
             return
         if self._sockets.get(user_id) is socket:
             self._sockets.pop(user_id, None)
+            self._leases.pop(user_id, None)
             remove_member(self.state, user_id)
             self.broadcast({"t": "presence", "members": list(self.state.members.values())})
 
-    def join(self, socket: Connection, name: str, token: Optional[str] = None) -> str:
-        user_id, msg = self._begin_join(socket, name, token)
+    def join(
+        self,
+        socket: Connection,
+        name: str,
+        token: Optional[str] = None,
+        lease: Optional[Any] = None,
+    ) -> str:
+        user_id, msg = self._begin_join(socket, name, token, lease)
         try:
             return self._finish_join(user_id, socket, json.dumps(msg, separators=(",", ":")))
         except BaseException:
@@ -343,13 +365,19 @@ class RoomRuntime:
             self.rollback_join(user_id, socket)
             raise
 
-    async def join_async(self, socket: Connection, name: str, token: Optional[str] = None) -> str:
+    async def join_async(
+        self,
+        socket: Connection,
+        name: str,
+        token: Optional[str] = None,
+        lease: Optional[Any] = None,
+    ) -> str:
         """`join`, with the snapshot serialised off the event loop.
 
         A long session's log is megabytes of JSON; `json.dumps` on it stalls
         every other room's sockets, presence and stroke relay while it runs.
         """
-        user_id, msg = self._begin_join(socket, name, token)
+        user_id, msg = self._begin_join(socket, name, token, lease)
         try:
             data = await asyncio.to_thread(json.dumps, msg, separators=(",", ":"))
             return self._finish_join(user_id, socket, data)
@@ -359,17 +387,23 @@ class RoomRuntime:
             self.rollback_join(user_id, socket)
             raise
 
-    def resumes_existing_socket(self, token: Optional[str]) -> bool:
-        """Whether this token would replace a socket that is already here.
+    def lease_for_token(self, token: Optional[str]) -> Optional[Any]:
+        """The reservation held by the socket this token would replace.
 
-        A reconnect that takes over an existing connection needs no free slot,
+        A reconnect that takes over an existing connection needs no new slot,
         and refusing it at exactly the cap is the one case where the cap does
-        the opposite of what it is for.
+        the opposite of what it is for - but it must take over that socket's
+        lease, not open a second one beside it.
         """
         if not token:
-            return False
+            return None
         prior = self.state.sessions.get(token)
-        return prior is not None and prior["userId"] in self._sockets
+        if prior is None:
+            return None
+        user_id = prior["userId"]
+        if user_id not in self._sockets:
+            return None
+        return self._leases.get(user_id)
 
     def leave(self, user_id: str, socket: Optional[Connection] = None) -> None:
         """`socket` identifies *which* connection closed: a superseded socket
@@ -384,6 +418,7 @@ class RoomRuntime:
         for cancel in remove_member(self.state, user_id):
             self.broadcast(cancel)
         self._sockets.pop(user_id, None)
+        self._leases.pop(user_id, None)
         self.broadcast({"t": "presence", "members": list(self.state.members.values())})
 
     # -- messages ---------------------------------------------------------
@@ -495,11 +530,25 @@ class RoomRuntime:
             self.broadcast(cancel)
         return len(cancels)
 
+    def is_pinned(self) -> bool:
+        """A handshake holds a slot here right now.
+
+        The reservation is taken before the socket is accepted, so without this
+        the sweeper could delete the room between those two instants: the route
+        would then join a RoomRuntime the registry no longer knows, while every
+        HTTP route 404s and the same id could be recreated as a different room.
+        """
+        return self.reserved_sockets > 0
+
     def is_idle(self, now: int, idle_ms: int) -> bool:
+        if self.is_pinned():
+            return False
         return len(self._sockets) == 0 and now - self.state.last_active_at > idle_ms
 
     def is_abandoned_reservation(self, now: int, ttl_ms: int) -> bool:
         """Created, never joined, and old enough that nobody is coming."""
+        if self.is_pinned():
+            return False
         return not self.ever_joined and now - self.state.created_at > ttl_ms
 
     def dispose(self) -> None:
@@ -584,7 +633,10 @@ class RoomRuntime:
     def _try_send(self, user_id: str, socket: Connection, data: str) -> None:
         if not socket.open:
             return
-        if socket.buffered_bytes > MAX_BUFFERED_BYTES:
+        # What it would hold *after* this frame, not what it holds now: a
+        # client one byte under the cap could otherwise be handed a
+        # multi-megabyte stroke_committed and end up far above it.
+        if socket.buffered_bytes + len(data) > MAX_BUFFERED_BYTES:
             log.warning(
                 "[room %s] dropping slow client %s (%d bytes buffered)",
                 self.state.id,
@@ -599,29 +651,122 @@ class RoomRuntime:
             pass  # dropped client
 
 
+class UploadSlot:
+    """One upload body's claim on the process's in-flight budget."""
+
+    __slots__ = ("_gate", "_client", "_bytes", "_released")
+
+    def __init__(self, gate: "UploadGate", client: str, size: int) -> None:
+        self._gate = gate
+        self._client = client
+        self._bytes = size
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._gate._release(self._client, self._bytes)
+
+
+class UploadGate:
+    """Admission for upload bodies, taken before a single byte is read.
+
+    One at a time per address, a few at a time overall, and a hard ceiling on
+    the bytes held between them - because the room rate limit and the image
+    store only get a say once the body is already in memory.
+    """
+
+    def __init__(
+        self,
+        max_concurrent: int = MAX_CONCURRENT_UPLOADS,
+        max_bytes: int = MAX_UPLOAD_BYTES_IN_FLIGHT,
+    ) -> None:
+        self.max_concurrent = max_concurrent
+        self.max_bytes = max_bytes
+        self._in_flight = 0
+        self._bytes = 0
+        self._by_client: "Dict[str, int]" = {}
+
+    @property
+    def in_flight(self) -> int:
+        return self._in_flight
+
+    @property
+    def bytes_in_flight(self) -> int:
+        return self._bytes
+
+    def acquire(self, client: str, size: int) -> Optional[UploadSlot]:
+        """A slot, or None when the process is already holding enough."""
+        if self._by_client.get(client, 0) >= 1:
+            return None
+        if self._in_flight >= self.max_concurrent:
+            return None
+        if self._bytes + size > self.max_bytes:
+            return None
+        self._in_flight += 1
+        self._bytes += size
+        self._by_client[client] = self._by_client.get(client, 0) + 1
+        return UploadSlot(self, client, size)
+
+    def _release(self, client: str, size: int) -> None:
+        self._in_flight = max(0, self._in_flight - 1)
+        self._bytes = max(0, self._bytes - size)
+        remaining = self._by_client.get(client, 0) - 1
+        if remaining > 0:
+            self._by_client[client] = remaining
+        else:
+            self._by_client.pop(client, None)
+
+
 class SocketReservation:
     """One socket's claim on the global and per-room budgets.
 
     Released exactly once, however many times `release` is called: the route's
     `finally`, a revocation and a failed join all want to give it back, and
     only one of them may.
+
+    A reconnect does not take a second claim. It takes over the one the socket
+    it replaces already holds - `hand_over` neuters the old lease and returns a
+    new one for the same slot - so the counters never move, and the old route's
+    eventual `release` finds nothing to give back. Skipping the check while
+    still incrementing, which is what this replaced, let one valid token raise
+    a limit of 1 to 21.
     """
 
-    __slots__ = ("_registry", "_room", "_released")
+    __slots__ = ("_registry", "_room", "_released", "_counted")
 
-    def __init__(self, registry: "RoomRegistry", room: "RoomRuntime") -> None:
+    def __init__(
+        self, registry: "RoomRegistry", room: "RoomRuntime", counted: bool = True
+    ) -> None:
         self._registry = registry
         self._room = room
         self._released = False
+        #: False only for a lease handed over from another reservation: the
+        #: slot was counted once, by whoever took it first.
+        self._counted = counted
 
     @property
     def released(self) -> bool:
         return self._released
 
+    @property
+    def room(self) -> "RoomRuntime":
+        return self._room
+
+    def hand_over(self) -> Optional["SocketReservation"]:
+        """Pass this exact slot to a replacement connection."""
+        if self._released:
+            return None
+        self._released = True  # the old route's release is now a no-op
+        return SocketReservation(self._registry, self._room, counted=False)
+
     def release(self) -> None:
         if self._released:
             return
         self._released = True
+        # An uncounted lease still owns the slot; releasing it gives back the
+        # increment whoever took it first made.
         self._registry._release_reservation(self._room)
 
 
@@ -662,6 +807,8 @@ class RoomRegistry:
         #: One generation at a time across the whole process, first come first
         #: served - acquired before a room rasterises anything.
         self.admission = GenerationAdmission()
+        #: Upload bodies in memory at once, across every room.
+        self.uploads = UploadGate()
         #: Room-creation token buckets, keyed by client address.
         self._create_buckets: "Dict[str, Tuple[float, float]]" = {}
         self._refreshing: Optional[asyncio.Future] = None
@@ -684,21 +831,29 @@ class RoomRegistry:
     def sockets_open(self) -> int:
         return self._sockets_open
 
-    def reserve_socket(self, room: "RoomRuntime", resume: bool = False) -> Optional["SocketReservation"]:
-        """Atomically take a slot, or return None.
+    def reserve_socket(
+        self, room: "RoomRuntime", token: Optional[str] = None
+    ) -> Optional["SocketReservation"]:
+        """Atomically take a slot, or take over the one a reconnect replaces.
 
         Check-then-increment has to happen with no await in between: two
         handshakes that both passed a check before either incremented would
         both be admitted, which is how a cap that reads correctly is exceeded
-        anyway. `resume` skips the check - a reconnect replaces a socket that
-        is already counted, and refusing it at exactly the cap is the one case
-        where the cap does the opposite of what it is for.
+        anyway.
+
+        A valid resume token whose member still holds a lease transfers that
+        exact lease. That is what lets a reconnect through a full room without
+        letting twenty reconnects through it.
         """
-        if not resume:
-            if self._sockets_open >= self.config.max_total_sockets:
-                return None
-            if room.reserved_sockets >= self.config.max_room_sockets:
-                return None
+        existing = room.lease_for_token(token)
+        if existing is not None:
+            handed = existing.hand_over()
+            if handed is not None:
+                return handed
+        if self._sockets_open >= self.config.max_total_sockets:
+            return None
+        if room.reserved_sockets >= self.config.max_room_sockets:
+            return None
         self._sockets_open += 1
         room.reserved_sockets += 1
         return SocketReservation(self, room)

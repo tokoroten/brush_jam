@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 from brushjam.ai.backends.mock import MockBackend
 from brushjam.app import create_app
 from brushjam.config import load_config
-from brushjam.room import apply_client_message, create_room, join_member
+from brushjam.room import apply_client_message, create_room, join_member, now_ms
 from brushjam.runtime import RoomRegistry, RoomRuntime
 
 
@@ -175,18 +175,56 @@ def test_pending_handshakes_count_against_the_room_cap() -> None:
     assert registry.sockets_open == 2
 
 
-def test_a_resume_is_admitted_even_when_the_room_is_full() -> None:
+def test_a_resume_takes_over_the_lease_it_replaces() -> None:
     registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="1"))
     room = registry.get_or_create("aaaa", "test")
     assert room is not None
-    reservation = registry.reserve_socket(room)
-    assert reservation is not None
-    room.join(FakeSocket(), "A", "tok-a-0001")
-    assert room.resumes_existing_socket("tok-a-0001") is True
+    first = registry.reserve_socket(room)
+    assert first is not None
+    room.join(FakeSocket(), "A", "tok-a-0001", first)
+
     # A newcomer is refused...
     assert registry.reserve_socket(room) is None
-    # ...but the reconnect replaces a socket that is already counted.
-    assert registry.reserve_socket(room, resume=True) is not None
+    # ...but the reconnect takes over the slot the socket it replaces holds.
+    resumed = registry.reserve_socket(room, "tok-a-0001")
+    assert resumed is not None
+    assert registry.sockets_open == 1 and room.reserved_sockets == 1
+    # The old route's release finds nothing to give back.
+    first.release()
+    assert registry.sockets_open == 1 and room.reserved_sockets == 1
+    resumed.release()
+    assert registry.sockets_open == 0 and room.reserved_sockets == 0
+
+
+def test_many_reconnects_with_one_token_cannot_raise_the_counters() -> None:
+    """One valid token used to raise a limit of 1 to 21."""
+    registry = RoomRegistry(MockBackend(), config(MAX_ROOM_SOCKETS="1", MAX_TOTAL_SOCKETS="1"))
+    room = registry.get_or_create("aaaa", "test")
+    assert room is not None
+    lease = registry.reserve_socket(room)
+    assert lease is not None
+    socket = FakeSocket()
+    room.join(socket, "A", "tok-a-0001", lease)
+
+    held = [lease]
+    for _ in range(20):
+        nxt = registry.reserve_socket(room, "tok-a-0001")
+        if nxt is None:
+            continue
+        # Each reconnect must install itself the way the route does, or the
+        # next one has nothing to take over.
+        socket = FakeSocket()
+        room.join(socket, "A", "tok-a-0001", nxt)
+        held.append(nxt)
+        assert registry.sockets_open <= 1
+        assert room.reserved_sockets <= 1
+
+    assert registry.sockets_open == 1
+    assert room.reserved_sockets == 1
+    for reservation in held:
+        reservation.release()
+    assert registry.sockets_open == 0
+    assert room.reserved_sockets == 0
 
 
 def test_the_process_refuses_sockets_past_the_global_cap() -> None:
@@ -565,3 +603,226 @@ async def test_an_old_socket_leaving_during_a_resume_keeps_the_member() -> None:
     assert user_id in room.state.members, "the resumed member was removed"
     assert room.member_count == 1
     assert room.state.pending, "the resumed user's in-progress stroke was cancelled"
+
+
+# ------------------------------------------------------------ pending strokes
+
+
+def start(room, user: str, stroke_id: str, points: List[Dict[str, float]]) -> Any:
+    return apply_client_message(
+        room,
+        user,
+        {
+            "t": "stroke_start",
+            "stroke": {
+                "id": stroke_id,
+                "layerId": room.layers[0]["id"],
+                "tool": "pen",
+                "color": "#000000",
+                "width": 4,
+                "points": points,
+            },
+        },
+    )
+
+
+def chunk(room, user: str, stroke_id: str, points: List[Dict[str, float]]) -> Any:
+    return apply_client_message(
+        room, user, {"t": "stroke_chunk", "strokeId": stroke_id, "points": points}
+    )
+
+
+def test_strokes_in_progress_are_charged_to_the_room_budget() -> None:
+    """A stroke nobody finishes occupies the room exactly as much as one
+    somebody does, and the commit-time check never saw it."""
+    room = create_room("r", max_points=50)
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    points = [{"x": float(i), "y": 1.0} for i in range(30)]
+
+    assert start(room, user, "s1", points).relay
+    assert room.pending_points == 30
+    refused = chunk(room, user, "s1", points)
+    assert refused.broadcast[0]["t"] == "stroke_cancel"
+    assert refused.broadcast[0]["reason"] == "quota"
+    # Refused and dropped, so the reservation went with it.
+    assert room.pending_points == 0
+    assert room.pending == {}
+
+
+def test_a_new_stroke_is_refused_when_the_room_is_already_full_of_pending() -> None:
+    room = create_room("r", max_points=40)
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    points = [{"x": float(i), "y": 1.0} for i in range(30)]
+    assert start(room, user, "s1", points).relay
+    refused = start(room, user, "s2", points)
+    assert refused.to_sender[0]["t"] == "stroke_cancel"
+    assert refused.to_sender[0]["reason"] == "quota"
+    assert room.pending_points == 30
+
+
+def test_many_members_cannot_hold_more_pending_than_the_room_allows() -> None:
+    """Sixteen members times four strokes of fifty thousand points was 3.2
+    million point dicts that no committed budget ever counted."""
+    from brushjam.room import MAX_PENDING_PER_USER
+
+    room = create_room("r", max_points=5_000)
+    users = []
+    for i in range(16):
+        join_member(room, "U%d" % i)
+    users = list(room.members)
+    points = [{"x": float(i), "y": 1.0} for i in range(200)]
+
+    for user in users:
+        for n in range(MAX_PENDING_PER_USER):
+            start(room, user, "s%s%d" % (user, n), points)
+            for _ in range(5):
+                chunk(room, user, "s%s%d" % (user, n), points)
+
+    assert room.committed_points + room.pending_points <= room.max_points
+
+
+def test_every_way_a_pending_stroke_ends_gives_its_points_back() -> None:
+    from brushjam.room import expire_pending_strokes, remove_member
+
+    points = [{"x": float(i), "y": 1.0} for i in range(20)]
+
+    # committed
+    room = create_room("r")
+    join_member(room, "Alice")
+    user = next(iter(room.members))
+    start(room, user, "s1", points)
+    apply_client_message(room, user, {"t": "stroke_end", "strokeId": "s1", "points": []})
+    assert room.pending_points == 0
+    assert room.committed_points == 20
+
+    # the author leaves
+    start(room, user, "s2", points)
+    assert room.pending_points == 20
+    remove_member(room, user)
+    assert room.pending_points == 0
+
+    # the layer is cleared
+    join_member(room, "Bob")
+    bob = next(u for u in room.members)
+    start(room, bob, "s3", points)
+    assert room.pending_points == 20
+    apply_client_message(room, bob, {"t": "clear_layer", "layerId": room.layers[0]["id"]})
+    assert room.pending_points == 0
+
+    # it is abandoned
+    start(room, bob, "s4", points)
+    assert room.pending_points == 20
+    expire_pending_strokes(room, now_ms() + 10 * 60_000)
+    assert room.pending_points == 0
+
+
+# ------------------------------------------------------- sweeping and buffers
+
+
+def test_a_room_with_a_handshake_in_flight_is_never_swept() -> None:
+    """The reservation is taken before the socket is accepted; sweeping in
+    that instant left the route joining a room the registry had forgotten."""
+    cfg = config(UNJOINED_ROOM_TTL_MS="1000", ROOM_IDLE_MS="10000")
+    registry = RoomRegistry(MockBackend(), cfg)
+    room = registry.create_named("pinned01", "test")
+    assert room is not None
+    reservation = registry.reserve_socket(room)
+    assert reservation is not None
+
+    assert registry.sweep(room.state.created_at + 60_000) == 0
+    assert registry.get("pinned01") is room
+
+    reservation.release()
+    assert registry.sweep(room.state.created_at + 60_000) == 1
+
+
+def test_a_frame_that_would_cross_the_cap_is_refused_before_it_is_queued() -> None:
+    from brushjam.runtime import MAX_BUFFERED_BYTES
+
+    room = RoomRuntime("cap", MockBackend(), config())
+    socket = FakeSocket()
+    room.join(socket, "Alice")
+    socket.buffered = MAX_BUFFERED_BYTES - 10
+    assert socket.sent, "the join itself should have fitted"
+    socket.sent.clear()
+
+    room.broadcast({"t": "prompt_changed", "prompt": "x" * 100, "humanRevision": 1})
+    assert socket.sent == [], "a frame that crosses the cap was queued anyway"
+    assert socket.open is False
+
+
+async def test_a_snapshot_that_does_not_fit_beside_its_held_frames_is_refused() -> None:
+    """They are released together, so they have to fit together."""
+    from brushjam import runtime as runtime_module
+
+    room = RoomRuntime("fit", MockBackend(), config())
+    socket = HoldingSocket()
+    original = runtime_module.MAX_BUFFERED_BYTES
+    try:
+        runtime_module.MAX_BUFFERED_BYTES = 4096
+        join = asyncio.ensure_future(room.join_async(socket, "Alice"))
+        await asyncio.sleep(0)
+        # Held frames that leave no room for the snapshot behind them.
+        socket.buffered = 4000
+        await join
+    finally:
+        runtime_module.MAX_BUFFERED_BYTES = original
+
+    assert socket.revoked is True
+    assert socket.sent == []
+    assert room.member_count == 0
+
+
+# -------------------------------------------------------------------- uploads
+
+
+def test_upload_bodies_have_a_process_wide_budget() -> None:
+    from brushjam.runtime import MAX_IMAGE_BYTES_PER_SLOT, UploadGate
+
+    gate = UploadGate(max_concurrent=4, max_bytes=3 * MAX_IMAGE_BYTES_PER_SLOT)
+    slots = []
+    for i in range(4):
+        slot = gate.acquire("10.0.0.%d" % i, MAX_IMAGE_BYTES_PER_SLOT)
+        if slot is not None:
+            slots.append(slot)
+    # Three fit in the byte budget; the fourth does not, whatever the count says.
+    assert len(slots) == 3
+    assert gate.bytes_in_flight == 3 * MAX_IMAGE_BYTES_PER_SLOT
+    slots[0].release()
+    slots[0].release()
+    assert gate.in_flight == 2
+    assert gate.acquire("10.0.0.9", MAX_IMAGE_BYTES_PER_SLOT) is not None
+
+
+def test_one_address_gets_one_upload_at_a_time() -> None:
+    from brushjam.runtime import UploadGate
+
+    gate = UploadGate()
+    first = gate.acquire("1.1.1.1", 1024)
+    assert first is not None
+    assert gate.acquire("1.1.1.1", 1024) is None
+    assert gate.acquire("2.2.2.2", 1024) is not None
+    first.release()
+    assert gate.acquire("1.1.1.1", 1024) is not None
+
+
+def test_an_upload_slot_is_released_even_when_the_body_is_rejected() -> None:
+    from PIL import Image
+
+    from brushjam.raster import to_png
+
+    body = to_png(Image.new("RGB", (8, 8), (1, 2, 3)))
+    with client() as c:
+        registry = c.app.state.registry
+        for _ in range(3):
+            c.post("/rooms/uphold01/images", content=body, headers={"content-type": "image/png"})
+            # Rejected or not, the slot is given back.
+            assert registry.uploads.in_flight == 0
+        bad = c.post(
+            "/rooms/uphold01/images", content=b"not an image", headers={"content-type": "image/png"}
+        )
+        assert bad.status_code == 400
+        assert registry.uploads.in_flight == 0
+        assert registry.uploads.bytes_in_flight == 0

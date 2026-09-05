@@ -56,6 +56,30 @@ MAX_ROOM_POINTS = 2_000_000
 #: resume into, so it must never be reachable. Sized below MAX_BUFFERED_BYTES
 #: (8 MiB) with room for the rest of the snapshot.
 MAX_ROOM_SNAPSHOT_BYTES = 6 * 1024 * 1024
+def drop_pending(room: RoomState, stroke_id: str) -> Optional[PendingStroke]:
+    """Forget a stroke in progress and give its points back to the budget.
+
+    Every path that ends a pending stroke goes through here - commit, cancel,
+    the author leaving, a layer cleared or deleted, and the idle sweep - so a
+    reservation cannot outlive the stroke that took it.
+    """
+    p = room.pending.pop(stroke_id, None)
+    if p is not None:
+        room.pending_points = max(0, room.pending_points - len(p.points))
+    return p
+
+
+def room_is_full(room: RoomState, extra_points: int) -> bool:
+    """Whether `extra_points` more would put the room past what it may hold.
+
+    Committed and pending together: a client that never finishes a stroke
+    occupies exactly as much memory as one that does, and four 50,000-point
+    strokes each from sixteen members is 3.2 million point dicts that no
+    commit-time check would ever see.
+    """
+    return room.committed_points + room.pending_points + extra_points > room.max_points
+
+
 def stroke_snapshot_bytes(stroke: Stroke) -> int:
     """Exactly what this stroke adds to a snapshot, plus its separating comma.
 
@@ -211,6 +235,10 @@ class RoomState:
     committed_points: int = 0
     #: This room's aggregate point ceiling (the config value at creation).
     max_points: int = MAX_ROOM_POINTS
+    #: Points held by strokes still being drawn. They are not in the log yet,
+    #: but they are in memory, and the log's budget is what says how much of
+    #: this room a client may occupy.
+    pending_points: int = 0
     #: Estimated serialised size of the committed stroke log.
     snapshot_bytes: int = 0
     #: Ceiling for the above (the config value at creation).
@@ -359,7 +387,7 @@ def remove_member(room: RoomState, user_id: str) -> List[Message]:
     for stroke_id, p in list(room.pending.items()):
         if p.user_id != user_id:
             continue
-        del room.pending[stroke_id]
+        drop_pending(room, stroke_id)
         cancels.append(
             {"t": "stroke_cancel", "userId": user_id, "strokeId": stroke_id, "reason": "author left"}
         )
@@ -375,7 +403,7 @@ def expire_pending_strokes(
     for stroke_id, p in list(room.pending.items()):
         if now - p.last_activity_at <= idle_ms and now - p.started_at <= MAX_STROKE_MS:
             continue
-        del room.pending[stroke_id]
+        drop_pending(room, stroke_id)
         cancels.append(
             {
                 "t": "stroke_cancel",
@@ -394,7 +422,7 @@ def _cancel_pending_on_layer(
     for stroke_id, p in list(room.pending.items()):
         if p.init["layerId"] != layer_id:
             continue
-        del room.pending[stroke_id]
+        drop_pending(room, stroke_id)
         cancels.append(
             {"t": "stroke_cancel", "userId": p.user_id, "strokeId": stroke_id, "reason": reason}
         )
@@ -537,6 +565,8 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             ),
             "points": _sanitize_points(init.get("points"), room.canvas_size),
         }
+        if room_is_full(room, len(clean["points"])):
+            return _refuse_stroke(user_id, stroke_id, "quota")
         now = now_ms()
         room.pending[stroke_id] = PendingStroke(
             user_id=user_id,
@@ -545,6 +575,7 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             started_at=now,
             last_activity_at=now,
         )
+        room.pending_points += len(clean["points"])
         return ApplyResult(relay=[{"t": "stroke_start", "userId": user_id, "stroke": clean}])
 
     if t == "stroke_chunk":
@@ -557,7 +588,7 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             len(p.points) + len(points) > MAX_STROKE_POINTS
             or now_ms() - p.started_at > MAX_STROKE_MS
         ):
-            del room.pending[stroke_id]
+            drop_pending(room, stroke_id)
             return ApplyResult(
                 broadcast=[
                     {
@@ -569,7 +600,23 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
                 ],
                 to_sender=[{"t": "error", "message": "stroke exceeded the point or time limit"}],
             )
+        if room_is_full(room, len(points)):
+            # Refused before the points are held, not after: the budget is
+            # about what the room is allowed to occupy, and an unfinished
+            # stroke occupies it exactly as much as a committed one.
+            drop_pending(room, stroke_id)
+            return ApplyResult(
+                broadcast=[
+                    {
+                        "t": "stroke_cancel",
+                        "userId": user_id,
+                        "strokeId": stroke_id,
+                        "reason": "quota",
+                    }
+                ]
+            )
         p.points.extend(points)
+        room.pending_points += len(points)
         p.last_activity_at = now_ms()
         return ApplyResult(
             relay=[
@@ -582,7 +629,9 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         p = room.pending.get(stroke_id)
         if p is None:
             return _empty()
-        del room.pending[stroke_id]
+        # The points stop being pending here whatever happens next: they are
+        # either committed below, or refused and gone.
+        drop_pending(room, stroke_id)
         layer = find_layer(room, p.init["layerId"])
         if layer is None or layer["kind"] != "draw":
             return ApplyResult(
