@@ -1,0 +1,59 @@
+{
+  "date": "2026-09-05",
+  "backend": "runpod",
+  "workflow": {
+    "mode": "normal",
+    "steps": 14,
+    "cfg": 5.5,
+    "sampler": "euler_ancestral/normal",
+    "vaeTile": 512
+  },
+  "prompt": "anime style, fantasy town, vibrant colors",
+  "negativePrompt": "lowres, bad anatomy, bad hands, text, error, worst quality, low quality, jpeg artifacts, signature, watermark, blurry",
+  "resolution": 768,
+  "seed": 424242,
+  "drawings": [
+    {
+      "key": "a",
+      "title": "line-art house + tree"
+    },
+    {
+      "key": "c",
+      "title": "house + noise sky"
+    }
+  ],
+  "denoises": [
+    0.65,
+    0.8
+  ],
+  "cells": [
+    {
+      "drawing": "a",
+      "denoise": 0.65,
+      "file": "a_d0.65.png",
+      "latencyMs": 5574,
+      "bytes": 214354
+    },
+    {
+      "drawing": "a",
+      "denoise": 0.8,
+      "file": "a_d0.80.png",
+      "latencyMs": 3141,
+      "bytes": 204509
+    },
+    {
+      "drawing": "c",
+      "denoise": 0.65,
+      "file": "c_d0.65.png",
+      "latencyMs": 4779,
+      "bytes": 606470
+    },
+    {
+      "drawing": "c",
+      "denoise": 0.8,
+      "file": "c_d0.80.png",
+      "latencyMs": 4509,
+      "bytes": 543165
+    }
+  ]
+}

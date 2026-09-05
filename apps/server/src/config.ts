@@ -37,6 +37,12 @@ export interface Config {
   roomIdleMs: number;
   runpodEndpointId: string;
   runpodApiKey: string;
+  /**
+   * Deadline for one RunPod generation. Generous by default because a cold
+   * serverless worker spends ~26 s queued and ~30 s loading a 7 GB checkpoint
+   * off the network volume before it samples anything (docs/RUNPOD.md).
+   */
+  runpodTimeoutMs: number;
   webDist: string | null;
   /**
    * Which AI settings the operator pinned. Backend defaults may only fill in
@@ -273,6 +279,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     roomIdleMs: num(env, 'ROOM_IDLE_MS', 30 * 60_000, { min: 10_000, max: 24 * 3_600_000, integer: true }, errors),
     runpodEndpointId: env.RUNPOD_ENDPOINT_ID ?? '',
     runpodApiKey: env.RUNPOD_API_KEY ?? '',
+    runpodTimeoutMs: num(env, 'RUNPOD_TIMEOUT_MS', 300_000, { min: 1000, max: 3_600_000, integer: true }, errors),
     webDist: env.WEB_DIST ?? null,
     explicit,
     // Filled in below: a room may go up to here even when it starts smaller.

@@ -93,6 +93,7 @@ export async function createBackend(
       cfg: config.aiCfg,
       vaeTile: config.aiVaeTile,
       fastLora: config.comfyFastLora || undefined,
+      timeoutMs: config.runpodTimeoutMs,
     });
   }
   if (config.aiBackend === 'stream') {

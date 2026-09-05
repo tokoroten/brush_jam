@@ -163,6 +163,7 @@ apps/server/           Node 22 + ws + node:http, in-memory rooms
   src/ai/scheduler.ts    debounce, single in-flight, crop choice, stale handling
   src/ai/backends/       comfyui | mock | runpod
   scripts/smoke.ts       end-to-end smoke test against the configured backend
+  scripts/runpod-smoke.ts one live generation against the RunPod endpoint
 
 apps/web/              Vite + React 19
   src/App.tsx            name gate, home page, /r/<id> routing
@@ -240,7 +241,8 @@ are multiples of 64, denoise is 0..1, and so on).
 | `AI_DEBOUNCE_MS` | `400` | Quiet time before a generation starts |
 | `AI_WATCHDOG_MS` | `180000` | A generation past this is abandoned, not left in flight |
 | `ROOM_IDLE_MS` | `1800000` | Empty rooms are reclaimed after this long |
-| `RUNPOD_ENDPOINT_ID`, `RUNPOD_API_KEY` | — | Only for `AI_BACKEND=runpod` |
+| `RUNPOD_ENDPOINT_ID`, `RUNPOD_API_KEY` | — | Only for `AI_BACKEND=runpod`; both live in the repo-root `.env`. See [docs/RUNPOD.md](docs/RUNPOD.md) |
+| `RUNPOD_TIMEOUT_MS` | `300000` | Deadline for one RunPod generation; must stay above the ~80 s cold start |
 | `WEB_DIST` | `apps/web/dist` | Static client directory |
 
 Fixed limits, not configurable: 64 live rooms per server (further creates and
@@ -375,9 +377,19 @@ holes.
 Set `AI_BACKEND=runpod`, `RUNPOD_ENDPOINT_ID` and `RUNPOD_API_KEY`. The adapter
 posts the **same workflow JSON** to `/v2/{id}/runsync` in the `worker-comfyui`
 input format (`{ input: { workflow, images: [{name, image: base64}] } }`), so
-moving to the cloud is a transport change, not a pipeline change. Nothing in this
-repository deploys to RunPod, and the adapter has not been run against a live
-endpoint — treat it as untested code.
+moving to the cloud is a transport change, not a pipeline change.
+
+This is deployed and measured — see **[docs/RUNPOD.md](docs/RUNPOD.md)** for the
+endpoint id, prices, latency numbers and the exact teardown calls. Short version:
+a 4090 worker that scales to zero, ~3.0 s per edit at fast/768 and ~4.6 s at
+quality/1024 end to end from Japan, an **80 s cold start** after the endpoint has
+been idle, and about $0.0003–$0.0009 of GPU per generation on top of $2.10/month
+for the model volume. `pnpm --filter @brushjam/server runpod-smoke` is one live
+generation against the endpoint, and is the first thing to run if it misbehaves.
+
+`/runsync` is not actually synchronous for long jobs: RunPod abandons it after
+~90 s and hands back a job id, so the adapter falls through to polling
+`/status/{id}` and cancels what it abandons.
 
 ### Two AI modes
 
@@ -639,7 +651,6 @@ Judgement calls made while implementing, since the plan left them open:
 
 ## Not verified
 
-- The RunPod adapter (no live endpoint was used, by instruction).
 - A real multi-person playtest. Two browser tabs in one room were verified
   end to end (a stroke drawn in tab A appeared in tab B, presence showed both
   members, the shared prompt propagated, and an AI patch was composited into the
