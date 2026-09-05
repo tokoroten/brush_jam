@@ -86,10 +86,16 @@ def test_the_backend_gets_the_last_word_on_an_unpinned_setting() -> None:
     resolved = resolve_backend_config(config, "stream", fast_only)
     assert resolved.ai_profile == "fast"
     assert resolved.ai_window == 768
-    assert resolved.ai_denoise == 0.7  # already inside what it accepts
+    # A few-step backend starts a room at 0.8: 0.7 barely moves the drawing at
+    # 4 steps (docs/experiments/2026-09-05-stream/REPORT.md).
+    assert resolved.ai_denoise == 0.8
     assert resolved.max_resolution == 768
     strict = BackendCapabilities(["fast"], 768, 0.6, {"fast": True, "quality": True})
     assert resolve_backend_config(config, "stream", strict).ai_denoise == 0.6
+    # ...and an explicit value is never replaced by a backend default.
+    pinned = load_config({"AI_DENOISE": "0.5", "AI_WINDOW": "512"})
+    kept = resolve_backend_config(pinned, "inproc", BackendCapabilities(["fast", "quality"], 1024, 0.9))
+    assert (kept.ai_denoise, kept.ai_window) == (0.5, 512)
 
 
 def test_a_pinned_setting_the_backend_cannot_run_is_an_error() -> None:

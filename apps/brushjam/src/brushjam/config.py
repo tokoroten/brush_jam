@@ -23,6 +23,18 @@ QUALITY_CEILING = 1024
 
 BACKENDS = ("auto", "comfyui", "mock", "runpod", "stream", "inproc")
 
+#: Per-backend starting values for a room, applied when the operator has not
+#: chosen. Both the stream worker and the in-process pipeline run a 4-step
+#: distilled LoRA in `fast`: 0.7 barely moves the drawing there, and both are
+#: fastest at 768 (docs/experiments/2026-09-05-stream/REPORT.md).
+STREAM_DEFAULTS = {"resolution": 768, "denoise": 0.8}
+#: Backends those defaults apply to.
+FEW_STEP_BACKENDS = ("stream", "inproc")
+
+#: Where the checkpoint lives on the machine this was built on. Shared with
+#: ComfyUI deliberately: one 7 GB file, two consumers.
+DEFAULT_INPROC_CHECKPOINT = r"E:\ComfyUI\models\checkpoints\waiNSFWIllustrious_v150.safetensors"
+
 
 class ConfigError(Exception):
     pass
@@ -68,6 +80,14 @@ class Config:
     runpod_endpoint_id: str = ""
     runpod_api_key: str = ""
     runpod_timeout_ms: int = 300_000
+    #: Checkpoint the in-process pipeline loads. Shared with ComfyUI on purpose.
+    inproc_checkpoint: str = ""
+    #: Serve the whole contract with no model anywhere (CI, and the pre-GPU
+    #: milestones): the pipeline echoes its input.
+    inproc_dry_run: bool = False
+    #: Load the model during startup rather than on the first generation, so the
+    #: ~40 s wait happens once, before anyone is drawing.
+    inproc_preload: bool = True
     web_dist: Optional[str] = None
     explicit: ExplicitEnv = field(default_factory=ExplicitEnv)
     #: Ceiling for a room's generation size; the starting size is ai_window.
@@ -224,6 +244,13 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         runpod_timeout_ms=int(
             _num(env, "RUNPOD_TIMEOUT_MS", 300_000, min=1000, max=3_600_000, integer=True, errors=errors)
         ),
+        inproc_checkpoint=(
+            env.get("INPROC_CHECKPOINT")
+            or env.get("STREAM_CHECKPOINT")
+            or DEFAULT_INPROC_CHECKPOINT
+        ),
+        inproc_dry_run=_flag(env.get("INPROC_DRY_RUN") or env.get("STREAM_DRY_RUN")),
+        inproc_preload=not _flag(env.get("INPROC_NO_PRELOAD")),
         web_dist=env.get("WEB_DIST") or None,
         explicit=explicit,
     )
@@ -287,6 +314,17 @@ def resolve_backend_config(
     """
     errors: List[str] = []
     next_config = replace(config)
+
+    # Backend defaults fill in *unset* values first, then the whole thing is
+    # validated again: applying them after validation could move AI_WINDOW below
+    # an explicit AI_APPLY, producing a combination nobody ever ran.
+    if backend_name in FEW_STEP_BACKENDS:
+        if not config.explicit.window:
+            next_config.ai_window = min(int(STREAM_DEFAULTS["resolution"]), config.canvas_size)
+        if not config.explicit.denoise:
+            next_config.ai_denoise = float(STREAM_DEFAULTS["denoise"])
+        if not config.explicit.profile:
+            next_config.ai_profile = "fast"
 
     if not capabilities.profiles or next_config.ai_profile not in capabilities.profiles:
         because = (

@@ -245,3 +245,17 @@ def test_unknown_room_assets_are_404() -> None:
         assert client.get("/rooms/abcd1234/ai.png").status_code == 404
         assert client.get("/rooms/abcd1234/patches/none.png").status_code == 404
         assert client.get("/rooms/abcd1234/images/none").status_code == 404
+
+
+def test_healthz_reports_a_resident_backends_sampling_fields() -> None:
+    """The TS tooling reads {ok, backend, rooms} and, for a resident model, the
+    same steps/guidance/vae/model/lora it used to fetch from the worker."""
+    from brushjam.ai.backends.inproc import InprocBackend
+    from brushjam.ai.pipeline import PipelineSettings
+
+    config = load_config({"AI_BACKEND": "inproc", "INPROC_DRY_RUN": "1", "CANVAS_SIZE": "512"})
+    with TestClient(create_app(config, InprocBackend(PipelineSettings(), dry_run=True))) as client:
+        body = client.get("/healthz").json()
+    assert body["ok"] is True and body["backend"] == "inproc" and body["rooms"] == 0
+    for key in ("model", "steps", "guidance", "vae", "lora", "max_size", "max_denoise", "warm"):
+        assert key in body, key

@@ -14,7 +14,7 @@ import mimetypes
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -134,8 +134,18 @@ def create_app(
     async def lifespan(app: FastAPI):
         registry.start_sweeper()
         registry.start_capability_watch()
-        yield
-        registry.dispose()
+        # A resident model takes ~40 s to load. Do it now, in the background, so
+        # the server answers /healthz while it happens and the first person to
+        # draw does not pay for it.
+        loader = None
+        if config.inproc_preload and hasattr(backend, "load"):
+            loader = asyncio.ensure_future(backend.load())
+        try:
+            yield
+        finally:
+            if loader is not None:
+                loader.cancel()
+            registry.dispose()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.registry = registry
@@ -165,7 +175,19 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz() -> Response:
-        return JSONResponse({"ok": True, "backend": backend.name, "rooms": registry.size})
+        # `ok`, `backend` and `rooms` are what the TS tooling reads
+        # (apps/server/scripts/latency.ts). A resident backend adds the fields
+        # that tooling used to fetch from the stream worker's own /healthz -
+        # steps, guidance, vae, model, lora - so there is one place to look.
+        body: Dict[str, Any] = {"ok": True, "backend": backend.name, "rooms": registry.size}
+        status = getattr(backend, "status", None)
+        if callable(status):
+            extra = status()
+            body.update(extra)
+            # The room server's own name, not the pipeline's internal one.
+            body["backend"] = backend.name
+            body["ok"] = extra.get("error") is None
+        return JSONResponse(body)
 
     @app.get("/rooms/{room_id}/ai.png")
     async def ai_png(room_id: str) -> Response:
