@@ -168,13 +168,65 @@ describe('a room-wide field being typed into', () => {
     expect(field.state.foreign).toBe('someone else');
   });
 
-  it('drops a stale offer once the player types again', () => {
+  it('keeps the offer standing while the player carries on typing', () => {
+    // It used to vanish on the next keystroke, which took away both the notice
+    // and any way of finding out what the other player had set.
     const field = new Field('');
     field.type('anime');
     field.foreignChange('fantasy town');
-    expect(field.state.foreign).toBe('fantasy town');
     field.type('anime style');
+    expect(field.state.foreign).toBe('fantasy town');
+    expect(field.state.draft).toBe('anime style');
+  });
+
+  it('drops the offer once the room shows our value instead', () => {
+    const field = new Field('');
+    field.state = focusDraft(field.state);
+    field.type('anime');
+    field.foreignChange('fantasy town');
+    field.flush();
+    field.deliverEcho(); // the room is ours now; their value is history
     expect(field.state.foreign).toBe(null);
+    expect(field.state.draft).toBe('anime');
+    expect(field.state.dirty).toBe(false);
+  });
+
+  it('drops the offer when the room arrives at what we already show', () => {
+    const field = new Field('');
+    field.type('anime');
+    field.foreignChange('fantasy town');
+    field.foreignChange('anime'); // someone typed the same thing
+    expect(field.state.foreign).toBe(null);
+    expect(field.state.draft).toBe('anime');
+    expect(field.state.dirty).toBe(false);
+  });
+
+  it('takes the other player’s value on blur when nothing is being edited', () => {
+    // Enter with the cursor still in the field: the change is sent, and a
+    // later change by someone else can only be offered. Leaving on blur is
+    // what says the field is a view of the room again.
+    const field = new Field('');
+    field.state = focusDraft(field.state);
+    field.type('anime');
+    field.flush();
+    field.deliverEcho();
+    field.foreignChange('fantasy town');
+    expect(field.state.draft).toBe('anime');
+    expect(field.state.foreign).toBe('fantasy town');
+
+    field.state = blurDraft(field.state);
+    expect(field.state.draft).toBe('fantasy town');
+    expect(field.state.foreign).toBe(null);
+  });
+
+  it('keeps an unsent draft through a blur', () => {
+    const field = new Field('');
+    field.state = focusDraft(field.state);
+    field.type('anime');
+    field.foreignChange('fantasy town');
+    field.state = blurDraft(field.state); // dirty: the draft is still the player's
+    expect(field.state.draft).toBe('anime');
+    expect(field.state.foreign).toBe('fantasy town');
   });
 
   it('lets an unfocused, unedited field follow the room again after a blur', () => {

@@ -41,13 +41,17 @@ export const initialDraft = <T,>(value: T): DraftState<T> => ({
   focused: false,
 });
 
-/** The player typed. */
+/**
+ * The player typed.
+ *
+ * The offer of somebody else's value survives this: clearing it on the next
+ * keystroke meant a notice you had not finished reading vanished under your
+ * hands, and there was then no way to find out what the other player had set.
+ */
 export const editDraft = <T,>(state: DraftState<T>, value: T): DraftState<T> => ({
   ...state,
   draft: value,
   dirty: true,
-  // What someone else set is not worth offering once this field has moved on.
-  foreign: null,
 });
 
 /**
@@ -65,8 +69,16 @@ export function sentDraft<T>(state: DraftState<T>, value: T, server: T): DraftSt
 /** The server says the shared value is now `value`. */
 export function changedDraft<T>(state: DraftState<T>, value: T): DraftState<T> {
   if (state.pending !== null && Object.is(state.pending, value)) {
-    // Our own echo. Still dirty if more was typed while it was in flight.
+    // Our own echo: the room shows our value, so whatever anyone else set
+    // before it is history and the offer goes. Still dirty if more was typed
+    // while it was in flight.
     return { ...state, pending: null, dirty: !Object.is(state.draft, value), foreign: null };
+  }
+  if (Object.is(state.draft, value)) {
+    // The room arrived at what this field already shows - somebody typed the
+    // same thing, or our own change came back by another route. Nothing to
+    // send and nothing to offer.
+    return { ...state, dirty: false, pending: null, foreign: null };
   }
   const editing = state.focused || state.dirty || state.pending !== null;
   if (editing) return { ...state, foreign: value };
@@ -80,7 +92,19 @@ export const adoptForeign = <T,>(state: DraftState<T>): DraftState<T> =>
     : { ...state, draft: state.foreign, foreign: null, dirty: false, pending: null };
 
 export const focusDraft = <T,>(state: DraftState<T>): DraftState<T> => ({ ...state, focused: true });
-export const blurDraft = <T,>(state: DraftState<T>): DraftState<T> => ({ ...state, focused: false });
+/**
+ * The field lost focus.
+ *
+ * If nothing is being edited and nothing is in flight, this field is just a
+ * view of the room again, so an offer that is still standing is taken. Leaving
+ * it showing a value the room abandoned - with a notice nobody will click -
+ * is the state a player is most likely to mistake for the truth.
+ */
+export function blurDraft<T>(state: DraftState<T>): DraftState<T> {
+  const settled = !state.dirty && state.pending === null;
+  const next = settled && state.foreign !== null ? adoptForeign(state) : state;
+  return { ...next, focused: false };
+}
 
 export const DRAFT_DEBOUNCE_MS = 500;
 

@@ -490,7 +490,11 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             onFocus={promptField.onFocus}
             onBlur={promptField.onBlur}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') promptField.flush();
+              // Enter means "done": send now and give the field back to the
+              // room, so a later change by anyone else lands in it.
+              if (e.key !== 'Enter') return;
+              promptField.flush();
+              e.currentTarget.blur();
             }}
           />
           {promptField.foreign === null ? null : (
@@ -578,7 +582,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             onFocus={negativeField.onFocus}
             onBlur={negativeField.onBlur}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') negativeField.flush();
+              if (e.key !== 'Enter') return;
+              negativeField.flush();
+              e.currentTarget.blur();
             }}
           />
           {negativeField.foreign === null ? null : (
