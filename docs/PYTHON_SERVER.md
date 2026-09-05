@@ -120,18 +120,38 @@ backend, the fields the tooling used to fetch from the worker's own `/healthz`
 
 ## Measurements
 
-**Not yet measured.** The numbers below are recorded during a GPU window with
-the local stream worker stopped, on the RTX 3070 8 GB this repo was built on.
+Measured 2026-09-05 during a GPU window with the local stream worker and the
+Node server stopped, on the RTX 3070 8 GB this repo was built on. Server:
+`HOST=0.0.0.0 PORT=8787 AI_BACKEND=inproc CANVAS_SIZE=1024`, checkpoint
+`waiNSFWIllustrious_v150.safetensors` + `dmd2_sdxl_4step_lora_fp16.safetensors`,
+fp16-fix VAE.
 
 | what | command | result |
 | --- | --- | --- |
-| warm-up | server start, `INPROC_WARMUP_SIZE=768` | _pending_ |
-| one `fast` generation at 768 | browser | _pending_ |
-| one `quality` generation at 1024 | browser | _pending_ |
-| per-edit latency | `pnpm --filter @brushjam/server latency -- --url … --n 5` | _pending_ |
-| 3 users for 1 minute | `pnpm --filter @brushjam/server playtest-sim -- --url … --users 3 --minutes 1` | _pending_ |
+| warm-up | server start, `INPROC_WARMUP_SIZE=768` | 16.5 s load + 11.5 s warm-up run = **28.0 s** to `warm: true` |
+| one `fast` generation at 768 | browser, five-stroke sketch | **3.28 s** stroke end -> pixels |
+| one `quality` generation at 1024 | browser, same room, profile switched live | **9.75 s** stroke end -> pixels |
+| per-edit latency, `fast` / 768 | `latency -- --url http://127.0.0.1:8787 --n 5` | to pixels median **4.12 s** (3.95-4.23), server pipeline median 3.72 s |
+| per-edit latency, `quality` / 1024 | same, room pre-set to quality/1024 | to pixels median **8.75 s** (5.72-8.95), server pipeline median 8.86 s |
+| 3 users for 1 minute | `playtest-sim -- --url http://127.0.0.1:8787 --users 3 --minutes 1` | **PASS** - 118 strokes, 18 AI results (16.7/min), gap median 3.08 s / p90 3.66 s, server latency median 2.95 s, convergence OK, no errors |
+| VRAM | `/healthz` `memory` after the above | allocated 5.6 GB, reserved 7.1 GB, **peak allocated 6.97 GB** of 8.0 GB |
+
+The profile switch is a live LoRA detach plus scheduler swap inside the one
+resident model: the log shows `profile -> quality (lora off)` and `/healthz`
+flips to `steps: 14, guidance: 5.5, profile: "quality"` with no reload and no
+change in resident memory. `negative_prompt_active` correctly reports
+`{fast: false, quality: true}`, and the client shows the negative-prompt box
+only under `quality`.
+
+The 8 GB card is the ceiling here: `device_free_gb` sits at 0.0-0.1 with the
+model resident at 1024, which is why `max_size` is capped at 1024 and why the
+first `quality` run in a batch is the slow one (allocator growth), later runs
+settle.
 
 For comparison, the same box measured through the Node server: the stream
 worker at 768 end-to-end ~2.4 s (`docs/experiments/2026-09-05-stream/REPORT.md`)
 and ComfyUI 14-step at 1024 ~10.3 s
-(`docs/experiments/2026-09-05-comfyui/REPORT.md`).
+(`docs/experiments/2026-09-05-comfyui/REPORT.md`). In-process `fast` is ~0.9 s
+slower per edit than the dedicated worker process (no HTTP hop, but the render
+and PNG encode now share the event loop with the room), and `quality` at 1024
+is ~1.5 s faster than ComfyUI for the same 14 steps.
