@@ -334,16 +334,27 @@ export const findLayer = (room: RoomState, id: string): Layer | undefined => roo
 
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 
-function sanitizePoints(raw: unknown, canvasSize = CANVAS_SIZE): Point[] {
+/**
+ * Clean a run of points, clamped in *world* space.
+ *
+ * Points arrive in layer space and a layer's offset reaches +-2 canvases, so
+ * clamping the layer-space number clamps the wrong quantity: on a moved layer
+ * it drags the player's mark somewhere else (draw at world 100 on a layer at
+ * offset 1500 and the browser sends -1400, which a layer-space clamp turns
+ * into -1024 - world 476). The limit is applied to `local + offset` and
+ * converted back.
+ */
+function sanitizePoints(raw: unknown, canvasSize = CANVAS_SIZE, offsetX = 0, offsetY = 0): Point[] {
   if (!Array.isArray(raw)) return [];
   const out: Point[] = [];
   for (const p of raw.slice(0, 20000)) {
     if (!p || typeof p !== 'object') continue;
     const { x, y, p: pressure } = p as Point;
     if (!finite(x) || !finite(y)) continue;
-    // A moved draw layer records points in *layer* space, so a legitimate point
-    // can sit well outside the canvas: allow -canvasSize .. 2 * canvasSize.
-    const point: Point = { x: clamp(x, -canvasSize, 2 * canvasSize), y: clamp(y, -canvasSize, 2 * canvasSize) };
+    const point: Point = {
+      x: clamp(x + offsetX, -canvasSize, 2 * canvasSize) - offsetX,
+      y: clamp(y + offsetY, -canvasSize, 2 * canvasSize) - offsetY,
+    };
     if (finite(pressure)) point.p = clamp(pressure, 0, 1);
     out.push(point);
   }
@@ -404,7 +415,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
         width: clamp(init.width, 1, 128),
         // The eraser has no opacity: it removes, or it is a different tool.
         alpha: init.tool === 'eraser' ? 1 : clamp(init.alpha ?? DEFAULT_STROKE_ALPHA, MIN_STROKE_ALPHA, MAX_STROKE_ALPHA),
-        points: sanitizePoints(init.points, room.canvasSize),
+        points: sanitizePoints(init.points, room.canvasSize, layer.offsetX ?? 0, layer.offsetY ?? 0),
       };
       const now = Date.now();
       room.pending.set(id, { userId, init: clean, points: [...clean.points], startedAt: now, lastActivityAt: now });
@@ -415,7 +426,8 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       const id = qualifyStrokeId(userId, msg.strokeId);
       const p = room.pending.get(id);
       if (!p) return empty();
-      const points = sanitizePoints(msg.points, room.canvasSize);
+      const chunkLayer = findLayer(room, p.init.layerId);
+      const points = sanitizePoints(msg.points, room.canvasSize, chunkLayer?.offsetX ?? 0, chunkLayer?.offsetY ?? 0);
       if (p.points.length + points.length > MAX_STROKE_POINTS || Date.now() - p.startedAt > MAX_STROKE_MS) {
         room.pending.delete(id);
         return {
@@ -443,7 +455,7 @@ export function applyClientMessage(room: RoomState, userId: string, msg: ClientM
       if (layer.locked) {
         return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'layer locked' }], relay: [], dirty: [] };
       }
-      const tail = sanitizePoints(msg.points, room.canvasSize);
+      const tail = sanitizePoints(msg.points, room.canvasSize, layer.offsetX ?? 0, layer.offsetY ?? 0);
       p.points.push(...tail);
       if (p.points.length === 0 || p.points.length > MAX_STROKE_POINTS) {
         return { broadcast: [{ t: 'stroke_cancel', userId, strokeId: id, reason: 'empty or oversized stroke' }], relay: [], dirty: [] };

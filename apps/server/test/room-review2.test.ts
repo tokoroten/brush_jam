@@ -885,3 +885,42 @@ describe('stroke alpha in the room', () => {
     expect(JSON.stringify(out.relay)).toContain('"alpha":0.6');
   });
 });
+
+describe('the stroke clamp is a world-space limit', () => {
+  const drawAt = (state: RoomState, userId: string, layerId: string, id: string, points: { x: number; y: number }[]) => {
+    applyClientMessage(state, userId, {
+      t: 'stroke_start',
+      stroke: { id, layerId, tool: 'pen', color: '#000000', width: 8, points: points.slice(0, 1) },
+    });
+    return applyClientMessage(state, userId, { t: 'stroke_end', strokeId: id, points: points.slice(1) });
+  };
+
+  it('keeps the point the player drew on a moved layer', () => {
+    // Move the layer 1500 right and draw at world x=100: the browser sends
+    // local x=-1400, and clamping the local number pinned it at -1024, which
+    // is world 476 - half a canvas from the cursor.
+    const { state, alice, layerId } = room();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetX: 1500 } });
+    drawAt(state, alice, layerId, 'a1', [{ x: -1400, y: 10 }, { x: -1390, y: 20 }]);
+    expect(state.strokes[0]!.points.map((p) => p.x)).toEqual([-1400, -1390]);
+  });
+
+  it('still bounds how far outside the canvas a moved layer can draw', () => {
+    const { state, alice, layerId } = room();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetX: 1500 } });
+    drawAt(state, alice, layerId, 'a2', [{ x: -6500, y: 0 }, { x: 7500, y: 0 }]);
+    expect(state.strokes[0]!.points.map((p) => p.x + 1500)).toEqual([-CANVAS_SIZE, 2 * CANVAS_SIZE]);
+  });
+
+  it('clamps a chunk against its own layer offset', () => {
+    const { state, alice, layerId } = room();
+    applyClientMessage(state, alice, { t: 'layer_update', id: layerId, patch: { offsetY: -1500 } });
+    applyClientMessage(state, alice, {
+      t: 'stroke_start',
+      stroke: { id: 'a3', layerId, tool: 'pen', color: '#000000', width: 8, points: [{ x: 0, y: 1600 }] },
+    });
+    const out = applyClientMessage(state, alice, { t: 'stroke_chunk', strokeId: 'a3', points: [{ x: 0, y: 1700 }] });
+    const relayed = out.relay[0] as { points: { y: number }[] };
+    expect(relayed.points.map((p) => p.y)).toEqual([1700]);
+  });
+});

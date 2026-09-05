@@ -477,7 +477,21 @@ def snapshot(room: RoomState, you_user_id: str, ai_state: str, ai: Dict[str, Any
     }
 
 
-def _sanitize_points(raw: Any, canvas_size: int = CANVAS_SIZE) -> List[Point]:
+def _sanitize_points(
+    raw: Any,
+    canvas_size: int = CANVAS_SIZE,
+    offset_x: float = 0,
+    offset_y: float = 0,
+) -> List[Point]:
+    """Clean a run of points, clamped in *world* space.
+
+    Points arrive in layer space, and a layer's offset reaches +-2 canvases, so
+    clamping the layer-space number is clamping the wrong quantity: on a moved
+    layer it silently drags the player's mark somewhere else (draw at world 100
+    on a layer at offset 1500 and the browser sends -1400, which a layer-space
+    clamp turns into -1024 - world 476). The limit belongs where the drawing
+    is, so it is applied to `local + offset` and converted back.
+    """
     if not isinstance(raw, list):
         return []
     out: List[Point] = []
@@ -487,11 +501,9 @@ def _sanitize_points(raw: Any, canvas_size: int = CANVAS_SIZE) -> List[Point]:
         x, y, pressure = p.get("x"), p.get("y"), p.get("p")
         if not _finite(x) or not _finite(y):
             continue
-        # A moved draw layer records points in *layer* space, so a legitimate
-        # point can sit well outside the canvas.
         point: Point = {
-            "x": _clamp(x, -canvas_size, 2 * canvas_size),
-            "y": _clamp(y, -canvas_size, 2 * canvas_size),
+            "x": _clamp(x + offset_x, -canvas_size, 2 * canvas_size) - offset_x,
+            "y": _clamp(y + offset_y, -canvas_size, 2 * canvas_size) - offset_y,
         }
         if _finite(pressure):
             point["p"] = _clamp(pressure, 0, 1)
@@ -563,7 +575,12 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             else _clamp(
                 init.get("alpha", DEFAULT_STROKE_ALPHA), MIN_STROKE_ALPHA, MAX_STROKE_ALPHA
             ),
-            "points": _sanitize_points(init.get("points"), room.canvas_size),
+            "points": _sanitize_points(
+                init.get("points"),
+                room.canvas_size,
+                layer.get("offsetX") or 0,
+                layer.get("offsetY") or 0,
+            ),
         }
         if room_is_full(room, len(clean["points"])):
             return _refuse_stroke(user_id, stroke_id, "quota")
@@ -583,7 +600,13 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         p = room.pending.get(stroke_id)
         if p is None:
             return _empty()
-        points = _sanitize_points(msg.get("points"), room.canvas_size)
+        chunk_layer = find_layer(room, p.init["layerId"])
+        points = _sanitize_points(
+            msg.get("points"),
+            room.canvas_size,
+            (chunk_layer.get("offsetX") or 0) if chunk_layer else 0,
+            (chunk_layer.get("offsetY") or 0) if chunk_layer else 0,
+        )
         if (
             len(p.points) + len(points) > MAX_STROKE_POINTS
             or now_ms() - p.started_at > MAX_STROKE_MS
@@ -651,7 +674,12 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         if layer["locked"]:
             return _end("layer locked")
 
-        tail = _sanitize_points(msg.get("points"), room.canvas_size)
+        tail = _sanitize_points(
+            msg.get("points"),
+            room.canvas_size,
+            layer.get("offsetX") or 0,
+            layer.get("offsetY") or 0,
+        )
         # The tail has never been charged, and this stroke's own points still
         # are. Everyone else's pending points count too: checking only against
         # the committed log let a 100-point room hold 80 committed and 40

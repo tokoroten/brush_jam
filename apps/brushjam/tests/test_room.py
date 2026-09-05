@@ -327,3 +327,64 @@ def test_a_locked_layer_still_refuses_a_transform_on_its_own() -> None:
     assert result.to_sender[0]["message"] == "layer is locked"
     assert (layer.get("offsetX") or 0) == 0
 
+
+# ------------------------------------------------- the clamp is in world space
+
+
+def test_a_moved_layer_keeps_the_point_the_player_drew() -> None:
+    """Points are layer-space; the limit is a world-space one.
+
+    Move a layer 1500 to the right and draw at world x=100: the browser sends
+    local x=-1400. Clamping the local number to -canvas pinned it at -1024,
+    which is world 476 - the mark jumped half a canvas away from the cursor the
+    moment it was committed, and the AI saw it there too.
+    """
+    state = room()
+    alice = add_member(state, "Alice")["userId"]
+    layer = state.layers[0]["id"]
+    apply_client_message(state, alice, {"t": "layer_update", "id": layer, "patch": {"offsetX": 1500}})
+
+    draw(state, alice, "a1", layer, [{"x": -1400, "y": 10}, {"x": -1390, "y": 20}])
+    committed = state.strokes[-1]
+    assert [p["x"] for p in committed["points"]] == [-1400, -1390]
+
+
+def test_the_world_clamp_still_bounds_a_moved_layer() -> None:
+    """Moving a layer must not extend how far outside the canvas anyone can draw."""
+    state = room()
+    alice = add_member(state, "Alice")["userId"]
+    layer = state.layers[0]["id"]
+    apply_client_message(state, alice, {"t": "layer_update", "id": layer, "patch": {"offsetX": 1500}})
+
+    # World -5000 and world 9000, both far outside the allowed -1024..2048.
+    draw(state, alice, "a1", layer, [{"x": -6500, "y": 0}, {"x": 7500, "y": 0}])
+    committed = state.strokes[-1]
+    world = [p["x"] + 1500 for p in committed["points"]]
+    assert world == [-1024, 2048]
+
+
+def test_a_chunk_is_clamped_against_its_own_layers_offset() -> None:
+    """The middle of a stroke used to be clamped with no offset at all."""
+    state = room()
+    alice = add_member(state, "Alice")["userId"]
+    layer = state.layers[0]["id"]
+    apply_client_message(state, alice, {"t": "layer_update", "id": layer, "patch": {"offsetY": -1500}})
+    apply_client_message(
+        state,
+        alice,
+        {
+            "t": "stroke_start",
+            "stroke": {
+                "id": "a1",
+                "layerId": layer,
+                "tool": "pen",
+                "color": "#000000",
+                "width": 4,
+                "points": [{"x": 0, "y": 1600}],
+            },
+        },
+    )
+    relayed = apply_client_message(
+        state, alice, {"t": "stroke_chunk", "strokeId": "a1", "points": [{"x": 0, "y": 1700}]}
+    )
+    assert [p["y"] for p in relayed.relay[0]["points"]] == [1700]
