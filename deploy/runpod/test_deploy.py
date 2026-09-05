@@ -225,6 +225,66 @@ def test_user_agent() -> None:
     check("get() sends the header", seen and seen[0].get_header("User-agent") == D.USER_AGENT)
 
 
+def test_phase_contract() -> None:
+    """bootstrap.sh writes the phase; the receiver reads it. They must agree.
+
+    The receiver is written into the pod by dockerStartCmd and outlives every
+    upload, so a bootstrap that changed how it reports progress would leave the
+    pod claiming "starting" for the whole boot with no way to notice.
+    """
+    bash = shutil.which("bash")
+    if not bash:
+        check("phase contract (bash unavailable)", True)
+        return
+    import subprocess
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        port, token = free_port(), "phase-token"
+        receiver = load_receiver(workspace, port, token)
+
+        posix = workspace.as_posix()
+        if len(posix) > 1 and posix[1] == ":":
+            posix = "/" + posix[0].lower() + posix[2:]
+
+        written = []
+        for name in ("uv", "deps", "checkpoint", "server"):
+            script = (
+                f'BOOTSTRAP_FUNCTIONS_ONLY=1 WORKSPACE_DIR="{posix}" '
+                f'. "{(HERE / "bootstrap.sh").as_posix()}"; phase "{name}"'
+            )
+            subprocess.run([bash, "-c", script], capture_output=True, text=True, check=True)
+            # Read it the way the receiver does, through the receiver.
+            written.append((name, json.loads(status_of(receiver))["phase"]))
+        check("the receiver reports the phase bootstrap wrote", all(a == b for a, b in written), str(written))
+
+        # start.sh owns the phases before and between bootstrap runs.
+        start = (HERE / "start.sh").read_text(encoding="utf-8")
+        for name in ("waiting-for-upload", "extract", "restarting"):
+            check(f'start.sh writes the phase "{name}"', f'echo "{name}" > "$WS/phase"' in start)
+        bootstrap = (HERE / "bootstrap.sh").read_text(encoding="utf-8")
+        check("both write to <workspace>/phase", '"$WORKSPACE/phase"' in bootstrap and '"$WS/phase"' in start)
+        check("the venv is outside the swapped tree", "UV_PROJECT_ENVIRONMENT" in bootstrap)
+        check("the venv is not inside /workspace/app", "/app/" not in bootstrap.split("UV_PROJECT_ENVIRONMENT")[1][:80])
+
+
+def status_of(receiver) -> str:
+    """The receiver's own /status body, without a socket."""
+    import io
+
+    class Probe(receiver.H):
+        def __init__(self) -> None:  # no socket, no request line
+            self.path = "/status"
+            self.body = b""
+
+        def reply(self, code, body, ctype="text/plain; charset=utf-8"):
+            self.body = body.encode() if isinstance(body, str) else body
+
+    probe = Probe()
+    probe.do_GET()
+    return probe.body.decode()
+
+
 def test_install_pending() -> None:
     """The boot loop's claim-and-extract step, driven directly in bash.
 
@@ -318,6 +378,7 @@ if __name__ == "__main__":
     test_start_cmd()
     test_receiver()
     test_user_agent()
+    test_phase_contract()
     test_install_pending()
     test_watch_boot()
     print()

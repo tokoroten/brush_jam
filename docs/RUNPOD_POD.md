@@ -25,6 +25,20 @@ No git remote, no registry, no SSH. Instead:
 Uploading again replaces the code and restarts the server: the receiver SIGTERMs
 the running server (by the pid `bootstrap.sh` recorded) and the loop re-extracts.
 
+## What an upload costs
+
+**About three minutes**, nearly all of it the model loading back onto the GPU.
+An upload replaces `/workspace/app` wholesale, so nothing that lives inside it
+survives - which is why the Python environment does not live there:
+`bootstrap.sh` exports `UV_PROJECT_ENVIRONMENT=/workspace/venv`. With uv's
+default (`.venv` inside the project, and so inside the swap) every upload paid
+for a full torch reinstall, several minutes, for a change that should only
+restart the server. `uv sync` still runs and is a no-op unless `uv.lock` moved.
+
+A **new pod** is 10-15 minutes and re-downloads everything unless the volume is
+reused. Two changes need one even so, because they are written into the pod by
+`dockerStartCmd` and not by the tarball: `receiver.py` and `start.sh`.
+
 ## Prerequisites
 
 - Repo-root `.env` with `RUNPOD_API_KEY`, `HF_TOKEN`, `CIVITAI_TOKEN`. They are
@@ -83,8 +97,9 @@ would lock everyone out after the first few rooms.
 `status` reports `server_healthy: true` when `/healthz` answers. The URL to send
 to friends is `https://{podId}-8787.proxy.runpod.net/`.
 
-Everything except the tarball is on the persistent volume, so a `stop` / `start`
-cycle skips straight to the model load.
+Everything except the tarball is on the persistent volume - models, the HF
+cache and `/workspace/venv` - so a `stop` / `start` cycle skips straight to the
+model load.
 
 ## Notes and limits
 
