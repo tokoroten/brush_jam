@@ -8,106 +8,96 @@ marked Post-MVP in the context document is implemented.
 
 ## Quick start
 
+One Python process serves the built client, the room protocol and inference.
+
 ```bash
 pnpm install
-pnpm dev          # server on :8787, web on :5173
+cd apps/brushjam
+uv sync --extra dev --extra inproc     # drop --extra inproc for a GPU-free run
+cd ../..
+pnpm build:py                          # build the client into the Python package
+pnpm py:serve                          # http://127.0.0.1:8787
 ```
 
-For a shared playtest with the fast backend, skip to
-[Playtest quickstart](#playtest-quickstart-3-people-on-a-lan).
+Open <http://localhost:8787>, pick a name, press **Create room**, and send the
+resulting `/r/<id>` URL to someone else (or open a second tab). Draw on the
+left; AI patches appear on the right.
 
-Open <http://localhost:5173>, pick a name, press **Create room**, and send the
-resulting `/r/<id>` URL to someone else (or open a second tab). Draw on the left;
-AI patches appear on the right.
-
-With ComfyUI running locally the ComfyUI backend is auto-detected. Without it the
-server falls back to a GPU-free mock backend and logs:
+With `--extra inproc` and a checkpoint configured, the model loads into the
+server process itself and the startup log says so:
 
 ```
-[ai] backend: mock - ComfyUI was not reachable at http://127.0.0.1:8188
+[brushjam] backend: inproc, waiNSFWIllustrious_v150.safetensors resident in this process
+[brushjam] server on http://127.0.0.1:8787
+```
+
+Without torch, or without a checkpoint, it falls back through ComfyUI to a
+GPU-free mock backend and logs which one it chose. See
+[`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md) for the backends and the
+`INPROC_*` settings.
+
+**While developing the client**, run Vite beside it for hot reload - the dev
+server proxies `/api`, `/rooms`, `/ws` and `/healthz` to `:8787`:
+
+```bash
+pnpm dev:py        # Python server on :8787, Vite on :5173
+pnpm dev:py:lan    # ...both reachable from the LAN
 ```
 
 Other commands:
 
 ```bash
-pnpm test         # 705 tests across shared / server / web
+pnpm py:test                                  # the Python suite
+pnpm test                                     # the TypeScript suites
 pnpm typecheck
-pnpm build        # server bundle + web dist
-pnpm start        # production: node apps/server/dist/index.js, serves apps/web/dist
-pnpm --filter @brushjam/server smoke   # real end-to-end generation, saves smoke-out/patch.png
+pnpm smoke -- --url http://127.0.0.1:8787     # one real generation, saves smoke-out/patch.png
+pnpm latency -- --url http://127.0.0.1:8787 --n 5 --profile fast --resolution 768
+pnpm playtest-sim -- --url http://127.0.0.1:8787 --users 3 --minutes 1
 ```
 
-`pnpm build` then `pnpm start` serves the built client from the room server on
-`:8787`, so no Vite proxy is needed in production.
+Those three scripts live in [`tools/`](tools/README.md) and speak only the
+public HTTP and WebSocket surface, so they measure whatever is actually
+listening.
 
 ## Playtest quickstart (3 people on a LAN)
 
-The fastest configuration, in order. Steps 1 and 2 are enough on your own
-machine; step 3 is what lets other people in.
-
-**1. Start the stream worker.** It loads the model on startup and takes about
-40 seconds before it is useful.
+**1. Start the server, bound to the LAN.** The model loads at startup and takes
+about 28 seconds before the first generation is fast.
 
 ```bash
-cd apps/stream-worker && uv run stream-worker
+cd apps/brushjam
+HOST=0.0.0.0 AI_BACKEND=inproc uv run brushjam
 ```
 
 Wait until it answers warm, in another terminal:
 
 ```bash
-curl http://127.0.0.1:8790/healthz     # {"ok":true,"warm":true,...}
+curl http://127.0.0.1:8787/healthz     # {"ok":true,"warm":true,...}
 ```
 
-`"ok": true` with `"warm": false` means it is still loading. Starting the app
-before it is warm is fine - the server keeps probing every 10 seconds and logs
-`[ai] stream worker is up ...` when it appears - but the first generation will
-wait for the model.
+`"ok": true` with `"warm": false` means it is still loading. Drawing before it
+is warm is fine; the first generation simply waits for the model.
 
-**2. Start the app.**
-
-```bash
-pnpm dev:stream    # server on :8787, web on :5173, AI_BACKEND=stream
-```
-
-Or pin it once, in a repo-root `.env` (copy `.env.example`), and use plain
-`pnpm dev`:
+Settings can be pinned in a repo-root `.env` (copy `.env.example`) instead of
+the command line. It is read at startup and fills gaps only - a variable
+already in the environment wins. Values are never logged; the startup log names
+the *source*, which is the fastest way to tell what a terminal is running:
 
 ```
-AI_BACKEND=stream
+[brushjam] AI_BACKEND=inproc (from the environment)
+[brushjam] AI_BACKEND=inproc (from the repo-root .env)
+[brushjam] AI_BACKEND is not set (auto-detecting)
 ```
 
-`.env` is read at startup and fills gaps only - a variable already in the
-environment wins, so `pnpm dev:stream` still overrides it. Values are never
-logged. The startup log names the source, which is the fastest way to tell what
-a given terminal is actually running:
+**2. Let other people join.** `HOST=0.0.0.0` is what makes the server reachable;
+by default it binds `127.0.0.1` and nothing outside the machine can see it.
 
-```
-[brushjam] AI_BACKEND=stream (from the repo-root .env)
-[brushjam] AI_BACKEND=stream (from the environment)
-[brushjam] AI_BACKEND is not set (auto-detecting; put AI_BACKEND=stream in .env to pin it)
-```
-
-**Check that line before debugging anything else.** A `pnpm dev` started in
-another terminal has no `AI_BACKEND` and auto-detects, and every dev stack open
-on this repo restarts together whenever a server file changes - so a mock
-backend appearing right after an edit is usually a second, older stack
-reporting itself, not the one you started. `.env` removes the difference
-between the two commands entirely.
-
-**3. Let other people join.** By default the server binds `127.0.0.1` and Vite
-binds localhost, so nothing outside the machine can reach either. Use:
-
-```bash
-pnpm dev:lan       # HOST=0.0.0.0 for the server, vite --host for the web
-```
-
-- Windows will show a **Windows Defender Firewall** prompt for Node the first
-  time. Allow it on **private networks**. If you dismiss it by accident, no one
-  can connect and the symptom is a page that never loads at all; re-run
-  `pnpm dev:lan` to get the prompt back.
+- Windows will show a **Windows Defender Firewall** prompt the first time. Allow
+  it on **private networks**. If you dismiss it by accident, nobody can connect
+  and the symptom is a page that never loads; restart to get the prompt back.
 - Find your LAN address with `ipconfig` (the IPv4 address of your Wi-Fi or
   Ethernet adapter, e.g. `192.168.0.66`) and open
-  **`http://192.168.0.66:5173`** - not `localhost` - on the host machine too.
+  **`http://192.168.0.66:8787`** - not `localhost` - on the host machine too.
 - Then **Copy invite URL** produces a working link. That button copies
   `location.href`, and the client opens its WebSocket against `location.host`,
   so both follow whatever address the page was opened with. Open the page on
@@ -117,20 +107,47 @@ pnpm dev:lan       # HOST=0.0.0.0 for the server, vite --host for the web
 
 Everyone opens the invite URL, picks a name, and draws on the same canvas.
 
-**One model at a time.** The worker and ComfyUI each hold several GB of VRAM.
-On an 8 GB card, running both turns a 10-second generation into minutes of
-thrashing. Stop one before starting the other.
+**Check it first, without the people:**
 
-**ComfyUI instead of the worker.** Stop the worker, start ComfyUI, and use
-plain `pnpm dev` (or `pnpm dev:lan` without `AI_BACKEND`, adding `HOST=0.0.0.0`
-yourself). ComfyUI is auto-detected. It is slower - about 3.7 s for `fast` at
-768 and 10.3 s for `quality` at 1024 - but it has a real `quality` profile,
-which the worker does not.
+```bash
+pnpm playtest-sim -- --url http://127.0.0.1:8787 --users 3 --minutes 1
+```
+
+**One model at a time.** The in-process model and ComfyUI each hold several GB
+of VRAM. On an 8 GB card, running both turns a 10-second generation into
+minutes of thrashing. Stop one before starting the other.
+
+**ComfyUI instead of the resident model.** Start ComfyUI and run with
+`AI_BACKEND=comfyui` (or no setting at all, without torch installed). It is
+slower - about 3.7 s for `fast` at 768 and 10.3 s for `quality` at 1024 - and
+it needs its own process and its own VRAM.
+
+### Legacy: the Node server and the stream worker
+
+*Being retired - see [`docs/RETIRE_NODE_CHECKLIST.md`](docs/RETIRE_NODE_CHECKLIST.md).
+The Python server in `apps/brushjam` replaces both and is what the sections
+above describe.*
+
+The original room server is `apps/server` (Node/TypeScript) and the original
+out-of-process model host is `apps/stream-worker` (Python). They still work:
+
+```bash
+cd apps/stream-worker && uv run stream-worker   # model on :8790, ~40 s to warm
+pnpm dev:stream                                 # Node server :8787 + web :5173
+pnpm dev:lan                                    # ...both on the LAN
+```
+
+The Python server can still use a stream worker over HTTP with
+`AI_BACKEND=stream`, which is the one part of this that is not going away: it
+is how a model on another machine is reached.
 
 ## Documents
 
 | document | what it is |
 | --- | --- |
+| [`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md) | **The server**: layout, backends, the resident model, limits, measurements, review history. |
+| [`docs/PYTHON_SERVER_PLAN.md`](docs/PYTHON_SERVER_PLAN.md) | The plan that port followed, and its status. |
+| [`docs/RETIRE_NODE_CHECKLIST.md`](docs/RETIRE_NODE_CHECKLIST.md) | What the Node server's deletion removes and changes, pending approval. |
 | [`docs/BRUSHJAM_CONTEXT.md`](docs/BRUSHJAM_CONTEXT.md) | The product context: what Brush Jam is, phased. |
 | [`docs/MVP_PLAN.md`](docs/MVP_PLAN.md) | The build plan this repository implements, sections 1-9. |
 | [`docs/STREAM_WORKER.md`](docs/STREAM_WORKER.md) | The stream worker: protocol, why it is explicit-only. |
@@ -153,7 +170,23 @@ packages/shared/       protocol types + pure logic, no DOM and no Node imports
   src/render.ts          renderStrokes() — runs on both server and browser
   src/protocol.ts        WebSocket message types
 
-apps/server/           Node 22 + ws + node:http, in-memory rooms
+apps/brushjam/         the server: one Python process, rooms + inference
+  src/brushjam/room.py       authoritative room reducer (strokes, undo, layers, prompt)
+  src/brushjam/validate.py   runtime validation of every client message
+  src/brushjam/runtime.py    rooms, sockets, admission, the AI canvas, patch store
+  src/brushjam/app.py        HTTP routes + WebSocket + the built client
+  src/brushjam/raster.py     Pillow + numpy: AI input, mask, AI canvas compositing
+  src/brushjam/scheduler.py  debounce, single in-flight, stale handling
+  src/brushjam/ai/pipeline.py the resident SDXL model
+  src/brushjam/ai/backends/  inproc | stream | comfyui | runpod | mock
+  tests/                     278 tests, including the cross-language fixtures
+
+tools/                 scripts against a running server, over HTTP/WS only
+  scripts/latency.ts     per-edit latency, with --profile / --resolution / --json
+  scripts/playtest-sim.ts N users for M minutes, then convergence checks
+  scripts/smoke.ts       one real generation end to end
+
+apps/server/           LEGACY - Node 22 + ws + node:http, being retired
   src/room.ts            authoritative room reducer (strokes, undo, layers, prompt)
   src/validate.ts        runtime validation of every client message
   src/imageInfo.ts       PNG/JPEG/WebP header probe and upload limits
@@ -162,8 +195,9 @@ apps/server/           Node 22 + ws + node:http, in-memory rooms
   src/raster.ts          @napi-rs/canvas: AI input, soft mask, AI canvas compositing
   src/ai/scheduler.ts    debounce, single in-flight, crop choice, stale handling
   src/ai/backends/       comfyui | mock | runpod
-  scripts/smoke.ts       end-to-end smoke test against the configured backend
-  scripts/runpod-smoke.ts one live generation against the RunPod endpoint
+  scripts/export-fixtures.ts writes the parity fixtures the Python suite replays
+  scripts/quality-grid.ts    denoise sweep straight through a backend
+  scripts/runpod-smoke.ts    one live generation against the RunPod endpoint
 
 apps/web/              Vite + React 19
   src/App.tsx            name gate, home page, /r/<id> routing
@@ -506,8 +540,13 @@ is the default. Set `AI_VAE_TILE=0` to go back to the plain node.
 ### Measuring latency
 
 ```
-pnpm --filter @brushjam/server latency -- --url http://127.0.0.1:8787 --n 10
+pnpm latency -- --url http://127.0.0.1:8787 --n 10
+pnpm latency -- --url http://127.0.0.1:8787 --n 5 --profile quality --resolution 1024
 ```
+
+`--profile`, `--resolution` and `--denoise` are applied to the room and
+confirmed before anything is measured, so the numbers say what they were
+measured under; `--json <path>` writes them out with those settings attached.
 
 Joins a **running** server as an ordinary client, draws N short strokes one at a
 time, and reports three numbers per edit, min/median/max:
@@ -522,6 +561,9 @@ It starts nothing itself, so the `/healthz` line tells you which backend was
 really measured.
 
 ### Denoise / quality grid
+
+*Legacy: this drives the Node server's backends directly rather than a running
+server, so it goes with `apps/server`.*
 
 ```
 pnpm --filter @brushjam/server quality-grid                   # 4 drawings x 4 denoise at 768

@@ -8,12 +8,21 @@
   },
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"pnpm --filter @brushjam/server dev\" \"pnpm --filter @brushjam/web dev\"",
+    "dev:py": "concurrently -n python,web -c cyan,magenta \"pnpm py:serve\" \"pnpm --filter @brushjam/web dev\"",
+    "dev:py:lan": "cross-env HOST=0.0.0.0 concurrently -n python,web -c cyan,magenta \"pnpm py:serve\" \"pnpm --filter @brushjam/web dev:host\"",
+    "py:serve": "uv run --project apps/brushjam brushjam",
+    "py:test": "uv run --project apps/brushjam pytest -q",
+    "build:py": "pnpm --filter @brushjam/web build && uv run --project apps/brushjam python apps/brushjam/scripts/build_web.py",
     "dev:stream": "cross-env AI_BACKEND=stream pnpm dev",
     "dev:lan": "cross-env HOST=0.0.0.0 AI_BACKEND=stream concurrently -n server,web -c cyan,magenta \"pnpm --filter @brushjam/server dev\" \"pnpm --filter @brushjam/web dev:host\"",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "start": "pnpm --filter @brushjam/server start"
+    "start": "pnpm --filter @brushjam/server start",
+    "latency": "pnpm --filter @brushjam/tools latency",
+    "playtest-sim": "pnpm --filter @brushjam/tools playtest-sim",
+    "smoke": "pnpm --filter @brushjam/tools smoke",
+    "export-fixtures": "pnpm --filter @brushjam/server export-fixtures"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

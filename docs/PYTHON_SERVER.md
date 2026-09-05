@@ -226,6 +226,49 @@ Three things keep the plumbing off the critical path:
    `apps/server/scripts/export-fixtures.ts` writes fixtures from the real Node
    modules and `tests/test_fixtures.py` replays them - that is the parity proof.
 
+## Regenerating the parity fixtures
+
+```bash
+pnpm export-fixtures     # or: pnpm --filter @brushjam/server export-fixtures
+```
+
+It runs the **real** Node `validateClientMessage`, `applyClientMessage`,
+`snapshot`, `fnv1a`/`noiseRGB` and `renderStrokes`, and writes
+`apps/brushjam/fixtures/`: 45 protocol samples, 27 noise vectors, a 27-step
+reducer trace (result *and* full snapshot after every step), and 256 noise
+placement cases at fractional layer offsets. `tests/test_fixtures.py` replays
+all of it.
+
+This is the one script that cannot move out of `apps/server`, because its
+dependency *is* the reference implementation. When the Node server is deleted
+the fixtures stop being regenerable and become what they will be from then on:
+a frozen record of the behaviour the Python server was built to match, still
+replayed on every test run. See
+[`docs/RETIRE_NODE_CHECKLIST.md`](RETIRE_NODE_CHECKLIST.md).
+
+## Review
+
+Six rounds of adversarial review by Codex (gpt-5.6-sol) against the port, each
+followed by fixes and tests:
+
+| round | findings | what they were about |
+| --- | --- | --- |
+| 1 | 4 High, 5 Medium, 2 Low | room and socket exhaustion, unbounded stroke memory, rendering ahead of the GPU queue, resume not revoking the old socket; AI-canvas and LRU thread safety, a partially-applied locked-layer patch, noise hashing at fractional offsets; path containment and explicit JSON `null` |
+| 2 | 5 High, 3 Medium, 1 Low | the round-1 limits were bypassable: uploads and WebSockets created rooms unthrottled, the threaded join dropped messages, resume left a mapping gap, caps were not atomic, the point quota still allowed unjoinable rooms |
+| 3 | 2 High, 4 Medium | pending strokes bypassed both budgets, resume did not transfer its lease; cancellation released admission early, the sweeper could delete a room mid-handshake, buffered output could exceed its cap, upload bodies had no admission |
+| 4 | 2 High | the lease moved before the join committed, and `stroke_end` ignored other users' pending points |
+| 5 | 1 High | an original lease releasing mid-crossover opened a vacancy its own ticket was holding |
+| 6 | none | GO |
+
+The pattern is worth naming: every round after the first found a way *round*
+the previous round's limit rather than a new kind of problem. A limit that
+reads correctly and a limit that holds are different things, and the difference
+was usually an `await` in the middle of a check.
+
+Python tests went 198 -> 278 over those rounds. The Node suite (530) and the
+cross-language fixtures were green throughout, which is what made it safe to
+keep changing the reducer.
+
 ## Measurements
 
 Measured 2026-09-05 during a GPU window with the local stream worker and the

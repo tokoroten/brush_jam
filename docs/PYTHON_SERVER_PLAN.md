@@ -54,3 +54,27 @@ apps/brushjam/                 uv project, Python 3.10 (same as the worker: torc
 - `pnpm build` (web) → `python scripts/build_web.py` → `uv run brushjam` serves everything. README section "Single-process Python server". `apps/stream-worker` becomes a thin shim or is removed once `inproc` works (keep `/healthz` shape for tooling).
 - Milestones: M1 protocol+reducer+ws with mock backend and static client (browser-verifiable, no GPU); M2 raster + scheduler + inproc backend (GPU window needed); M3 quality profile via LoRA detach; M4 Codex review + fixes + remove Node server.
 - GPU: ask the coordinator for a window before any real model load (one model at a time).
+
+
+---
+
+## Status
+
+| milestone | state |
+| --- | --- |
+| M1 - protocol, reducer, rooms, sockets, fixtures | done |
+| M2 - the in-process pipeline as a backend | done |
+| M3 - the HTTP backends and backend selection | done |
+| M4 - review, fixes, retire the Node server | review done (6 Codex rounds, GO); retirement prepared, deletion pending approval |
+
+M4 in detail:
+
+- Six rounds of adversarial review, 20 findings, all fixed with tests. The
+  table is in [`PYTHON_SERVER.md`](PYTHON_SERVER.md#review).
+- The tooling that had to survive `apps/server` now lives in `tools/`
+  (`@brushjam/tools`): `latency`, `playtest-sim`, `smoke`. They speak only the
+  public HTTP and WebSocket surface.
+- `export-fixtures` stays in `apps/server` and dies with it; the fixtures it
+  produced are committed and keep being replayed.
+- The deletion itself is one reviewable commit, listed in
+  [`RETIRE_NODE_CHECKLIST.md`](RETIRE_NODE_CHECKLIST.md), pending approval.
