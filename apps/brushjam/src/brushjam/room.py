@@ -47,6 +47,10 @@ PENDING_STROKE_IDLE_MS = 60_000
 MAX_PENDING_PER_USER = 4
 #: Upper bound on a room's committed stroke log (snapshots are sent in full).
 MAX_STROKES_PER_ROOM = 20_000
+#: Aggregate committed points in one room. The stroke count alone is not a
+#: bound: 20,000 strokes of 50,000 points is a billion point dicts, and the
+#: whole log is serialised into every joiner's snapshot.
+MAX_ROOM_POINTS = 2_000_000
 
 MAX_SESSIONS = 64
 
@@ -186,6 +190,11 @@ class RoomState:
     sessions: "Dict[str, Member]" = field(default_factory=dict)
     created_at: int = 0
     last_active_at: int = 0
+    #: Sum of the points in `strokes`, maintained rather than recomputed: it is
+    #: consulted on every commit.
+    committed_points: int = 0
+    #: This room's aggregate point ceiling (the config value at creation).
+    max_points: int = MAX_ROOM_POINTS
 
 
 @dataclass
@@ -233,6 +242,7 @@ def create_room(
     adjustable_resolution: bool = True,
     profile: str = "fast",
     limits: Optional[RoomLimits] = None,
+    max_points: int = MAX_ROOM_POINTS,
 ) -> RoomState:
     limits = limits or RoomLimits()
     resolution = canvas_size if resolution is None else resolution
@@ -271,6 +281,7 @@ def create_room(
         ],
         created_at=now,
         last_active_at=now,
+        max_points=max(1, int(max_points)),
     )
 
 
@@ -578,6 +589,20 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
                     }
                 ]
             )
+        if room.committed_points + len(p.points) > room.max_points:
+            # The room is full. Cancelling is the honest answer: the client
+            # drops its optimistic preview instead of showing a stroke the
+            # server does not have. (The pending entry is already gone.)
+            return ApplyResult(
+                broadcast=[
+                    {
+                        "t": "stroke_cancel",
+                        "userId": user_id,
+                        "strokeId": stroke_id,
+                        "reason": "room stroke limit reached",
+                    }
+                ]
+            )
         room.human_revision += 1
         stroke: Stroke = {
             "id": stroke_id,
@@ -592,6 +617,7 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
             "bbox": stroke_bbox(p.points, p.init["width"]),
         }
         room.strokes.append(stroke)
+        room.committed_points += len(p.points)
         return ApplyResult(
             broadcast=[
                 {"t": "stroke_committed", "stroke": stroke, "humanRevision": room.human_revision}
@@ -641,6 +667,7 @@ def apply_client_message(room: RoomState, user_id: str, msg: Message) -> ApplyRe
         ]
         u = union_rects(visible)
         room.strokes = [s for s in room.strokes if s["layerId"] != layer["id"]]
+        room.committed_points -= sum(len(s["points"]) for s in removed)
         for s in removed:
             room.undone.discard(s["id"])
         cancels = _cancel_pending_on_layer(room, layer["id"])

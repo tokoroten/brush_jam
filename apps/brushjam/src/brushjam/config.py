@@ -77,6 +77,19 @@ class Config:
     ai_debounce_ms: int = 400
     ai_watchdog_ms: int = 180_000
     room_idle_ms: int = 30 * 60_000
+    #: A room nobody ever joined is a reservation, not a session: it holds a
+    #: slot in a 64-room table and can be created by an unauthenticated POST.
+    unjoined_room_ttl_ms: int = 5 * 60_000
+    #: Sockets in one room. Every join rebroadcasts the whole member list, so
+    #: this is quadratic traffic, not just memory.
+    max_room_sockets: int = 16
+    #: Sockets in the whole process.
+    max_total_sockets: int = 256
+    #: Room creations allowed per client address per minute.
+    room_create_per_min: int = 10
+    #: Aggregate committed points a single room will hold. 20,000 strokes of
+    #: 50,000 points each is a billion point dicts; this is the real ceiling.
+    max_room_points: int = 2_000_000
     runpod_endpoint_id: str = ""
     runpod_api_key: str = ""
     runpod_timeout_ms: int = 300_000
@@ -238,6 +251,21 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         ),
         room_idle_ms=int(
             _num(env, "ROOM_IDLE_MS", 30 * 60_000, min=10_000, max=24 * 3_600_000, integer=True, errors=errors)
+        ),
+        unjoined_room_ttl_ms=int(
+            _num(env, "UNJOINED_ROOM_TTL_MS", 5 * 60_000, min=1000, max=24 * 3_600_000, integer=True, errors=errors)
+        ),
+        max_room_sockets=int(
+            _num(env, "MAX_ROOM_SOCKETS", 16, min=1, max=512, integer=True, errors=errors)
+        ),
+        max_total_sockets=int(
+            _num(env, "MAX_TOTAL_SOCKETS", 256, min=1, max=8192, integer=True, errors=errors)
+        ),
+        room_create_per_min=int(
+            _num(env, "ROOM_CREATE_PER_MIN", 10, min=1, max=10_000, integer=True, errors=errors)
+        ),
+        max_room_points=int(
+            _num(env, "MAX_ROOM_POINTS", 2_000_000, min=10_000, max=200_000_000, integer=True, errors=errors)
         ),
         runpod_endpoint_id=env.get("RUNPOD_ENDPOINT_ID") or "",
         runpod_api_key=env.get("RUNPOD_API_KEY") or "",

@@ -61,6 +61,7 @@ class SocketConnection:
         self._queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
         self._buffered = 0
         self._open = True
+        self._revoked = False
         self._writer = asyncio.ensure_future(self._pump())
 
     @property
@@ -82,6 +83,39 @@ class SocketConnection:
             return
         self._open = False
         self._queue.put_nowait(None)
+
+    def revoke(self) -> None:
+        """Cut this socket off *now*, without draining what is queued.
+
+        `close_now` puts a sentinel behind every pending frame, so a slow reader
+        keeps its socket - and its identity - for as long as its backlog takes
+        to flush. A superseded connection has to lose both immediately, or two
+        sockets act as the same user (Node called `terminate()` here).
+        """
+        self._open = False
+        self._revoked = True
+        self._buffered = 0
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:  # pragma: no cover - drained concurrently
+                break
+        if self._writer is not None:
+            self._writer.cancel()
+        # The transport close cannot be awaited from here; it is the last thing
+        # the cancelled writer does, and this covers the case where it is
+        # already finished.
+        asyncio.ensure_future(self._close_transport())
+
+    async def _close_transport(self) -> None:
+        try:
+            await self.socket.close(code=1012)
+        except Exception:
+            pass
+
+    @property
+    def revoked(self) -> bool:
+        return self._revoked
 
     async def _pump(self) -> None:
         try:
@@ -165,7 +199,16 @@ def create_app(
         )
 
     @app.post("/api/rooms")
-    async def create_room_route() -> Response:
+    async def create_room_route(request: Request) -> Response:
+        # Unauthenticated, and each success reserves one of a small number of
+        # room slots, so it is rate limited per client address.
+        client = request.client.host if request.client else "unknown"
+        if not registry.allow_create(client):
+            return JSONResponse(
+                {"error": "too many rooms created from here; try again shortly"},
+                status_code=429,
+                headers={"retry-after": "60"},
+            )
         room = registry.create()
         if room is None:
             return JSONResponse(
@@ -196,7 +239,7 @@ def create_app(
         room = registry.get(room_id)
         if room is None or not room.has_ai():
             return JSONResponse({"error": "no AI output yet"}, status_code=404)
-        return png(await asyncio.to_thread(room.ai_png))
+        return png(await room.ai_png())
 
     @app.get("/rooms/{room_id}/patches/{patch}")
     async def patch_png(room_id: str, patch: str) -> Response:
@@ -258,23 +301,34 @@ def create_app(
             await socket.accept()
             await socket.close(code=1013, reason="server is holding too many rooms")
             return
+        # Capacity is decided before anything is constructed or joined, so a
+        # refusal allocates nothing and leaves membership untouched.
+        refusal = registry.can_accept_socket(room)
+        if refusal is not None:
+            await socket.accept()
+            await socket.close(code=1013, reason=refusal)
+            return
         await socket.accept()
         raw_token = socket.query_params.get("token") or ""
         token = raw_token if SESSION_TOKEN.match(raw_token) else None
         connection = SocketConnection(socket)
-        user_id = room.join(connection, socket.query_params.get("name") or "", token)
+        registry.note_socket_open()
+        user_id = await room.join_async(
+            connection, socket.query_params.get("name") or "", token
+        )
         try:
             while True:
                 data = await socket.receive_text()
                 if len(data) > MAX_WS_PAYLOAD:
                     await socket.close(code=1009)
                     break
-                room.handle(user_id, data)
+                room.handle(user_id, data, connection)
         except WebSocketDisconnect:
             pass
         except Exception:
             log.debug("[room %s] socket error", room_id, exc_info=True)
         finally:
+            registry.note_socket_closed()
             room.leave(user_id, connection)
             await connection.aclose()
 

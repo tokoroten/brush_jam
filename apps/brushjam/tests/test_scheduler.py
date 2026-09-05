@@ -8,7 +8,13 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from brushjam.ai.backends.base import BackendCapabilities, BackendHttpError, GenerateRequest
-from brushjam.scheduler import AIScheduler, RenderJob, SchedulerOptions, is_permanent_error
+from brushjam.scheduler import (
+    AIScheduler,
+    GenerationAdmission,
+    RenderJob,
+    SchedulerOptions,
+    is_permanent_error,
+)
 
 
 class FakeBackend:
@@ -232,3 +238,52 @@ async def test_stop_cancels_the_pending_timer() -> None:
 )
 def test_permanent_error_classification(err, permanent: bool) -> None:
     assert is_permanent_error(err) is permanent
+
+
+# ------------------------------------------------------------------ admission
+
+
+async def test_a_queued_room_does_not_render_until_it_is_admitted() -> None:
+    """Rendering before the GPU queue is what made N rooms cost N rasters."""
+    admission = GenerationAdmission()
+    slow = FakeBackend(latency_ms=120)
+    first_host, second_host = FakeHost(), FakeHost()
+    first = make(first_host, slow, admission=admission)
+    second = make(second_host, FakeBackend(), admission=admission)
+
+    first_host.revision += 1
+    first.mark_dirty([{"x": 0, "y": 0, "width": 1, "height": 1}])
+    await asyncio.sleep(0.05)
+    second_host.revision += 1
+    second.mark_dirty([{"x": 0, "y": 0, "width": 1, "height": 1}])
+    await asyncio.sleep(0.05)
+
+    assert first_host.renders == 1
+    assert second_host.renders == 0, "the queued room rasterised while waiting"
+
+    await settle(400)
+    assert second_host.renders == 1
+    first.stop()
+    second.stop()
+
+
+async def test_the_watchdog_does_not_count_time_spent_queueing() -> None:
+    """A run that timed out while waiting would retry, doubling the backlog."""
+    admission = GenerationAdmission()
+    # The watchdog is shorter than the run ahead of it in the queue.
+    slow = FakeBackend(latency_ms=150)
+    first_host, second_host = FakeHost(), FakeHost()
+    first = make(first_host, slow, admission=admission, watchdog_ms=100_000)
+    second = make(second_host, FakeBackend(latency_ms=10), admission=admission, watchdog_ms=80)
+
+    first_host.revision += 1
+    first.mark_dirty([{"x": 0, "y": 0, "width": 1, "height": 1}])
+    await asyncio.sleep(0.05)
+    second_host.revision += 1
+    second.mark_dirty([{"x": 0, "y": 0, "width": 1, "height": 1}])
+
+    await settle(600)
+    assert second_host.results(), "the queued room timed out before it started"
+    assert "error" not in second_host.states()
+    first.stop()
+    second.stop()

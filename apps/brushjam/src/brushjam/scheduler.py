@@ -16,6 +16,7 @@ import logging
 import random
 import re
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
@@ -105,6 +106,41 @@ class SchedulerOptions:
     watchdog_ms: float = 180_000
     tag: str = "room"
     seed: Optional[Callable[[], int]] = None
+    #: Process-wide admission, acquired BEFORE rasterising. Every room shares
+    #: one, so N rooms cannot allocate N supersampled rasters at once and then
+    #: sit on their encoded inputs waiting for a GPU that serves one at a time.
+    admission: Optional["GenerationAdmission"] = None
+
+
+class GenerationAdmission:
+    """First come, first served access to the one generation slot.
+
+    `asyncio.Semaphore` is not enough on its own: what matters is that the
+    room that asked first goes first, and that the watchdog does not start
+    counting until the room is actually admitted. A queued run that timed out
+    while waiting would retry, which is how a busy server turns one backlog
+    into two.
+    """
+
+    def __init__(self, slots: int = 1) -> None:
+        self._semaphore = asyncio.Semaphore(slots)
+        self._waiting = 0
+
+    @property
+    def waiting(self) -> int:
+        return self._waiting
+
+    @asynccontextmanager
+    async def admit(self) -> Any:
+        self._waiting += 1
+        try:
+            await self._semaphore.acquire()
+        finally:
+            self._waiting -= 1
+        try:
+            yield
+        finally:
+            self._semaphore.release()
 
 
 def _now_ms() -> float:
@@ -240,19 +276,41 @@ class AIScheduler:
         # The whole canvas is rendered, then resampled to the generation size;
         # the result is scaled back to the canvas when it is composited.
         resolution = job.resolution or self.opts.window
-        t_mask = _now_ms()
-        mask = self.host.build_full_mask(resolution)
-        mask_ms = _now_ms() - t_mask
 
         self._changed = False
         self._in_flight = True
         self._pending = False
         prompt_epoch = self._prompt_epoch
         self._set_state("generating")
-        started_at = _now_ms()
         timed_out = False
 
+        admission = self.opts.admission
+        # Nothing is rendered until this room has the slot. Waiting costs a
+        # coroutine; rendering first would cost a supersampled raster per room.
+        admit = admission.admit() if admission is not None else _no_admission()
+        async with admit:
+            # The watchdog measures a generation, not a queue: it starts here.
+            started_at = _now_ms()
+            return await self._run_admitted(
+                job, rect, resolution, for_revision, prompt_epoch, started_at
+            )
+
+    async def _run_admitted(
+        self,
+        job: RenderJob,
+        rect: Rect,
+        resolution: int,
+        for_revision: int,
+        prompt_epoch: int,
+        started_at: float,
+    ) -> None:
+        timed_out = False
         try:
+            # First use at a size builds and PNG-encodes a full-canvas mask;
+            # off the loop, because that pauses every other room's sockets.
+            t_mask = _now_ms()
+            mask = await asyncio.to_thread(self.host.build_full_mask, resolution)
+            mask_ms = _now_ms() - t_mask
             negative = job.negative_prompt or ""
             request_seed = (self.opts.seed or _default_seed)()
             t_render = _now_ms()
@@ -375,6 +433,12 @@ class AIScheduler:
             return
         if self._pending or self._changed:
             self._schedule(delay_ms)
+
+
+@asynccontextmanager
+async def _no_admission() -> Any:
+    """No coordinator configured (unit tests, and the mock backend)."""
+    yield
 
 
 def _default_seed() -> int:
