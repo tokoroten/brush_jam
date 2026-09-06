@@ -98,6 +98,12 @@ the server reports:
 | `active_sockets` | people in rooms. A room left open with nobody drawing still counts: somebody is sitting there. |
 | `last_generation_at` | when the model last produced anything, so a room driven by `tools/` over HTTP counts too. |
 
+The deadline is the later of those two plus the window: a generation five
+minutes ago means twenty-five minutes left, not "busy for thirty minutes and
+then thirty more" - which is what the first version did, stopping an idle pod
+at sixty minutes on a `--idle-minutes 30` watch. The same rule means a watch
+started beside a pod that has been idle for hours stops it at the first poll.
+
 A pod that stops answering `/healthz` for the whole window is stopped as well:
 that is the GPU burning money with nothing to show for it. A server too old to
 report either field is `unknown` and is never stopped - a watcher that cannot

@@ -505,6 +505,46 @@ def test_idle_watch() -> None:
     tracker.observe(health(generation=stale, generations=4), at)
     check("an old generation does not keep it alive", tracker.stop_reason(at) is not None)
 
+    # Review 3 finding 6: a generation used to keep the pod "busy" for the
+    # whole window, and only then did the idle clock start - so the default
+    # 30-minute watch stopped an hour after the last picture. The deadline is
+    # the last activity plus the window, not the first idle poll plus it.
+    tracker = IdleTracker(1800)
+    at = 4_500_000.0
+    generated = int(at * 1000)
+    tracker.observe(health(generation=generated, generations=1), at)
+    check("a generation just now is busy", tracker.stop_reason(at) is None)
+    at += 29 * 60
+    tracker.observe(health(generation=generated, generations=1), at)
+    check("...still busy at 29 minutes", tracker.stop_reason(at) is None, tracker.describe(at))
+    at += 2 * 60
+    tracker.observe(health(generation=generated, generations=1), at)
+    check(
+        "...and stopped at 30, not 60",
+        tracker.stop_reason(at) is not None,
+        tracker.describe(at),
+    )
+
+    # The same through the loop, which is what the pod actually runs: one
+    # generation at t=0, nobody connected, stopped half an hour later.
+    clock["t"] = 4_600_000.0
+    started = clock["t"]
+    reason, _ = run([health(generation=int(started * 1000), generations=1)])
+    waited = clock["t"] - started
+    check("the loop stops one window after the generation", reason is not None, str(reason))
+    check(
+        "...which is 30 minutes, not 60",
+        1800 <= waited < 1800 + 120,
+        "%d s" % waited,
+    )
+
+    # A watch started beside a pod that has been idle for hours does not grant
+    # it another window for having been idle.
+    tracker = IdleTracker(1800)
+    at = 4_700_000.0
+    tracker.observe(health(generation=int((at - 4 * 3600) * 1000), generations=9), at)
+    check("a long-idle pod is stopped at the first poll", tracker.stop_reason(at) is not None)
+
     # A server that does not report activity is never stopped.
     tracker = IdleTracker(1800)
     at = 6_000_000.0

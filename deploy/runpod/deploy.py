@@ -378,52 +378,74 @@ class IdleTracker:
     A server too old to report either is `unknown`, and the pod is never
     stopped on it: a watcher that cannot see the players must not turn the
     lights off.
+
+    The deadline is the later of those two signals plus the idle window - so a
+    watch started beside a pod that has been idle for hours stops it at the
+    first poll, rather than granting it another window for having been idle.
     """
 
     def __init__(self, idle_seconds: float) -> None:
         self.idle_seconds = float(idle_seconds)
         self.state: Optional[str] = None
         self.detail = ""
-        #: When the pod was first seen not busy, on the caller's clock.
-        self.idle_since: Optional[float] = None
+        #: When the pod was last *used*, on the caller's clock - not when it
+        #: was first seen unused. The pod is stopped `idle_seconds` after this,
+        #: which is the whole rule.
+        #:
+        #: Counting from the first idle poll instead charged two windows for
+        #: one generation: the generation kept the pod "busy" for the entire
+        #: window, and only then did the idle clock start, so a default watch
+        #: stopped an hour after the last picture rather than half an hour.
+        self.active_at: Optional[float] = None
         self._generation_marker: Any = None
 
     def observe(self, health: Optional[Dict[str, Any]], at: float) -> bool:
         """Take one poll. True if the situation changed and is worth printing."""
-        state, detail = self._classify(health, at)
-        if state == "busy" or state == "unknown":
-            self.idle_since = None
-        elif self.idle_since is None:
-            self.idle_since = at
+        state, detail, activity = self._classify(health, at)
+        if state == "unknown":
+            self.active_at = None
+        elif activity is not None:
+            self.active_at = activity if self.active_at is None else max(self.active_at, activity)
+        elif self.active_at is None:
+            # Nothing has happened yet and nothing says when anything last did:
+            # the window starts when the watch does.
+            self.active_at = at
         changed = (state, detail) != (self.state, self.detail)
         self.state, self.detail = state, detail
         return changed
 
     def _classify(self, health: Optional[Dict[str, Any]], at: float):
+        """(state, detail, when the pod was last used) for one poll."""
         if not isinstance(health, dict):
-            return "unreachable", ""
+            return "unreachable", "", None
         sockets = health.get("active_sockets")
         generation = health.get("last_generation_at")
         marker = (generation, health.get("generations"))
         moved = self._generation_marker is not None and marker != self._generation_marker
         self._generation_marker = marker
         if sockets is None and generation is None:
-            return "unknown", "this server does not report activity; it will not be stopped"
+            return "unknown", "this server does not report activity; it will not be stopped", None
         if isinstance(sockets, int) and sockets > 0:
-            return "busy", "%d socket%s connected" % (sockets, "" if sockets == 1 else "s")
+            return (
+                "busy",
+                "%d socket%s connected" % (sockets, "" if sockets == 1 else "s"),
+                at,
+            )
         if moved:
-            return "busy", "a generation since the last poll"
+            return "busy", "a generation since the last poll", at
         if isinstance(generation, (int, float)):
-            # Epoch milliseconds from the pod, against our own clock: a
-            # generation inside the idle window still counts as activity, which
-            # is what makes a `watch` started next to a busy pod behave.
+            # Epoch milliseconds from the pod, against our own clock. The
+            # generation happened then, not now: it is activity at its own
+            # time, and the deadline is that time plus the window.
             since = at - generation / 1000.0
-            if 0 <= since < self.idle_seconds:
-                return "busy", "a generation %d s ago" % round(since)
-        return "idle", "nobody connected"
+            if since >= 0:
+                if since < self.idle_seconds:
+                    return "busy", "a generation %d s ago" % round(since), at - since
+                return "idle", "nobody connected", at - since
+        return "idle", "nobody connected", None
 
     def idle_for(self, at: float) -> float:
-        return 0.0 if self.idle_since is None else max(0.0, at - self.idle_since)
+        return 0.0 if self.active_at is None else max(0.0, at - self.active_at)
 
     def describe(self, at: float) -> str:
         if self.state == "busy":
@@ -438,7 +460,7 @@ class IdleTracker:
         """Why the pod should be stopped now, or None to keep watching."""
         if self.state not in ("idle", "unreachable"):
             return None
-        if self.idle_since is None or self.idle_for(at) < self.idle_seconds:
+        if self.active_at is None or self.idle_for(at) < self.idle_seconds:
             return None
         minutes = int(self.idle_seconds // 60)
         if self.state == "unreachable":
