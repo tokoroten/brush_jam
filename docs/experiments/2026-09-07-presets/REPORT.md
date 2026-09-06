@@ -36,6 +36,7 @@ sky, which is much closer to what a room looks like a minute into play.
 - `round2_<preset>.png` - four presets re-tested with one medium noun added
   back. 16 generations.
 - `sheet.png` - the original before/after pass at fast, 22 generations.
+- `chosen_sheet.png` - every preset at its chosen setting, both inputs.
 - `sweep.json`, `round2.json`, `results.json` - what was sent for every image.
 
 Images are gitignored; regenerate with
@@ -84,12 +85,25 @@ wording.
 Style presets that keep `fast` at 0.6-0.65 are, on this checkpoint, presets
 that do nothing.
 
-## Still to render
+## The confirmation pass
 
-The 18-cell confirmation pass - the nine presets above at their chosen setting,
-on both inputs, in one sheet - had not run when the server was taken for a
-restart. The sweep it would confirm is complete and its cells are in
-`sweep.json` / `round2.json`; nothing else is outstanding.
+`chosen_sheet.png` (`chosen.json`) is every preset above at its chosen setting,
+on both inputs: 18 generations, input beside result. The composition survives
+in all eighteen - the house, the tree, the ground line and their positions are
+the players' in every one. What differs is how much of the style lands:
+
+- unmistakable on both inputs: impressionist (a painted scene, with grass and a
+  figure), stained glass (a mosaic of cells), ukiyo-e (flat colour and a
+  patterned sky), pixel art (blocky shapes, dithered windows), watercolour (a
+  wash sky and pastel bloom).
+- unmistakable where there is paint, quiet on bare outlines: sumi-e (an ink
+  wash across the noise band), claymation (a plasticine surface), papercraft
+  (paper grain), retro poster (halftone). On the sparse drawing these come back
+  close to the input.
+
+That split is not a preset problem. img2img restyles pixels; a white page has
+none, so a style has nothing to work with until somebody has laid down paint.
+The noise-pen band is the whole difference between the two columns.
 
 ## What this does not fix
 
