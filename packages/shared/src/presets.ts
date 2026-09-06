@@ -31,12 +31,29 @@ import { DEFAULT_NEGATIVE_PROMPT } from './constants.js';
  *   picture over theirs.
  * - no "masterpiece, best quality": on an Illustrious-class model that pair
  *   pulls hard towards polished character art, which is a subject, not a look.
- * - a lower denoise than a subject preset. A style is a way of drawing what is
- *   already there (0.6-0.65); a subject is permission to invent (0.8-0.85).
- * - a negative that names the objects of the medium anyway. It does nothing on
- *   `fast`, where CFG 1.0 never evaluates the negative branch, and it is worth
- *   having on `quality`. Those negatives are written as
+ * - a negative that names the objects of the medium anyway, written as
  *   `objects, ${DEFAULT_NEGATIVE_PROMPT}` so the ordinary quality tags stay.
+ *
+ * ## A look costs steps, not denoise
+ *
+ * The first pass at this shipped the styles on `fast` at denoise 0.6-0.65, on
+ * the theory that a light touch protects the players' composition. It
+ * protected it perfectly and produced no style at all: the pictures came back
+ * as the input line drawing with tidier lines.
+ *
+ * A 160-generation sweep - denoise 0.65-0.8 x fast/quality x two drawings,
+ * docs/experiments/2026-09-07-presets/REPORT.md - says why. On `fast` the
+ * sampler runs four steps at CFG 1.0, so the prompt barely steers and the
+ * negative branch is never evaluated at all; turning the denoise up there does
+ * not buy style, it buys a different picture - at 0.75 the house became a
+ * robot, at 0.8 it became lettering. On `quality` the same words land, and the
+ * composition survives all the way to 0.8, because the model is being guided
+ * rather than left to wander.
+ *
+ * So a style that needs a look asks for `profile: 'quality'` and 0.7-0.8
+ * denoise. That is a slower generation - about 10s against 3s on the machine
+ * this was measured on - which is the honest price of the look. A style that
+ * reads at CFG 1.0 anyway, like pixel art, stays on `fast`.
  */
 export interface PromptPreset {
   id: string;
@@ -48,10 +65,10 @@ export interface PromptPreset {
   /** Empty means the server's default negative list is used unchanged. */
   negative: string;
   /**
-   * A denoise that suits this look, applied with the prompt. A style wants a
-   * light touch (the drawing IS the picture, 0.6-0.65); a subject wants nearly
-   * all of it (the drawing is only a hint of where things go, 0.8-0.85).
-   * Clamped to whatever the room and the backend allow.
+   * A denoise that suits this look, applied with the prompt. Styles sit at
+   * 0.7-0.8 - enough to repaint the drawing, not enough to replace it - and
+   * subjects at 0.8-0.85, because a subject is permission to invent. Clamped
+   * to whatever the room and the backend allow.
    */
   denoise?: number;
   /** Only when the look genuinely needs the slower sampler. */
@@ -102,7 +119,8 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     prompt:
       'impressionism, oil painting (medium), visible brushwork, soft natural light, pastel palette, dappled light',
     negative: `easel, paintbrush, palette, canvas, picture frame, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.6,
+    denoise: 0.8,
+    profile: 'quality',
   },
   {
     id: 'architecture',
@@ -130,8 +148,8 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     prompt:
       'sumi-e style, ink wash style, monochrome, greyscale, traditional media, ink (medium), rough brushwork, minimalist, negative space, white background',
     negative: `paintbrush, brush, ink bottle, paper, calligraphy, hands, text, ${DEFAULT_NEGATIVE_PROMPT}`,
-    // The drawing is most of the picture here, so the model is given least room.
-    denoise: 0.6,
+    denoise: 0.75,
+    profile: 'quality',
   },
   {
     id: 'ukiyo-e',
@@ -141,19 +159,25 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     prompt:
       'ukiyo-e style, woodblock print style, flat color, bold outlines, limited palette, traditional japanese art style',
     negative: `paper, seal, signature, text, picture frame, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.65,
+    // 0.75 starts redrawing the trees; 0.7 keeps them and still flattens the
+    // colour into a print.
+    denoise: 0.7,
+    profile: 'quality',
   },
   {
     id: 'stained-glass',
     label: 'ステンドグラス / stained glass',
     group: '画風 / style',
-    // The name is itself an object, and naming it at all - even as "stained
-    // glass style" - produced a picture OF a window. So it is described only
-    // by what it looks like, and the window is in the negative.
+    // The name is itself an object, and on `fast` naming it produced a picture
+    // OF a cathedral window. On `quality` the tag is the difference between a
+    // few coloured dots and an actual mosaic of glass cells, and the window
+    // stays away because the negative branch is evaluated there - so the tag
+    // is back, alone, with the description carrying the rest.
     prompt:
-      'thick black outlines, translucent jewel-tone color cells, backlit glow, mosaic of flat color segments, luminous, high contrast',
+      'stained glass, thick black outlines, translucent jewel-tone color cells, backlit glow, mosaic of flat color segments, luminous, high contrast',
     negative: `window, cathedral, church, picture frame, lattice, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.65,
+    denoise: 0.7,
+    profile: 'quality',
   },
   {
     id: 'pixel-art',
@@ -162,7 +186,9 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     prompt:
       'pixel art, 16-bit style, retro game aesthetic, limited palette, dithering, crisp pixels',
     negative: `sprite sheet, grid, user interface, text, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.65,
+    // The one style that reads at CFG 1.0: blocky shapes are what four steps
+    // produce anyway. No `quality`, so this stays the cheap one.
+    denoise: 0.7,
   },
   {
     id: 'watercolor-book',
@@ -172,27 +198,33 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     prompt:
       'watercolor (medium), traditional media, storybook illustration style, soft edges, paper texture, pastel colors, whimsical',
     negative: `book, open book, pages, text, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.6,
+    denoise: 0.7,
+    profile: 'quality',
   },
   {
     id: 'claymation',
     label: '粘土アニメ / claymation',
     group: '画風 / style',
-    // "clay figures, miniature set" built a set with figurines on it.
+    // "clay figures, miniature set" built a set with figurines standing on it.
+    // The material named as a material rather than as objects is safe, and it
+    // is what puts the plasticine surface into the picture.
     prompt:
-      'claymation style, clay art style, plasticine texture, stop motion aesthetic, soft studio lighting, matte finish',
+      'claymation style, clay (medium), plasticine texture, stop motion aesthetic, soft studio lighting, matte finish, fingerprints in the surface',
     negative: `figurine, doll, miniature set, table, hands, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.65,
+    denoise: 0.7,
+    profile: 'quality',
   },
   {
     id: 'papercraft',
     label: '切り絵 / papercraft',
     group: '画風 / style',
-    // "diorama" built a scene in a box.
+    // "diorama" built a scene in a box; the bare name, with the box left in
+    // the negative, brings the paper grain without building anything.
     prompt:
-      'paper cutout style, layered paper art style, kirigami style, soft drop shadows, flat shapes',
+      'papercraft, paper cutout style, layered paper art style, kirigami style, soft drop shadows, flat shapes, visible paper texture',
     negative: `diorama, scissors, craft table, hands, box, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.65,
+    denoise: 0.7,
+    profile: 'quality',
   },
 
   // ---------------------------------------------------------- 題材 / subject
@@ -289,7 +321,10 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     prompt:
       'showa retro style, vintage poster style, faded colors, halftone, muted palette, nostalgic',
     negative: `text, letters, logo, watermark, poster on a wall, ${DEFAULT_NEGATIVE_PROMPT}`,
-    denoise: 0.65,
+    // On `fast` at 0.75 this drew a poster, lettering and a face and all. The
+    // halftone arrives on `quality` without any of that.
+    denoise: 0.7,
+    profile: 'quality',
   },
   {
     id: 'photoreal',

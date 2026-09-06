@@ -176,14 +176,27 @@ describe('prompt presets', () => {
 
     it('leaves the drawing mostly alone', () => {
       // A style is a way of drawing what is already there; a subject is
-      // permission to invent. Anything above 0.7 replaced the players'
-      // composition with a picture of its own.
+      // permission to invent. Above 0.8 the sweep replaced the players'
+      // composition with a picture of the model's own.
       for (const preset of looks) {
         if (preset.denoise === undefined) continue;
         expect(preset.denoise, preset.id).toBeLessThanOrEqual(0.8);
       }
+    });
+
+    it('pays for the look in steps rather than in denoise', () => {
+      // The first version of these presets sat on `fast` at 0.6-0.65 and
+      // produced no style whatsoever: at CFG 1.0 the prompt barely steers, so
+      // a higher denoise there buys a different picture rather than a
+      // different look. A style that needs the look asks for `quality`
+      // (docs/experiments/2026-09-07-presets/REPORT.md).
       for (const preset of looks.filter((p) => p.group === '画風 / style')) {
-        expect(preset.denoise, preset.id).toBeLessThanOrEqual(0.65);
+        if (preset.profile === 'quality') {
+          expect(preset.denoise, preset.id).toBeGreaterThanOrEqual(0.7);
+          continue;
+        }
+        // Anything left on `fast` has to be a look four steps can already do.
+        expect(preset.id).toBe('pixel-art');
       }
     });
 
@@ -209,7 +222,7 @@ describe('prompt presets', () => {
   it('sends the denoise a preset asks for, once', () => {
     const { t, denoise } = target();
     applyPromptPreset('sumi-e', t);
-    expect(denoise.sent).toEqual([0.6]);
+    expect(denoise.sent).toEqual([0.75]);
   });
 
   it('sends no denoise for a preset that does not carry one', () => {
@@ -244,7 +257,7 @@ describe('prompt presets', () => {
 
   it('sends no profile for a preset that does not carry one', () => {
     const { t, profiles } = target();
-    applyPromptPreset('ukiyo-e', t);
+    applyPromptPreset('pixel-art', t);
     expect(profiles).toEqual([]);
   });
 
