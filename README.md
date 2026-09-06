@@ -107,8 +107,11 @@ so treat the link as the only access control there is.
   watercolour picture book, claymation, papercraft), 題材 / subject (fantasy
   map, creature design, nebula, food, satellite view, mecha blueprint,
   botanical), 雰囲気 / mood (neon city, horror, retro poster, photorealistic),
-  and R18 (NSFW) on its own at the end. The ⚀ beside it rolls one at random,
-  never R18. A preset only fills the fields - the prompt stays editable and
+  and R18 (NSFW) on its own at the end - which the server only offers when it
+  was started with `PRESETS_R18=1`, and hides otherwise. That is a gate on the
+  menu and nothing else: any client can send any prompt, the server accepts it,
+  and it does not look at what a prompt says. The ⚀ beside the picker rolls one
+  at random, never R18, whether or not the group is shown. A preset only fills the fields - the prompt stays editable and
   nothing on the server knows one was used - though some also nudge the denoise
   (ink wash wants a light touch; a nebula wants nearly all of it) and one asks
   for the quality profile, when the backend has it.

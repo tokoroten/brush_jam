@@ -302,3 +302,35 @@ def test_an_ordinary_close_is_still_1000() -> None:
         # Nothing above raised, and the server did not invent a close code for
         # a socket that simply went away.
         assert client.get("/healthz").json()["active_sockets"] == 0
+
+
+def test_the_snapshot_says_whether_r18_presets_are_offered() -> None:
+    """PRESETS_R18 is a UI gate, and the client cannot guess it.
+
+    The server refuses no prompt either way - a prompt is a prompt, and the
+    room's is whatever anybody types into it - so this only decides what the
+    picker puts in front of people.
+    """
+    with make_client() as client:  # the default
+        room_id = client.post("/api/rooms").json()["roomId"]
+        with client.websocket_connect(f"/ws/rooms/{room_id}?name=a") as socket:
+            snapshot = drain(socket, "snapshot")["snapshot"]
+        assert snapshot["r18Presets"] is False
+
+    with make_client(PRESETS_R18="1") as client:
+        room_id = client.post("/api/rooms").json()["roomId"]
+        with client.websocket_connect(f"/ws/rooms/{room_id}?name=a") as socket:
+            snapshot = drain(socket, "snapshot")["snapshot"]
+        assert snapshot["r18Presets"] is True
+
+
+def test_an_r18_prompt_is_accepted_whatever_the_gate_says() -> None:
+    """The gate hides a menu entry; it is not moderation, and pretending
+    otherwise would be a promise the server cannot keep - any client can send
+    any prompt."""
+    with make_client() as client:  # PRESETS_R18 unset, so the group is hidden
+        room_id = client.post("/api/rooms").json()["roomId"]
+        with client.websocket_connect(f"/ws/rooms/{room_id}?name=a") as socket:
+            drain(socket, "snapshot")
+            socket.send_text(json.dumps({"t": "set_prompt", "prompt": "nsfw, explicit"}))
+            assert drain(socket, "prompt_changed")["prompt"] == "nsfw, explicit"

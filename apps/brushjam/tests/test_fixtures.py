@@ -82,6 +82,10 @@ def _normalise(value: Any, mapping: Dict[str, str]) -> Any:
     return value
 
 
+#: See the fixture replay: snapshot keys the frozen fixtures predate.
+SNAPSHOT_FIELDS_ADDED_LATER = ("r18Presets",)
+
+
 def _resolve(msg: Any, created: List[str]) -> Any:
     """`@layerN` in the script means "the Nth layer ever created in this room"."""
     text = json.dumps(msg)
@@ -154,9 +158,16 @@ def test_reducer_trace_matches_node() -> None:
             mapping,
         )
         assert json.loads(json.dumps(actual)) == step["result"], f"step {index} ({step['msg']})"
-        assert json.loads(json.dumps(_normalise(after, mapping))) == step["snapshot"], (
-            f"step {index} snapshot ({step['msg']})"
-        )
+        observed = json.loads(json.dumps(_normalise(after, mapping)))
+        # Fields added to the snapshot after the fixtures were frozen. The
+        # fixtures are the frozen agreement between the two implementations of
+        # the reducer, so they are not regenerated for a field the reducer does
+        # not touch: `r18Presets` is a server setting that rides along in the
+        # snapshot, and it is asserted on its own below.
+        for key in SNAPSHOT_FIELDS_ADDED_LATER:
+            if key not in step["snapshot"]:
+                observed.pop(key, None)
+        assert observed == step["snapshot"], f"step {index} snapshot ({step['msg']})"
 
 
 # ----------------------------------------------------------- noise placement

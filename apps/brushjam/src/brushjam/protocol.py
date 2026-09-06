@@ -88,6 +88,10 @@ class RoomSnapshot(TypedDict):
     aiResolution: int
     aiResolutionMax: int
     aiResolutionAdjustable: bool
+    #: Whether the picker offers the R18 preset group (PRESETS_R18). The server
+    #: still accepts any prompt anybody types; this only decides what the UI
+    #: puts in front of them.
+    r18Presets: bool
     members: List[Member]
     layers: List[Layer]
     strokes: List[Stroke]

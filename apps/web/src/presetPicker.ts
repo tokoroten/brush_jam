@@ -1,10 +1,12 @@
 import {
+  PRESET_GROUPS,
   DENOISE_STEP,
   MAX_DENOISE,
   MIN_DENOISE,
   PROMPT_PRESETS,
   randomPresets,
   type AIProfileName,
+  type PresetGroup,
   type PromptPreset,
 } from '@brushjam/shared';
 import type { SharedDraft } from './sharedDraft.js';
@@ -19,6 +21,24 @@ export interface PresetTarget {
   /** Profiles the running backend actually has. */
   profiles: readonly AIProfileName[];
   send(profile: AIProfileName): void;
+}
+
+/**
+ * The groups the picker shows.
+ *
+ * R18 is offered only when the server says so (`PRESETS_R18`, off by default).
+ * It is a gate on the menu, not on the room: anybody can type anything into
+ * the prompt, and the server accepts it. What it is for is the ordinary case -
+ * a room of people who did not ask for that in the list they are picking from.
+ */
+export function visiblePresetGroups(r18: boolean): PresetGroup[] {
+  return r18 ? [...PRESET_GROUPS] : PRESET_GROUPS.filter((group) => group !== 'R18');
+}
+
+/** The presets in one group, or none at all if that group is hidden. */
+export function presetsInGroup(group: PresetGroup, r18: boolean): PromptPreset[] {
+  if (!visiblePresetGroups(r18).includes(group)) return [];
+  return PROMPT_PRESETS.filter((preset) => preset.group === group);
 }
 
 /**

@@ -368,6 +368,7 @@ class RoomRuntime:
                     "window": self.config.ai_window,
                     "apply": self.config.ai_apply,
                     "canvasSize": self.config.canvas_size,
+                    "r18Presets": self.config.presets_r18,
                 },
             ),
         }

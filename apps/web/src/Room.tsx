@@ -6,8 +6,6 @@ import {
   DEFAULT_NEGATIVE_PROMPT,
   DENOISE_STEP,
   MAX_DENOISE,
-  PRESET_GROUPS,
-  PROMPT_PRESETS,
   MAX_SEED,
   clampSeed,
   randomSeed,
@@ -91,7 +89,13 @@ import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, sc
 import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pasteLimit, pastePlacement } from './paste.js';
-import { applyRandomPreset, denoiseCeiling, onPresetChange } from './presetPicker.js';
+import {
+  applyRandomPreset,
+  denoiseCeiling,
+  onPresetChange,
+  presetsInGroup,
+  visiblePresetGroups,
+} from './presetPicker.js';
 import { RoomClient } from './roomClient.js';
 import type { HistoryListing } from '@brushjam/shared';
 import { useSharedDraft } from './sharedDraft.js';
@@ -615,9 +619,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           onChange={(e) => onPresetChange(e, presetTarget)}
         >
           <option value="">preset</option>
-          {PRESET_GROUPS.map((group) => (
+          {visiblePresetGroups(client.r18Presets).map((group) => (
             <optgroup key={group} label={group}>
-              {PROMPT_PRESETS.filter((preset) => preset.group === group).map((preset) => (
+              {presetsInGroup(group, client.r18Presets).map((preset) => (
                 <option key={preset.id} value={preset.id}>
                   {preset.label}
                 </option>

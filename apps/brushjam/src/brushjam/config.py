@@ -119,6 +119,10 @@ class Config:
     #: Load the model during startup rather than on the first generation, so the
     #: ~40 s wait happens once, before anyone is drawing.
     inproc_preload: bool = True
+    #: Whether the client offers the R18 preset group. UI only: the server
+    #: refuses no prompt, because a prompt is a prompt and the room's is
+    #: whatever anybody types. This decides what the picker shows.
+    presets_r18: bool = False
     #: Saved AI results. Off is a single switch, because a shared machine may
     #: not want a copy of everything anyone ever drew sitting on its disk.
     history_enabled: bool = True
@@ -323,6 +327,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         ),
         inproc_dry_run=_flag(env.get("INPROC_DRY_RUN") or env.get("STREAM_DRY_RUN")),
         inproc_preload=not _flag(env.get("INPROC_NO_PRELOAD")),
+        presets_r18=_flag(env.get("PRESETS_R18")),
         history_enabled=_on_by_default(env.get("HISTORY_ENABLED")),
         history_dir=env.get("HISTORY_DIR") or DEFAULT_HISTORY_DIR,
         history_room_bytes=int(

@@ -134,6 +134,7 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
     aiResolution: 1024,
     aiResolutionMax: 1024,
     aiResolutionAdjustable: true,
+    r18Presets: false,
     aiProfile: 'fast' as const,
     aiProfiles: ['fast', 'quality'] as const,
     maxDenoise: 0.95,

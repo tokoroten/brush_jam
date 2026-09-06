@@ -107,6 +107,12 @@ export class RoomClient {
    */
   negativePromptActive = true;
   /**
+   * Whether the picker offers the R18 group. A server setting (PRESETS_R18),
+   * so it is false until a snapshot says otherwise: showing it and then taking
+   * it away would be worse than showing it a moment late.
+   */
+  r18Presets = false;
+  /**
    * Last measured stroke-to-result time per profile, so the hint under the
    * fast/quality switch reflects this machine rather than my measurements.
    * Not persisted: an empty slot falls back to PROFILE_HINT_MS.
@@ -457,6 +463,7 @@ export class RoomClient {
         this.aiProfiles = s.aiProfiles;
         this.maxDenoise = s.maxDenoise;
         this.negativePromptActive = s.negativePromptActive;
+        this.r18Presets = s.r18Presets === true;
         this.humanRevision = s.humanRevision;
         this.aiRevision = s.aiRevision;
         this.aiState = s.aiState;

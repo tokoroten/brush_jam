@@ -108,6 +108,13 @@ export interface RoomSnapshot {
    * the control would be accepted, broadcast and then ignored.
    */
   aiResolutionAdjustable: boolean;
+  /**
+   * Whether the preset picker offers the R18 group (the server's
+   * `PRESETS_R18`). A gate on what the UI puts in front of people, and nothing
+   * more: the server accepts any prompt from any client either way, so this is
+   * not moderation and must not be described as any.
+   */
+  r18Presets: boolean;
   members: Member[];
   layers: Layer[];
   strokes: Stroke[];

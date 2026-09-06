@@ -124,3 +124,11 @@ def test_history_settings() -> None:
     assert sized.history_dir == "/tmp/h"
     with pytest.raises(ConfigError):
         load_config({"HISTORY_ROOM_MB": "0"})
+
+
+def test_r18_presets_are_off_unless_asked_for() -> None:
+    assert load_config({}).presets_r18 is False
+    assert load_config({"PRESETS_R18": ""}).presets_r18 is False
+    assert load_config({"PRESETS_R18": "0"}).presets_r18 is False
+    assert load_config({"PRESETS_R18": "1"}).presets_r18 is True
+    assert load_config({"PRESETS_R18": "true"}).presets_r18 is True

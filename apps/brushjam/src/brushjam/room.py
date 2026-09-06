@@ -502,6 +502,9 @@ def snapshot(room: RoomState, you_user_id: str, ai_state: str, ai: Dict[str, Any
         "aiProfiles": list(room.ai_profiles),
         "maxDenoise": room.max_denoise,
         "negativePromptActive": room.negative_active.get(room.ai_profile, True) is not False,
+        # A server setting, not a room one: it is the same for every room in
+        # this process and nothing in the room can change it.
+        "r18Presets": bool(ai.get("r18Presets", False)),
         "members": [dict(m) for m in room.members.values()],
         "layers": [dict(l) for l in sorted_layers(room)],
         # The stroke dicts themselves are never mutated after they are

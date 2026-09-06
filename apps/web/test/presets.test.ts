@@ -7,6 +7,7 @@ import {
   MIN_DENOISE,
   PRESET_GROUPS,
   PROMPT_PRESETS,
+  randomPresets,
   type AIProfileName,
 } from '@brushjam/shared';
 import {
@@ -14,6 +15,8 @@ import {
   applyRandomPreset,
   clampPresetDenoise,
   denoiseCeiling,
+  presetsInGroup,
+  visiblePresetGroups,
   onPresetChange,
   type PresetTarget,
 } from '../src/presetPicker.js';
@@ -240,5 +243,34 @@ describe('a backend cap that is off the slider grid', () => {
     expect(clampPresetDenoise(0.9, 0.82)).toBe(0.8);
     expect(clampPresetDenoise(0.75, 0.83)).toBe(0.75);
     expect(clampPresetDenoise(0.95, MAX_DENOISE)).toBe(MAX_DENOISE);
+  });
+});
+
+/**
+ * The R18 group is offered only when the server says so (PRESETS_R18). It is
+ * a gate on the menu, not on the room: the server accepts any prompt from any
+ * client, and the tests on that side say so out loud.
+ */
+describe('the R18 gate', () => {
+  it('hides the group and its presets by default', () => {
+    expect(visiblePresetGroups(false)).not.toContain('R18');
+    expect(visiblePresetGroups(false)).toEqual(PRESET_GROUPS.filter((g) => g !== 'R18'));
+    expect(presetsInGroup('R18', false)).toEqual([]);
+  });
+
+  it('shows every group when the server allows it', () => {
+    expect(visiblePresetGroups(true)).toEqual(PRESET_GROUPS);
+    expect(presetsInGroup('R18', true).length).toBeGreaterThan(0);
+  });
+
+  it('leaves the ordinary groups alone either way', () => {
+    for (const group of PRESET_GROUPS.filter((g) => g !== 'R18')) {
+      expect(presetsInGroup(group, false)).toEqual(presetsInGroup(group, true));
+      expect(presetsInGroup(group, false).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('is not what keeps the dice away from R18 - that is unconditional', () => {
+    expect(randomPresets().some((p) => p.group === 'R18')).toBe(false);
   });
 });
