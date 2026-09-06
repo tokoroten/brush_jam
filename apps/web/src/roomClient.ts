@@ -78,7 +78,10 @@ export class RoomClient {
   readonly layerCanvases = new Map<string, HTMLCanvasElement>();
   readonly live = new Map<string, LiveStroke>();
   /** Incremental rasters for in-progress strokes, keyed like `live`. */
-  private readonly previews = new Map<string, { canvas: HTMLCanvasElement; drawn: number }>();
+  private readonly previews = new Map<
+    string,
+    { canvas: HTMLCanvasElement; drawn: number; offsetX: number; offsetY: number }
+  >();
   readonly cursors = new Map<string, RemoteCursor>();
   readonly images = new Map<string, HTMLImageElement>();
 
@@ -447,15 +450,30 @@ export class RoomClient {
   previewRaster(id: string): HTMLCanvasElement | null {
     const live = this.live.get(id);
     if (!live || live.points.length === 0) return null;
+    // The raster is in world space, so it depends on where the stroke's layer
+    // currently sits; a layer moved mid-stroke invalidates what was drawn.
+    const layer = this.layers.find((l) => l.id === live.init.layerId);
+    const offsetX = layer?.offsetX ?? 0;
+    const offsetY = layer?.offsetY ?? 0;
     let entry = this.previews.get(id);
+    if (entry && (entry.offsetX !== offsetX || entry.offsetY !== offsetY)) {
+      const ctx = ctxOf(entry.canvas);
+      ctx.clearRect(0, 0, entry.canvas.width, entry.canvas.height);
+      entry = { canvas: entry.canvas, drawn: 0, offsetX, offsetY };
+      this.previews.set(id, entry);
+    }
     if (!entry) {
-      entry = { canvas: this.deps.createRaster(this.canvasSize), drawn: 0 };
+      entry = { canvas: this.deps.createRaster(this.canvasSize), drawn: 0, offsetX, offsetY };
       this.previews.set(id, entry);
     }
     if (live.points.length > entry.drawn) {
       // overlap by one point so consecutive segments join without a gap
       const from = Math.max(0, entry.drawn - 1);
-      drawStrokeSegment(entry.canvas, { ...live.init, points: live.points.slice(from) });
+      drawStrokeSegment(
+        entry.canvas,
+        { ...live.init, points: live.points.slice(from) },
+        { x: offsetX, y: offsetY },
+      );
       entry.drawn = live.points.length;
     }
     return entry.canvas;

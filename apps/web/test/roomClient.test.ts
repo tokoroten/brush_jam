@@ -1,7 +1,7 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { describe, expect, it, vi } from 'vitest';
 import { CANVAS_SIZE, CLOSE_CAPACITY, CLOSE_SUPERSEDED, type Layer, type RoomSnapshot, type ServerMessage } from '@brushjam/shared';
-import { setScratchCanvasFactory } from '../src/raster.js';
+import { drawStroke, setScratchCanvasFactory } from '../src/raster.js';
 import {
   CAPACITY_RECONNECT_MS,
   MAX_RECONNECT_MS,
@@ -523,6 +523,97 @@ describe('live stroke previews', () => {
     // the same raster object grows; it is not reallocated
     expect(client.previewRaster('bob:n1')).toBe(first);
     expect(painted()).toBeGreaterThan(afterStart);
+    client.dispose();
+  });
+
+  it('previews a stroke on a moved layer, in world space', async () => {
+    // The bug: the preview raster was in LAYER space but blitted at the
+    // layer's offset, so a stroke drawn over the part of the canvas the
+    // layer's unmoved extent no longer covers had layer coordinates outside
+    // the raster and was clipped away entirely. Nothing appeared until the
+    // stroke committed.
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(
+      snapshot({
+        canvasSize: 512,
+        layers: [layer('l1', { offsetY: 400 })],
+        members: [{ userId: 'bob', name: 'Bob', color: '#0f0' }],
+      }),
+    );
+    await tick();
+
+    // world y = 50, on a layer moved 400px down: layer-space y = -350
+    const points = [
+      { x: 100, y: -350 },
+      { x: 140, y: -340 },
+    ];
+    client.receive({
+      t: 'stroke_start',
+      userId: 'bob',
+      stroke: { id: 'bob:n1', layerId: 'l1', tool: 'noise', color: '#000000', width: 24, points: [points[0]!] },
+    });
+    client.receive({ t: 'stroke_chunk', userId: 'bob', strokeId: 'bob:n1', points: [points[1]!] });
+    await tick();
+
+    const preview = client.previewRaster('bob:n1');
+    expect(preview).not.toBeNull();
+    const pctx = (preview as unknown as ReturnType<typeof createCanvas>).getContext('2d');
+    const around = pctx.getImageData(80, 30, 80, 40).data;
+    let painted = 0;
+    for (let i = 0; i < around.length; i += 4) if (around[i + 3]! > 0) painted += 1;
+    expect(painted).toBeGreaterThan(0);
+
+    // ...and it is the same picture the committed stroke will paint.
+    const committed = createCanvas(512, 512) as unknown as HTMLCanvasElement;
+    drawStroke(
+      committed,
+      {
+        id: 'bob:n1',
+        userId: 'bob',
+        layerId: 'l1',
+        tool: 'noise',
+        color: '#000000',
+        width: 24,
+        points,
+        revision: 1,
+        bbox: { x: 100, y: -350, width: 40, height: 10 },
+      },
+      layer('l1', { offsetY: 400 }),
+    );
+    const want = (committed as unknown as ReturnType<typeof createCanvas>)
+      .getContext('2d')
+      .getImageData(0, 0, 512, 512).data;
+    const got = pctx.getImageData(0, 0, 512, 512).data;
+    expect(Buffer.from(got)).toEqual(Buffer.from(want));
+    client.dispose();
+  });
+
+  it('starts the preview over when its layer moves mid-stroke', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(
+      snapshot({ canvasSize: 512, layers: [layer('l1')], members: [{ userId: 'bob', name: 'Bob', color: '#0f0' }] }),
+    );
+    await tick();
+    client.receive(noiseStart('bob:n1'));
+    await tick();
+    const raster = client.previewRaster('bob:n1');
+    const ctx = (raster as unknown as ReturnType<typeof createCanvas>).getContext('2d');
+    const paintedAt = (x: number, y: number): number => {
+      const d = ctx.getImageData(x, y, 40, 40).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3]! > 0) n += 1;
+      return n;
+    };
+    expect(paintedAt(0, 0)).toBeGreaterThan(0);
+
+    client.receive({ t: 'layer_updated', layer: layer('l1', { offsetX: 200, offsetY: 200 }), humanRevision: 1 });
+    await tick();
+    expect(client.previewRaster('bob:n1')).toBe(raster);
+    // the old world position is cleared, the new one painted
+    expect(paintedAt(0, 0)).toBe(0);
+    expect(paintedAt(195, 195)).toBeGreaterThan(0);
     client.dispose();
   });
 

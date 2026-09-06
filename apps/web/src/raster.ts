@@ -75,11 +75,23 @@ export function drawStroke(canvas: HTMLCanvasElement, stroke: Stroke, layer?: La
  * arrived segment is rendered each frame. Re-rendering a whole noise stroke
  * every frame meant hashing its entire bounding box 60 times a second.
  */
-export function drawStrokeSegment(canvas: HTMLCanvasElement, stroke: RenderableStroke): void {
+export function drawStrokeSegment(
+  canvas: HTMLCanvasElement,
+  stroke: RenderableStroke,
+  offset: { x: number; y: number } = { x: 0, y: 0 },
+): void {
+  // The raster is in WORLD space, like the frame it is blitted into, and not
+  // in the layer's own space: a stroke drawn on a layer that has been moved
+  // has layer-space coordinates outside 0..canvasSize, and rendering those
+  // into a canvasSize raster silently clipped the whole preview away while the
+  // committed stroke - which does apply the offset - appeared normally.
+  //
   // Built at full strength and composited at the stroke's alpha when the frame
   // is drawn. Applying alpha per segment would darken the overlaps between
   // consecutive chunks, so the preview would not match the committed stroke.
   renderStrokes(ctxOf(canvas) as unknown as never, [{ ...stroke, alpha: 1 } as never], {
+    offsetX: -offset.x,
+    offsetY: -offset.y,
     bounds: { width: canvas.width, height: canvas.height },
     createCanvas: (w, h) => scratchCanvas(w, h) as never,
   });
@@ -154,7 +166,8 @@ export function drawHumanFrame(ctx: CanvasRenderingContext2D, model: HumanFrameM
           // The preview raster holds the stroke at full strength; its opacity
           // is applied here, once, exactly as the committed stroke will be.
           sctx.globalAlpha = alphaOf(live.init);
-          sctx.drawImage(preview, dx, dy);
+          // Already in world space, offset and all.
+          sctx.drawImage(preview, 0, 0);
           sctx.globalAlpha = 1;
         }
         continue;
