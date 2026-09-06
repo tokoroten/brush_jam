@@ -51,6 +51,7 @@ import {
   galleryFailed,
   galleryLoaded,
   galleryLoading,
+  galleryRetryDue,
   initialGallery,
   selectEntry,
   selectedEntry,
@@ -219,7 +220,16 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   // older one.
   const galleryFetch = useRef(0);
   useEffect(() => {
-    if (!shouldFetch(gallery)) return;
+    const now = Date.now();
+    if (!shouldFetch(gallery, now)) {
+      // Waiting out a backoff after a failure: wake up when it expires rather
+      // than leaving the strip stuck on an error until something else renders.
+      if (gallery.open && gallery.retryAt !== null && gallery.retryAt > now) {
+        const timer = setTimeout(() => setGallery(galleryRetryDue), gallery.retryAt - now);
+        return () => clearTimeout(timer);
+      }
+      return;
+    }
     const seq = (galleryFetch.current += 1);
     setGallery(galleryLoading);
     void (async () => {

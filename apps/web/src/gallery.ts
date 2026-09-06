@@ -31,7 +31,28 @@ export interface GalleryState {
    * due, so a result that arrives while the strip is closed is not missed.
    */
   latestN: number | null;
+  /** The announcement the request in flight set out to satisfy. */
+  requestedN: number | null;
+  /**
+   * The announcement the last successful listing answered - which is not the
+   * same as the newest entry it contained. A result the store has already
+   * evicted is announced and then never appears in any listing, and comparing
+   * against the entries meant `latestN` stayed permanently ahead and the strip
+   * refetched forever.
+   */
+  satisfiedN: number | null;
+  /** Consecutive failures, which is what sets the backoff. */
+  failures: number;
+  /** Nothing is fetched before this time (`Date.now()`); null means now. */
+  retryAt: number | null;
 }
+
+/** First retry a second after a failure, doubling to half a minute. */
+export const GALLERY_RETRY_MIN_MS = 1_000;
+export const GALLERY_RETRY_MAX_MS = 30_000;
+
+export const galleryBackoffMs = (failures: number): number =>
+  Math.min(GALLERY_RETRY_MAX_MS, GALLERY_RETRY_MIN_MS * 2 ** Math.max(0, failures - 1));
 
 export const initialGallery: GalleryState = {
   open: false,
@@ -42,6 +63,10 @@ export const initialGallery: GalleryState = {
   enabled: true,
   error: null,
   latestN: null,
+  requestedN: null,
+  satisfiedN: null,
+  failures: 0,
+  retryAt: null,
 };
 
 export const toggleGallery = (state: GalleryState): GalleryState => ({
@@ -55,6 +80,9 @@ export const galleryLoading = (state: GalleryState): GalleryState => ({
   ...state,
   loading: true,
   error: null,
+  // Whatever this request comes back with, it will have answered the
+  // announcement standing when it left.
+  requestedN: state.latestN,
 });
 
 /**
@@ -67,6 +95,9 @@ export const galleryLoading = (state: GalleryState): GalleryState => ({
 export function galleryLoaded(state: GalleryState, listing: HistoryListing): GalleryState {
   const entries = [...(listing.entries ?? [])].sort((a, b) => b.n - a.n);
   const newest = entries.length > 0 ? entries[0]!.n : null;
+  const answered = [state.satisfiedN, state.requestedN, newest].filter(
+    (n): n is number => n !== null,
+  );
   return {
     ...state,
     entries,
@@ -74,6 +105,12 @@ export function galleryLoaded(state: GalleryState, listing: HistoryListing): Gal
     loading: false,
     loaded: true,
     error: null,
+    failures: 0,
+    retryAt: null,
+    // What this listing proves has been answered: the announcement it set out
+    // to satisfy, and anything newer it actually returned. An announcement
+    // that arrived while it was in flight is not covered unless it is here.
+    satisfiedN: answered.length === 0 ? state.satisfiedN : Math.max(...answered),
     selected: entries.some((e) => e.n === state.selected) ? state.selected : null,
     // Never moves backwards: a slow listing must not un-announce a newer
     // result that arrived while it was in flight.
@@ -81,11 +118,29 @@ export function galleryLoaded(state: GalleryState, listing: HistoryListing): Gal
   };
 }
 
-export const galleryFailed = (state: GalleryState, message: string): GalleryState => ({
+/**
+ * The request failed.
+ *
+ * `loading` goes back down, which used to be the whole story - and left
+ * `shouldFetch` true, so the effect started another request in the same tick.
+ * A server that is down therefore got a continuous stream of requests from
+ * every open strip. The next attempt now waits out a doubling backoff.
+ */
+export const galleryFailed = (
+  state: GalleryState,
+  message: string,
+  now: number = Date.now(),
+): GalleryState => ({
   ...state,
   loading: false,
   error: message,
+  failures: state.failures + 1,
+  retryAt: now + galleryBackoffMs(state.failures + 1),
 });
+
+/** The backoff has run out: the next fetch may go. */
+export const galleryRetryDue = (state: GalleryState): GalleryState =>
+  state.retryAt === null ? state : { ...state, retryAt: null };
 
 /** The server saved a new result under this number (`ai_result.historyN`). */
 export const galleryAnnounced = (state: GalleryState, n: number | null | undefined): GalleryState =>
@@ -108,11 +163,14 @@ export const selectedEntry = (state: GalleryState): HistoryEntry | null =>
  * announced. A closed gallery fetches nothing, so a room can run all afternoon
  * with nobody looking at the history and never ask the server for it.
  */
-export function shouldFetch(state: GalleryState): boolean {
+export function shouldFetch(state: GalleryState, now: number = Date.now()): boolean {
   if (!state.open || state.loading) return false;
+  if (state.retryAt !== null && now < state.retryAt) return false;
   if (!state.loaded) return true;
-  const newest = state.entries.length > 0 ? state.entries[0]!.n : null;
-  return state.latestN !== null && (newest === null || state.latestN > newest);
+  // Against the announcement the last listing answered, not against the
+  // entries it held: an announced entry the store has already evicted never
+  // appears in any listing, and comparing entries refetched it forever.
+  return state.latestN !== null && (state.satisfiedN === null || state.latestN > state.satisfiedN);
 }
 
 /** The fields "use these settings" writes back into the room. */

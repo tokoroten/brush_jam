@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { HistoryEntry } from '@brushjam/shared';
 import {
+  GALLERY_RETRY_MAX_MS,
+  GALLERY_RETRY_MIN_MS,
   applyHistorySettings,
   formatLatency,
   galleryAnnounced,
+  galleryBackoffMs,
   galleryFailed,
   galleryLoaded,
   galleryLoading,
+  galleryRetryDue,
   initialGallery,
   selectEntry,
   selectedEntry,
@@ -196,5 +200,70 @@ describe('formatting', () => {
     expect(formatLatency(1800)).toBe('1.8 s');
     expect(formatLatency(12_400)).toBe('12 s');
     expect(formatLatency(-1)).toBe('');
+  });
+});
+
+
+/**
+ * Review 3 finding 3: a failure only cleared `loading`, so `shouldFetch` was
+ * true again immediately and the effect started another request in the same
+ * tick - a server that was down got a continuous stream of them. And an
+ * announced entry the store had already evicted never appeared in any
+ * listing, so comparing `latestN` against the entries refetched forever.
+ */
+describe('when fetching goes wrong', () => {
+  it('waits, doubling, instead of retrying at once', () => {
+    let state = galleryLoading(toggleGallery(initialGallery));
+    state = galleryFailed(state, 'server said 503', 1_000);
+    expect(state.error).toBe('server said 503');
+    expect(shouldFetch(state, 1_000)).toBe(false);
+    expect(shouldFetch(state, 1_999)).toBe(false);
+    expect(shouldFetch(state, 2_000)).toBe(true); // a second later
+
+    state = galleryFailed(galleryLoading(state), 'server said 503', 2_000);
+    expect(shouldFetch(state, 3_999)).toBe(false);
+    expect(shouldFetch(state, 4_000)).toBe(true); // then two
+
+    state = galleryFailed(galleryLoading(state), 'server said 503', 4_000);
+    expect(shouldFetch(state, 8_000)).toBe(true); // then four
+  });
+
+  it('stops doubling at half a minute', () => {
+    expect(galleryBackoffMs(1)).toBe(GALLERY_RETRY_MIN_MS);
+    expect(galleryBackoffMs(4)).toBe(8 * GALLERY_RETRY_MIN_MS);
+    expect(galleryBackoffMs(6)).toBe(GALLERY_RETRY_MAX_MS); // capped, not 32 s
+    expect(galleryBackoffMs(20)).toBe(GALLERY_RETRY_MAX_MS);
+  });
+
+  it('forgets the backoff as soon as a listing arrives', () => {
+    let state = galleryFailed(galleryLoading(toggleGallery(initialGallery)), 'boom', 1_000);
+    expect(state.failures).toBe(1);
+    state = galleryLoaded(galleryRetryDue(state), listing([entry(0)]));
+    expect(state.failures).toBe(0);
+    expect(state.retryAt).toBeNull();
+    expect(state.error).toBeNull();
+    // ...and the next failure starts from a second again.
+    state = galleryFailed(galleryLoading(state), 'boom', 5_000);
+    expect(state.retryAt).toBe(5_000 + GALLERY_RETRY_MIN_MS);
+  });
+
+  it('does not loop when the announced entry has already been evicted', () => {
+    // The room announces result 7; by the time the strip asks, the store has
+    // evicted it and the listing comes back without it (here: empty).
+    let state = galleryAnnounced(toggleGallery(initialGallery), 7);
+    state = galleryLoaded(galleryLoading(state), listing([]));
+    expect(state.latestN).toBe(7);
+    expect(shouldFetch(state, 0)).toBe(false);
+    // A genuinely newer result still refetches.
+    state = galleryAnnounced(state, 8);
+    expect(shouldFetch(state, 0)).toBe(true);
+  });
+
+  it('still fetches for an announcement that arrived mid-request', () => {
+    let state = galleryAnnounced(toggleGallery(initialGallery), 3);
+    state = galleryLoading(state);
+    state = galleryAnnounced(state, 4); // lands while the request is in flight
+    state = galleryLoaded(state, listing([entry(3), entry(2)]));
+    expect(shouldFetch(state, 0)).toBe(true);
   });
 });
