@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -406,3 +407,133 @@ def test_bytes_that_would_not_delete_are_still_counted(tmp_path: Path, monkeypat
     assert s.total_bytes_used == sum(
         f.stat().st_size for f in (tmp_path / "history" / "abcd").glob("*.js*")
     ) + sum(f.stat().st_size for f in (tmp_path / "history" / "abcd").glob("*.jpg"))
+
+
+# ------------------------------------------- review 4: counters and leftovers
+
+
+def _plant(root: Path, room: str, n: int) -> None:
+    """One complete entry, written the way a pre-counter version would have."""
+    directory = root / "history" / room
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{n}.jpg").write_bytes(JPEG)
+    (directory / f"{n}.json").write_text(json.dumps({"n": n, "prompt": "old"}), encoding="utf-8")
+
+
+def test_a_room_from_before_counters_gets_one_written_at_load(tmp_path: Path) -> None:
+    """Finding 2. The high-water mark was reconstructed into memory only, so
+    an eviction in the same process took away the files it was reconstructed
+    from and the next restart began again at 0."""
+    _plant(tmp_path, "abcd", 7)
+    counter = tmp_path / "history" / "abcd" / "counter"
+    assert not counter.exists()
+
+    # Loading is enough: the counter is on disk before anything can evict.
+    s = store(tmp_path, room_bytes=10_000_000, total_bytes=10_000_000)
+    assert s.count("abcd") == 1
+    assert counter.read_text(encoding="ascii").strip() == "8"
+
+    # Now the reviewer's sequence: another room's write evicts abcd entirely.
+    evicting = store(tmp_path, room_bytes=10_000_000, total_bytes=5_000)
+    evicting.record("bbbb", JPEG, entry())
+    assert evicting.list("abcd") == []
+    # ...and a restart still does not reissue 7.
+    assert store(tmp_path).record("abcd", JPEG, entry()) == 8
+
+
+def test_entries_are_kept_when_their_counter_cannot_be_written(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If the number cannot be written down, the files that say what it is are
+    the only record left, so they are not evicted."""
+    _plant(tmp_path, "abcd", 4)
+    real = _history._write_atomic
+
+    def refuse_counter(path: Path, data: bytes) -> None:
+        if path.name == "counter" and "abcd" in str(path):
+            raise OSError("read-only file system")
+        real(path, data)
+
+    monkeypatch.setattr(_history, "_write_atomic", refuse_counter)
+    s = store(tmp_path, room_bytes=10_000_000, total_bytes=1_000)
+    assert s.unprotected() == {"abcd"}
+    s.record("bbbb", JPEG, entry())  # would evict abcd under the total budget
+    assert s.count("abcd") == 1, "the only record of the room's numbering was evicted"
+    assert (tmp_path / "history" / "abcd" / "4.jpg").exists()
+
+    # The disk comes back: the counter is written on the next write and the
+    # room stops being protected.
+    monkeypatch.undo()
+    s.record("bbbb", JPEG, entry())
+    assert s.unprotected() == set()
+    assert (tmp_path / "history" / "abcd" / "counter").read_text(encoding="ascii").strip() == "5"
+
+
+def test_a_failed_replace_leaves_no_temporary_behind(tmp_path: Path, monkeypatch) -> None:
+    """Finding 3. The JSON's `.part` file survived a failed install, with the
+    store reporting no bytes at all."""
+    s = store(tmp_path)
+    real_replace = os.replace
+
+    def refuse_json(src, dst, *args, **kw):
+        if str(dst).endswith(".json"):
+            raise OSError("no space left on device")
+        return real_replace(src, dst, *args, **kw)
+
+    monkeypatch.setattr(_history.os, "replace", refuse_json)
+    assert s.record("abcd", JPEG, entry()) is None
+    monkeypatch.undo()
+
+    room = tmp_path / "history" / "abcd"
+    assert sorted(f.name for f in room.iterdir()) == ["counter"], sorted(
+        f.name for f in room.iterdir()
+    )
+    assert s.total_bytes_used == 0
+    assert s.stray() == set()
+
+
+def test_leftovers_that_will_not_delete_are_counted_and_retried(
+    tmp_path: Path, monkeypatch
+) -> None:
+    s = store(tmp_path)
+    real_replace = os.replace
+    real_unlink = Path.unlink
+    locked = {"on": True}
+
+    def refuse_json(src, dst, *args, **kw):
+        if str(dst).endswith(".json"):
+            raise OSError("no space left on device")
+        return real_replace(src, dst, *args, **kw)
+
+    def refuse_unlink(self: Path, *args, **kw):
+        if locked["on"] and self.name.endswith(".json.part"):
+            raise PermissionError("the file is open in another process")
+        return real_unlink(self, *args, **kw)
+
+    monkeypatch.setattr(_history.os, "replace", refuse_json)
+    monkeypatch.setattr(Path, "unlink", refuse_unlink)
+    assert s.record("abcd", JPEG, entry()) is None
+    leftover = tmp_path / "history" / "abcd" / "0.json.part"
+    assert leftover.exists()
+    assert s.stray() == {leftover}
+    assert s.total_bytes_used == leftover.stat().st_size, "stray bytes were not counted"
+
+    # The next write retries it, and the accounting follows the disk.
+    monkeypatch.undo()
+    locked["on"] = False
+    assert s.record("abcd", JPEG, entry()) == 1
+    assert not leftover.exists()
+    assert s.stray() == set()
+    assert s.total_bytes_used == sum(
+        f.stat().st_size for f in (tmp_path / "history" / "abcd").glob("1.*")
+    )
+
+
+def test_a_part_file_on_disk_is_cleaned_up_at_load(tmp_path: Path) -> None:
+    room = tmp_path / "history" / "abcd"
+    room.mkdir(parents=True)
+    (room / "0.jpg.part").write_bytes(JPEG)
+    s = store(tmp_path)
+    assert s.count("abcd") == 0
+    assert not (room / "0.jpg.part").exists()
+    assert s.total_bytes_used == 0

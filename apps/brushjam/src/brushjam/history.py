@@ -87,6 +87,14 @@ class HistoryStore:
         #: Windows, a read-only mount). Their bytes are still on the disk, so
         #: they are still counted, and every later write tries again.
         self._undeleted: Dict[Tuple[str, int], int] = {}
+        #: Files that belong to no entry - a temporary file from a write that
+        #: failed, half of a pair - and would not delete. Their bytes are on
+        #: the disk, so they are counted, and every later write tries again.
+        self._stray: Dict[Path, int] = {}
+        #: Rooms whose counter could not be written. Their entries are not
+        #: evicted: those files are the only record of the numbers this room
+        #: has already handed out, and losing them would reissue them.
+        self._unprotected: Set[str] = set()
         self._total = 0
 
     # -- loading ----------------------------------------------------------
@@ -126,8 +134,8 @@ class HistoryStore:
                     continue
                 if item.name.endswith(".part"):
                     # An interrupted write. It was never installed, so nothing
-                    # refers to it and nothing counts it.
-                    _unlink(Path(item.path))
+                    # refers to it - but it is bytes on the disk until it goes.
+                    self._discard_file(Path(item.path))
                     continue
                 parsed = _entry_file(item.name)
                 if parsed is None:
@@ -151,8 +159,15 @@ class HistoryStore:
                 # on the disk that no budget knows about.
                 log.info("history: room %s entry %d is incomplete; removing it", room.name, n)
                 for suffix in ("jpg", "json"):
-                    _unlink(self.root / room.name / f"{n}.{suffix}")
+                    self._discard_file(self.root / room.name / f"{n}.{suffix}")
             self._next[room.name] = max(counter, high_water)
+            if counter < high_water:
+                # A room written before there were counters, or one whose
+                # counter was lost. Its numbering exists only in the names of
+                # the files that are here, so write it down NOW: an eviction
+                # later in this same load would take those names away, and a
+                # restart after that would begin again at 0.
+                self._persist_counter(room.name, self._next[room.name])
             if not sizes:
                 continue
             self._sizes[room.name] = sizes
@@ -163,6 +178,28 @@ class HistoryStore:
         # restart in the order the entries were actually written.
         entries.sort(key=lambda e: (e[0], e[2]))
         self._order = [(room, n) for _stamp, room, n, _size in entries]
+
+    def _persist_counter(self, room_id: str, nxt: int) -> bool:
+        """Write down the next number this room will use. Caller holds the lock.
+
+        A room whose counter cannot be written keeps its files instead: they
+        are the only thing that says which numbers are spent.
+        """
+        try:
+            (self.root / room_id).mkdir(parents=True, exist_ok=True)
+            _write_atomic(self.root / room_id / COUNTER_NAME, f"{nxt}\n".encode("ascii"))
+        except Exception as err:
+            if room_id not in self._unprotected:
+                log.warning(
+                    "history: cannot write the counter for room %s (%s); "
+                    "its entries will not be evicted",
+                    room_id,
+                    err,
+                )
+            self._unprotected.add(room_id)
+            return False
+        self._unprotected.discard(room_id)
+        return True
 
     # -- writing ----------------------------------------------------------
 
@@ -189,7 +226,8 @@ class HistoryStore:
                 # The number is spent the moment it is written down, whether or
                 # not the files that follow land: reusing it after a failure
                 # would put two different pictures behind one immutable URL.
-                _write_atomic(directory / COUNTER_NAME, f"{n + 1}\n".encode("ascii"))
+                if not self._persist_counter(room_id, n + 1):
+                    return None
                 self._next[room_id] = n + 1
                 try:
                     _write_atomic(jpg_path, jpeg)
@@ -199,8 +237,12 @@ class HistoryStore:
                     # it does not land.
                     _write_atomic(json_path, blob)
                 except Exception:
-                    _unlink(jpg_path)
-                    _unlink(json_path)
+                    # Both names and both temporaries: a failed `os.replace`
+                    # leaves the `.part` file behind, and it is as much a stray
+                    # byte as a half-installed entry.
+                    for path in (jpg_path, json_path):
+                        self._discard_file(path)
+                        self._discard_file(path.with_name(path.name + ".part"))
                     raise
                 size = len(jpeg) + len(blob)
                 self._sizes.setdefault(room_id, {})[n] = size
@@ -220,13 +262,19 @@ class HistoryStore:
         result and immediately deleting it would hand the client a number
         nothing serves, which is worse than being a little over budget.
         """
-        while len(self._sizes.get(room_id) or {}) > 1:
+        while room_id not in self._unprotected and len(self._sizes.get(room_id) or {}) > 1:
             room_sizes = self._sizes[room_id]
             if sum(room_sizes.values()) <= self.room_bytes:
                 break
             self._remove(room_id, min(room_sizes))
+        index = 0
         while self._total > self.total_bytes and len(self._order) > 1:
-            room, n = self._order[0]
+            if index >= len(self._order):
+                break  # everything left is protected or is the newest entry
+            room, n = self._order[index]
+            if room in self._unprotected:
+                index += 1
+                continue
             self._remove(room, n)
 
     def _remove(self, room_id: str, n: int) -> None:
@@ -258,12 +306,34 @@ class HistoryStore:
                 gone = False
         return gone
 
+    def _discard_file(self, path: Path) -> None:
+        """Remove a file that belongs to no entry, and keep the books straight.
+
+        Caller holds the lock. A file that will not go is not a file that has
+        gone: its bytes stay counted and it is tried again on the next write.
+        """
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        if _unlink(path):
+            if path in self._stray:
+                self._total -= self._stray.pop(path)
+            return
+        if path not in self._stray:
+            self._stray[path] = size
+            self._total += size
+
     def _retry_deletions(self) -> None:
-        """Caller holds the lock. Files that would not delete last time."""
+        """Caller holds the lock. Everything that would not delete last time."""
         for key in list(self._undeleted):
             room_id, n = key
             if self._delete_files(room_id, n):
                 self._total -= self._undeleted.pop(key)
+        for path in list(self._stray):
+            self._discard_file(path)
+        for room_id in list(self._unprotected):
+            self._persist_counter(room_id, self._next.get(room_id, 0))
 
     # -- reading ----------------------------------------------------------
 
@@ -324,6 +394,17 @@ class HistoryStore:
         with self._lock:
             return set(self._undeleted)
 
+    def stray(self) -> Set[Path]:
+        """Files belonging to no entry that would not delete."""
+        with self._lock:
+            return set(self._stray)
+
+    def unprotected(self) -> Set[str]:
+        """Rooms with no counter on disk, whose entries are not evicted."""
+        with self._lock:
+            self._load()
+            return set(self._unprotected)
+
 
 def _entry_file(name: str) -> Optional[Tuple[int, str]]:
     stem, dot, suffix = name.rpartition(".")
@@ -358,8 +439,17 @@ def _unlink(path: Path) -> bool:
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
-    """A reader must never see half a JPEG, and a crash must not leave one."""
+    """A reader must never see half a JPEG, and a crash must not leave one.
+
+    A failure here - a full disk mid-write, a replace that will not go - takes
+    the temporary file with it where it can, so the ordinary failure leaves
+    nothing behind. What it cannot remove, the caller records as stray.
+    """
     tmp = path.with_name(path.name + ".part")
-    with open(tmp, "wb") as handle:
-        handle.write(data)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        _unlink(tmp)
+        raise

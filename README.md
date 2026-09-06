@@ -150,9 +150,12 @@ server restarting, and `GET /rooms/{id}/history` still answers for a room that
 no longer exists. Each room also keeps a small `counter` file beside its
 entries: image URLs are served as immutable, so a number is spent when it is
 handed out and never comes round again, even after every entry that used one
-has been evicted. An entry is its JPEG *and* its JSON - the JSON is written
+has been evicted. A room written before those counters existed gets one at
+startup, before anything can be evicted, and is kept rather than evicted if
+that write fails - the names of its files are then the only record of which
+numbers are spent. An entry is its JPEG *and* its JSON - the JSON is written
 last - and a half-written pair, like a leftover `.part` file, is cleaned up
-when the store is next read. Two budgets keep it from filling the disk -
+when the store is next read, or counted and retried if it will not delete. Two budgets keep it from filling the disk -
 `HISTORY_ROOM_MB` (200) and `HISTORY_TOTAL_MB` (2000), oldest evicted first -
 and `HISTORY_ENABLED=0` turns the whole thing off.
 
