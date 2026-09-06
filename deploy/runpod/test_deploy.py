@@ -13,6 +13,7 @@ import shutil
 import socket
 import sys
 import tarfile
+import time
 import tempfile
 import threading
 import urllib.request
@@ -403,6 +404,171 @@ def test_watch_boot() -> None:
     check("watch_boot gives up on the timeout", timed_out is False)
 
 
+def test_supervisor_swaps_a_running_server() -> None:
+    """Review 2 finding 7: an upload that arrives while the server is running.
+
+    The receiver SIGTERMs the pid bootstrap.sh recorded, but an upload landing
+    before that pid is published - or after a stale one was signalled - reached
+    nobody: the loop blocked on the old server in the foreground and the new
+    code sat in /workspace/app.tgz forever. The supervisor now runs the server
+    as a child and watches for both its exit and a pending tarball.
+    """
+    import subprocess
+
+    bash = _bash()
+    if bash is None:  # pragma: no cover - a machine with no usable bash
+        print("skip supervisor swap (no working bash)")
+        return
+
+    fake_server = (
+        'echo $$ > "$WORKSPACE_DIR/server.pid"\n'
+        'echo {tag} >> "$WORKSPACE_DIR/ran"\n'
+        "while true; do sleep 0.2; done\n"
+    )
+    script = D.docker_start_cmd()[2].replace(
+        "__RECEIVER_PY__", "print('no receiver in this test')"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "app").mkdir()
+        # v1: a "server" that runs until it is stopped, as the real one does.
+        (ws / "app" / "bootstrap.sh").write_text(
+            fake_server.format(tag="v1"), encoding="utf-8", newline="\n"
+        )
+        start = ws / "start.sh"
+        start.write_text(script, encoding="utf-8", newline="\n")
+
+        env = dict(os.environ)
+        env.update(
+            {
+                # As the shell inside sees it: msys tar reads "C:/x" as a
+                # remote host and refuses to extract there.
+                "WORKSPACE_DIR": _bash_path(ws),
+                "WORKSPACE": _bash_path(ws),
+                # The real intervals would make this test a minute long.
+                "BOOT_POLL_SECONDS": "0.2",
+                "BOOT_RESTART_SECONDS": "0.2",
+                "BOOT_STOP_SECONDS": "5",
+            }
+        )
+        # POSIX path and an explicit cwd: on Windows this is git bash, which
+        # does not take a backslash path as a script name.
+        loop = subprocess.Popen(
+            [bash, start.as_posix()],
+            cwd=str(ws),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            check("the supervisor starts the app it finds", _wait_for(ws / "ran", "v1"))
+            first_pid = _pid(ws)
+
+            # v2 arrives while v1 is running, and nobody signals anything: this
+            # is the upload the receiver acknowledged and could not deliver.
+            tarball = io.BytesIO()
+            with tarfile.open(fileobj=tarball, mode="w:gz") as tar:
+                body = fake_server.format(tag="v2").encode()
+                info = tarfile.TarInfo("bootstrap.sh")
+                info.size, info.mode = len(body), 0o755
+                tar.addfile(info, io.BytesIO(body))
+            # Atomically, as the receiver does: the supervisor polls for the
+            # file's existence, so a half-written one would be claimed.
+            (ws / "app.part").write_bytes(tarball.getvalue())
+            os.replace(ws / "app.part", ws / "app.tgz")
+
+            check(
+                "an upload with no signal still replaces the running server",
+                _wait_for(ws / "ran", "v2", timeout=30),
+                _read(ws / "boot.log")[-800:],
+            )
+            check(
+                "the upload was claimed",
+                (ws / "app.installed.tgz").exists(),
+                _read(ws / "boot.log")[-800:],
+            )
+            check("nothing is left pending", not (ws / "app.tgz").exists())
+            check(
+                "the old server was stopped, not left beside the new one",
+                first_pid is not None and not _alive(first_pid),
+                "pid %s is still running" % first_pid,
+            )
+        finally:
+            loop.terminate()
+            try:
+                loop.wait(timeout=10)
+            except Exception:  # pragma: no cover
+                loop.kill()
+
+
+def _bash():
+    """A bash that can actually run a script.
+
+    On Windows the `bash` on PATH is usually WSL's, which cannot execute a
+    script at a Windows path (execvpe(/bin/bash) fails); git's is the one to
+    use. On Linux, where this test matters most, PATH is right.
+    """
+    import subprocess
+
+    candidates = []
+    if os.name == "nt":
+        candidates += [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin\bash.exe"),
+        ]
+    candidates.append(shutil.which("bash"))
+    for candidate in candidates:
+        if not candidate or not Path(candidate).exists():
+            continue
+        try:
+            done = subprocess.run([candidate, "-c", "echo ok"], capture_output=True, timeout=30)
+        except Exception:  # pragma: no cover - a broken interpreter
+            continue
+        if done.stdout.strip() == b"ok":
+            return candidate
+    return None
+
+
+def _bash_path(path: Path) -> str:
+    """A path the shell can use. On Windows that is git bash's /c/... form."""
+    text = path.as_posix()
+    if os.name == "nt" and len(text) > 2 and text[1] == ":":
+        return "/" + text[0].lower() + text[2:]
+    return text
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _wait_for(path: Path, needle: str, timeout: float = 20) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if needle in _read(path):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _pid(ws: Path):
+    try:
+        return int(_read(ws / "server.pid").strip())
+    except ValueError:
+        return None
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 if __name__ == "__main__":
     test_tarball()
     test_start_cmd()
@@ -411,6 +577,7 @@ if __name__ == "__main__":
     test_phase_contract()
     test_install_pending()
     test_watch_boot()
+    test_supervisor_swaps_a_running_server()
     print()
     if failures:
         print(f"{len(failures)} failed: {', '.join(failures)}")

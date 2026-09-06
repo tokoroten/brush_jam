@@ -47,6 +47,37 @@ if [ -n "${START_SH_FUNCTIONS_ONLY:-}" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# The server runs as a CHILD of this loop, and the loop watches for two things
+# at once: the child exiting, and a tarball landing. Running bootstrap.sh in
+# the foreground meant an upload that arrived between `install_pending` finding
+# nothing and bootstrap.sh publishing its pid was acknowledged by the receiver,
+# signalled at a stale pid that no longer existed, and then waited for forever:
+# the old server ran on, the loop blocked on it, and the new code sat in
+# /workspace/app.tgz unnoticed.
+run_app() {
+  bash "$WS/app/bootstrap.sh" >> "$WS/boot.log" 2>&1 &
+  local child=$!
+  local waited=0
+  while kill -0 "$child" 2>/dev/null; do
+    if [ -f "$WS/app.tgz" ]; then
+      echo "[start] an upload is waiting; stopping pid $child" >> "$WS/boot.log"
+      kill -TERM "$child" 2>/dev/null
+      waited=0
+      while kill -0 "$child" 2>/dev/null && [ "$waited" -lt "${BOOT_STOP_SECONDS:-30}" ]; do
+        sleep 1
+        waited=$((waited + 1))
+      done
+      kill -KILL "$child" 2>/dev/null
+      break
+    fi
+    sleep "${BOOT_POLL_SECONDS:-2}"
+  done
+  # Reaped here, so the replacement never starts beside a server still holding
+  # the GPU and port 8787.
+  wait "$child" 2>/dev/null
+  return $?
+}
+
 echo "waiting-for-upload" > "$WS/phase"
 
 cat > "$WS/receiver.py" <<'RECEIVER_PY_EOF'
@@ -63,11 +94,14 @@ while true; do
     continue
   fi
   if [ ! -d "$WS/app" ]; then
-    sleep 3
+    sleep "${BOOT_RESTART_SECONDS:-3}"
     continue
   fi
-  bash "$WS/app/bootstrap.sh" >> "$WS/boot.log" 2>&1
-  echo "[start] server exited ($?); restarting in 3s" >> "$WS/boot.log"
+  run_app
+  rc=$?
+  echo "[start] server exited ($rc)" >> "$WS/boot.log"
   echo "restarting" > "$WS/phase"
-  sleep 3
+  # An upload is already waiting: install it now rather than idling first.
+  [ -f "$WS/app.tgz" ] && continue
+  sleep "${BOOT_RESTART_SECONDS:-3}"
 done

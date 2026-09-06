@@ -25,6 +25,17 @@ No git remote, no registry, no SSH. Instead:
 Uploading again replaces the code and restarts the server: the receiver SIGTERMs
 the running server (by the pid `bootstrap.sh` recorded) and the loop re-extracts.
 
+That signal is a shortcut, not the mechanism. The boot loop runs the server as
+a **child** and watches two things at once - the child exiting, and
+`/workspace/app.tgz` appearing - so an upload is installed even when the signal
+reaches nobody: it lands in the window before `bootstrap.sh` has published its
+pid, or the pid on disk is a process that no longer exists. When the loop sees
+a pending tarball it terminates the child, waits for it (`BOOT_STOP_SECONDS`,
+30 by default) and only then extracts, so the replacement never comes up beside
+a server still holding the GPU and port 8787. Before this, such an upload was
+acknowledged by the receiver and then waited for forever while the old code
+kept running.
+
 ## What an upload costs
 
 **About three minutes**, nearly all of it the model loading back onto the GPU.
