@@ -42,6 +42,7 @@ import {
   type BrushSizes,
   type SizedTool,
 } from './brushSize.js';
+import { stageCursor } from './brushCursor.js';
 import { browserCopyDeps, copyText } from './clipboard.js';
 import {
   applyHistorySettings,
@@ -346,6 +347,12 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const scaleRef = useRef<{ id: string; scale: number; sentAt: number } | null>(null);
   const scaleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const spaceRef = useRef(false);
+  /**
+   * The same fact as `spaceRef`, in state: the pointer handlers need it without
+   * a re-render, and the cursor needs it *with* one (the ring has to go while
+   * the hand is out, and the OS pointer has to come back).
+   */
+  const [spacePan, setSpacePan] = useState(false);
   const lastCursorAt = useRef(0);
 
   const layers = client.orderedLayers;
@@ -546,6 +553,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     const down = (e: KeyboardEvent): void => {
       if (e.code === 'Space' && !isTyping(e.target)) {
         spaceRef.current = true;
+        setSpacePan(true);
         e.preventDefault();
       }
       // Held, not toggled: a glance under the overlay should end when the key
@@ -560,14 +568,23 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       }
     };
     const up = (e: KeyboardEvent): void => {
-      if (e.code === 'Space') spaceRef.current = false;
+      if (e.code === 'Space') {
+        spaceRef.current = false;
+        setSpacePan(false);
+      }
       // No `overlayTakesTab` here: whatever the focus is now, a key that went
       // down has to come back up, or the overlay stays hidden for ever.
       if (e.key === 'Tab') setOverlay((o) => peekOverlay(o, false));
     };
     // A window that loses the focus never delivers the keyup (alt-tabbing away
     // is exactly that), and the overlay would come back to a hidden canvas.
-    const blur = (): void => setOverlay((o) => peekOverlay(o, false));
+    // A window that loses the focus never delivers the keyup, so the hand would
+    // stay out until Space was pressed and released again.
+    const blur = (): void => {
+      spaceRef.current = false;
+      setSpacePan(false);
+      setOverlay((o) => peekOverlay(o, false));
+    };
     window.addEventListener('blur', blur);
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
@@ -1000,6 +1017,8 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               kind="human"
               label="Human canvas"
               overlay={overlaySheet}
+              brush={{ tool, width, panning: spacePan }}
+              cursor={stageCursor({ tool, panning: spacePan })}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
@@ -1012,6 +1031,8 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               camera={camera}
               kind="ai"
               label="AI canvas"
+              // A viewport: no brush, and the hand it always is.
+              cursor={stageCursor({ tool, panning: spacePan, viewOnly: true })}
               onPointerDown={(e) => onPointerDown(e, true)}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}

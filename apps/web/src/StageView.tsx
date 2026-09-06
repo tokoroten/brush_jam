@@ -1,5 +1,6 @@
 import { useEffect, useRef, type JSX } from 'react';
 import { renderStrokes, worldToScreen, type Camera } from '@brushjam/shared';
+import { CROSSHAIR_ARM_PX, brushCursor, type BrushCursorTool } from './brushCursor.js';
 import { drawHumanFrame } from './raster.js';
 import type { RoomClient } from './roomClient.js';
 
@@ -19,6 +20,15 @@ export interface StageViewProps {
    * pointer event away from the stage.
    */
   overlay?: { image: CanvasImageSource | null; alpha: number };
+  /**
+   * The brush footprint drawn under the pointer (brushCursor.ts). Drawn in the
+   * frame that is already running, so showing it costs one arc; it follows the
+   * width and the zoom because both are read per frame, which is what makes the
+   * size slider move the ring while it is being dragged.
+   */
+  brush?: { tool: BrushCursorTool; width: number; panning: boolean } | null;
+  /** CSS cursor for the canvas: `none` where the ring is the cursor. */
+  cursor?: string;
 }
 
 const CURSOR_TTL_MS = 4000;
@@ -30,9 +40,22 @@ export function StageView(props: StageViewProps): JSX.Element {
   // every opacity change would drop a frame each time the slider moves.
   const overlayRef = useRef(props.overlay);
   overlayRef.current = props.overlay;
+  const brushRef = useRef(props.brush);
+  brushRef.current = props.brush;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
+  /**
+   * Where the pointer is, in this canvas's own screen pixels, or null when it
+   * is not over the stage. A ref rather than state: it changes with every
+   * pointermove, and re-rendering the room at that rate to move a circle would
+   * cost far more than the circle.
+   */
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
+  const trackPointer = (e: React.PointerEvent<HTMLCanvasElement>): void => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    pointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -113,6 +136,45 @@ export function StageView(props: StageViewProps): JSX.Element {
         ctx.fillText(member.name, p.x + 8, p.y - 6);
       }
 
+      // The brush footprint, in screen space and last of all: it is the mouse
+      // pointer, so nothing may cover it.
+      const at = pointerRef.current;
+      const brush = brushRef.current;
+      const shape = at && brush ? brushCursor({ ...brush, zoom: cam.zoom }) : null;
+      if (at && shape) {
+        // Two-tone, because the canvas underneath is black ink on white paper
+        // in one place and a dark background in the next: an outer dark ring
+        // with a lighter one just inside it is visible on both.
+        ctx.lineWidth = 1;
+        if (shape.kind === 'ring') {
+          ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+          ctx.beginPath();
+          ctx.arc(at.x, at.y, shape.radius + 0.5, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+          ctx.beginPath();
+          ctx.arc(at.x, at.y, Math.max(0.5, shape.radius - 0.5), 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          // Too small to ring: a cross that keeps the exact point instead.
+          const arm = CROSSHAIR_ARM_PX;
+          const cross = (): void => {
+            ctx.beginPath();
+            ctx.moveTo(at.x - arm, at.y + 0.5);
+            ctx.lineTo(at.x + arm, at.y + 0.5);
+            ctx.moveTo(at.x + 0.5, at.y - arm);
+            ctx.lineTo(at.x + 0.5, at.y + arm);
+            ctx.stroke();
+          };
+          ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+          ctx.lineWidth = 3;
+          cross();
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.lineWidth = 1;
+          cross();
+        }
+      }
+
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
       ctx.fillRect(8, 8, ctx.measureText(label).width + 16, 20);
       ctx.fillStyle = '#ffffff';
@@ -127,8 +189,21 @@ export function StageView(props: StageViewProps): JSX.Element {
     <canvas
       ref={canvasRef}
       className="stage"
-      onPointerDown={props.onPointerDown}
-      onPointerMove={props.onPointerMove}
+      style={props.cursor === undefined ? undefined : { cursor: props.cursor }}
+      onPointerDown={(e) => {
+        // Also on down: a tablet pen can arrive already touching the glass, and
+        // the ring would otherwise appear only after the first move.
+        trackPointer(e);
+        props.onPointerDown?.(e);
+      }}
+      onPointerMove={(e) => {
+        trackPointer(e);
+        props.onPointerMove?.(e);
+      }}
+      onPointerEnter={trackPointer}
+      onPointerLeave={() => {
+        pointerRef.current = null;
+      }}
       onPointerUp={props.onPointerUp}
       onPointerCancel={props.onPointerUp}
       onWheel={props.onWheel}
