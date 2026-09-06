@@ -200,7 +200,11 @@ export class RoomClient {
     this.socket = socket;
     socket.onopen = () => {
       this.connected = true;
-      this.capacityRetryMs = CAPACITY_RECONNECT_MS;
+      // The backoff is NOT reset here. A server with no room for another
+      // socket accepts the connection and then closes it with 1013, so every
+      // refusal fires onopen: resetting here meant the wait never grew past
+      // five seconds however long the server stayed full. It is reset when a
+      // snapshot arrives, which is the only evidence of being let in.
       this.bump();
     };
     socket.onclose = (event) => {
@@ -430,6 +434,8 @@ export class RoomClient {
     switch (msg.t) {
       case 'snapshot': {
         const s = msg.snapshot;
+        // Admitted: the only thing that proves the server had room for us.
+        this.capacityRetryMs = CAPACITY_RECONNECT_MS;
         // A new session. Everything sent on the socket this replaces is
         // unacknowledged forever, so the fields are told to reconcile with the
         // room's value and resend whatever it does not have.

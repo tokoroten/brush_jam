@@ -2,7 +2,14 @@ import { createCanvas } from '@napi-rs/canvas';
 import { describe, expect, it, vi } from 'vitest';
 import { CANVAS_SIZE, CLOSE_CAPACITY, CLOSE_SUPERSEDED, type Layer, type RoomSnapshot, type ServerMessage } from '@brushjam/shared';
 import { setScratchCanvasFactory } from '../src/raster.js';
-import { CAPACITY_RECONNECT_MS, RoomClient, RECONNECT_MS, type ClientDeps, type SocketLike } from '../src/roomClient.js';
+import {
+  CAPACITY_RECONNECT_MS,
+  MAX_RECONNECT_MS,
+  RoomClient,
+  RECONNECT_MS,
+  type ClientDeps,
+  type SocketLike,
+} from '../src/roomClient.js';
 
 class FakeSocket implements SocketLike {
   readyState = 0;
@@ -958,6 +965,65 @@ describe('close codes', () => {
       expect(all).toHaveLength(2);
       vi.advanceTimersByTime(CAPACITY_RECONNECT_MS);
       expect(all).toHaveLength(3);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * Review 2 finding 5: a full server accepts the socket and then closes it
+   * with 1013, so onopen fired on every refusal and reset the backoff. The
+   * client hammered a full server at five seconds forever.
+   */
+  it('keeps doubling even though a refused connection opens first', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = codedSockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      let waited = CAPACITY_RECONNECT_MS;
+      for (const expected of [CAPACITY_RECONNECT_MS, 10_000, 20_000, 40_000, MAX_RECONNECT_MS]) {
+        const socket = all[all.length - 1]!;
+        socket.open(); // the server accepts, THEN refuses
+        socket.closeWith(CLOSE_CAPACITY);
+        const before = all.length;
+        vi.advanceTimersByTime(expected - 10);
+        expect(all).toHaveLength(before); // not yet
+        vi.advanceTimersByTime(20);
+        expect(all).toHaveLength(before + 1);
+        waited = expected;
+      }
+      expect(waited).toBe(MAX_RECONNECT_MS);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('goes back to five seconds only once a snapshot proves we were let in', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, all } = codedSockets();
+      const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+      client.connect();
+      all[0]!.open();
+      all[0]!.closeWith(CLOSE_CAPACITY);
+      vi.advanceTimersByTime(CAPACITY_RECONNECT_MS + 10);
+      all[1]!.open();
+      all[1]!.closeWith(CLOSE_CAPACITY);
+      vi.advanceTimersByTime(10_000 + 10); // doubled, as it should be
+      expect(all).toHaveLength(3);
+
+      // Let in at last: the snapshot is what resets the wait.
+      all[2]!.open();
+      all[2]!.onmessage?.({ data: JSON.stringify(snapshot()) });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.sessionEpoch).toBe(1);
+
+      all[2]!.closeWith(CLOSE_CAPACITY);
+      vi.advanceTimersByTime(CAPACITY_RECONNECT_MS + 10);
+      expect(all).toHaveLength(4);
       client.dispose();
     } finally {
       vi.useRealTimers();
