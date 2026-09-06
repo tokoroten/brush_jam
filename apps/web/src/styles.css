@@ -32,7 +32,7 @@ select.preset { max-width: 14rem; }
 .pill.queued { background: #4a4f5a; }
 .pill.error { background: #a83232; }
 .zoom { color: #8f96a3; }
-.tools label { display: flex; align-items: center; gap: 4px; color: #b9bec9; }
+.tools label, .tools .field { display: flex; align-items: center; gap: 4px; color: #b9bec9; }
 
 .body { flex: 1; display: flex; min-height: 0; }
 .stages { flex: 1; display: flex; min-width: 0; }
@@ -67,12 +67,12 @@ select.preset { max-width: 14rem; }
 .layer-row input[type='range'] { width: 60px; max-width: 100%; }
 .hint { color: #767d8a; line-height: 1.5; }
 
-/* fast / quality: the one AI control an ordinary user should have to see. */
+/* fast / quality, in the advanced panel with the rest of the AI settings.
+   `.field` is a label's layout for a control group that must not be one. */
 .segmented { display: inline-flex; border: 1px solid #363b44; border-radius: 6px; overflow: hidden; }
 .segmented button { border: none; border-radius: 0; background: #22262d; padding: 4px 12px; }
 .segmented button + button { border-left: 1px solid #363b44; }
 .segmented button.active { background: #3d6bd8; color: #fff; }
-header .hint { font-size: 11px; white-space: nowrap; }
 
 
 @media (max-width: 900px) {

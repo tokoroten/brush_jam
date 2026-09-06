@@ -98,9 +98,10 @@ so treat the link as the only access control there is.
 
 ## The controls
 
-- **fast / quality.** `fast` is a 4-step distilled LoRA at 768 - a couple of
-  seconds an edit on a 3070, which is what makes the loop feel alive. `quality`
-  is 14 steps at 1024, several times slower and considerably better. Room-wide.
+- **fast / quality.** In Advanced, with the rest of the AI settings. `fast` is
+  a 4-step distilled LoRA at 768 - a couple of seconds an edit on a 3070, which
+  is what makes the loop feel alive. `quality` is 14 steps at 1024, several
+  times slower and considerably better. Room-wide.
 - **presets.** A picker beside the prompt fills it from about two dozen looks,
   grouped as 基本 / basic (anime girl, landscape, impressionist, architecture,
   background art), 画風 / style (sumi-e, ukiyo-e, stained glass, pixel art,
@@ -131,6 +132,11 @@ so treat the link as the only access control there is.
   generation does not move it under your hand, and any entry in the history
   strip can be pinned the same way. It is yours alone: nobody else in the room
   sees it, it is not part of "save drawing", and the AI never sees it either.
+- **brush size.** The ring under the pointer is the brush, at the size it will
+  actually land: the slider is in world pixels and the canvas is usually zoomed
+  out, so the number alone says very little. It replaces the mouse pointer while
+  a drawing tool is active, and becomes a small cross when the brush is smaller
+  than a ring can show.
 - **tools.** Pen, eraser, a **noise pen** whose texture is hashed from world
   coordinates (identical for everyone, stable under any crop), and a move tool
   for whole layers. Ctrl/Cmd+V pastes a reference image as a layer, excluded

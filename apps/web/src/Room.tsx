@@ -749,23 +749,6 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         <button className="dice" title="random preset" onClick={() => applyRandomPreset(presetTarget)}>
           ⚀
         </button>
-        <div className="segmented" title={profileHint}>
-          {AI_PROFILES.map((p) => {
-            const supported = client.aiProfiles.includes(p);
-            return (
-              <button
-                key={p}
-                className={client.aiProfile === p ? 'active' : ''}
-                disabled={!supported}
-                title={supported ? undefined : `the ${backendLabel} backend has no ${p} profile`}
-                onClick={() => client.sendSetting({ t: 'set_ai_settings', aiProfile: p })}
-              >
-                {p}
-              </button>
-            );
-          })}
-        </div>
-        <span className="hint">{profileHint}</span>
         <button title="download the AI result as a PNG" onClick={() => void saveAi()}>
           save AI
         </button>
@@ -797,6 +780,33 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
 
       {advanced ? (
         <div className="tools">
+          {/* Speed against quality. It sat in the header, where it was one
+              more thing in a bar that had run out of room; it belongs with the
+              other AI settings, and a preset that recommends a profile changes
+              it here exactly as it did there. */}
+          {/* A span, not a label: a label hands a stray click on its text to
+              the first control inside it, which here would silently switch the
+              room to `fast`. */}
+          <span className="field" title={profileHint}>
+            profile
+            <span className="segmented">
+              {AI_PROFILES.map((p) => {
+                const supported = client.aiProfiles.includes(p);
+                return (
+                  <button
+                    key={p}
+                    className={client.aiProfile === p ? 'active' : ''}
+                    disabled={!supported}
+                    title={supported ? undefined : `the ${backendLabel} backend has no ${p} profile`}
+                    onClick={() => client.sendSetting({ t: 'set_ai_settings', aiProfile: p })}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+            </span>
+          </span>
+          <span className="hint">{profileHint}</span>
           <label>
             {/* The ceiling on the grid the slider actually moves on, so the
                 number under the thumb is one the server will accept back. */}
