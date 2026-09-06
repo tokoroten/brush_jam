@@ -91,10 +91,17 @@ so treat the link as the only access control there is.
 - **fast / quality.** `fast` is a 4-step distilled LoRA at 768 - a couple of
   seconds an edit on a 3070, which is what makes the loop feel alive. `quality`
   is 14 steps at 1024, several times slower and considerably better. Room-wide.
-- **presets.** A picker beside the prompt fills it from a short list - 美少女 /
-  anime girl, 風景画 / landscape, 印象派 / impressionist, 建物 / architecture,
-  背景 / background art, and R18 (NSFW). It only fills the two prompt fields;
-  they stay editable, and nothing on the server knows a preset was used.
+- **presets.** A picker beside the prompt fills it from about two dozen looks,
+  grouped as 基本 / basic (anime girl, landscape, impressionist, architecture,
+  background art), 画風 / style (sumi-e, ukiyo-e, stained glass, pixel art,
+  watercolour picture book, claymation, papercraft), 題材 / subject (fantasy
+  map, creature design, nebula, food, satellite view, mecha blueprint,
+  botanical), 雰囲気 / mood (neon city, horror, retro poster, photorealistic),
+  and R18 (NSFW) on its own at the end. The ⚀ beside it rolls one at random,
+  never R18. A preset only fills the fields - the prompt stays editable and
+  nothing on the server knows one was used - though some also nudge the denoise
+  (ink wash wants a light touch; a nebula wants nearly all of it) and one asks
+  for the quality profile, when the backend has it.
 - **prompt.** Shared. It steers the whole canvas. The negative prompt is in
   Advanced, and is inert on `fast`: a distilled model at CFG 1.0 never evaluates
   the negative branch, and the UI greys it out rather than pretending.

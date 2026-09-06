@@ -6,6 +6,7 @@ import {
   DEFAULT_NEGATIVE_PROMPT,
   DENOISE_STEP,
   MAX_DENOISE,
+  PRESET_GROUPS,
   PROMPT_PRESETS,
   MAX_SEED,
   clampSeed,
@@ -75,7 +76,7 @@ import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, sc
 import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pasteLimit, pastePlacement } from './paste.js';
-import { onPresetChange } from './presetPicker.js';
+import { applyRandomPreset, onPresetChange } from './presetPicker.js';
 import { RoomClient } from './roomClient.js';
 import { useSharedDraft } from './sharedDraft.js';
 
@@ -151,8 +152,16 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     client.send({ t: 'set_ai_settings', negativePrompt: value }),
   );
   const seedField = useSharedDraft(client.seed, (value) => client.send({ t: 'set_ai_settings', seed: value }));
-  /** See presetPicker.ts: a one-shot fill of the two prompt fields. */
-  const presetFields = { prompt: promptField, negative: negativeField };
+  /** See presetPicker.ts: a one-shot fill of the prompt fields (and, for the
+   * presets that carry them, the denoise and profile they want). */
+  const presetTarget = {
+    prompt: promptField,
+    negative: negativeField,
+    denoise: denoiseField,
+    maxDenoise: client.maxDenoise,
+    profiles: client.aiProfiles,
+    send: (aiProfile: AIProfileName) => client.send({ t: 'set_ai_settings', aiProfile }),
+  };
 
   const dragRef = useRef<Drag | null>(null);
   /** Image id of a paste we are still waiting for the server to turn into a layer. */
@@ -517,15 +526,22 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           className="preset"
           title="fill the prompt from a preset; it stays editable afterwards"
           value=""
-          onChange={(e) => onPresetChange(e, presetFields)}
+          onChange={(e) => onPresetChange(e, presetTarget)}
         >
           <option value="">preset</option>
-          {PROMPT_PRESETS.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.label}
-            </option>
+          {PRESET_GROUPS.map((group) => (
+            <optgroup key={group} label={group}>
+              {PROMPT_PRESETS.filter((preset) => preset.group === group).map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
+        <button className="dice" title="random preset" onClick={() => applyRandomPreset(presetTarget)}>
+          ⚀
+        </button>
         <div className="segmented" title={profileHint}>
           {AI_PROFILES.map((p) => {
             const supported = client.aiProfiles.includes(p);
