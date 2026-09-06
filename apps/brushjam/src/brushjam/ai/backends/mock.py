@@ -8,6 +8,7 @@ whole scheduler path is exercised without a GPU.
 from __future__ import annotations
 
 import io
+from typing import Dict
 
 import numpy as np
 from PIL import Image
@@ -41,6 +42,11 @@ class MockBackend:
             max_denoise=MAX_DENOISE,
             negative_prompt_active={"fast": True, "quality": True},
         )
+
+    def identity(self, profile: str) -> Dict[str, str]:
+        # Not a checkpoint at all, and saying so is the point: a history entry
+        # written against the mock must not read as one made by a model.
+        return {"model": "mock"}
 
     async def generate(self, req: GenerateRequest) -> bytes:
         await delay(self.latency_ms)

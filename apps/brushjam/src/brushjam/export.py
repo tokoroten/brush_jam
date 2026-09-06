@@ -168,6 +168,12 @@ def build_zip(
                             "latencyMs",
                             "aiRevision",
                             "aiGeneration",
+                            # Which checkpoint and adapter made it. Absent on
+                            # entries written before they were recorded, and
+                            # `null` in the manifest rather than missing, so
+                            # every frame has the same shape.
+                            "model",
+                            "lora",
                         )
                     },
                 }

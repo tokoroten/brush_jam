@@ -63,6 +63,13 @@ class RunpodBackend:
     def headers(self) -> Dict[str, str]:
         return {"content-type": "application/json", "authorization": f"Bearer {self.api_key}"}
 
+    def identity(self, profile: str) -> Dict[str, str]:
+        """The graph's own checkpoint, and the LoRA only the fast profile loads."""
+        out: Dict[str, str] = {"model": self.checkpoint}
+        if profile != "quality" and self.fast_lora:
+            out["lora"] = self.fast_lora
+        return out
+
     async def capabilities(self) -> BackendCapabilities:
         # Same workflow builder as ComfyUI, so the same two profiles.
         return BackendCapabilities(

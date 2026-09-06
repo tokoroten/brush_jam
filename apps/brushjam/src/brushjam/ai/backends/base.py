@@ -49,6 +49,18 @@ class AIBackend(Protocol):
     async def generate(self, req: GenerateRequest) -> bytes:
         ...
 
+    def identity(self, profile: str) -> Dict[str, str]:
+        """What actually made the picture: `{"model": ..., "lora": ...}`.
+
+        Optional, cheap, and never blocking - it is called on the event loop
+        once per accepted result, to be written into the history entry beside
+        the prompt and the seed. Six months later "which checkpoint was this?"
+        is the question a saved image cannot answer on its own.
+
+        `lora` is omitted when none applies (the quality profile detaches it).
+        A backend that cannot say returns `{}` and the entry says "unknown".
+        """
+
 
 class BackendHttpError(Exception):
     """The backend answered with an HTTP status. Carrying it beats re-deriving

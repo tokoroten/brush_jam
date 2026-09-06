@@ -361,6 +361,27 @@ class AIScheduler:
             self._backoff_until = _now_ms() + self.opts.error_backoff_ms
             self._after_run(self.opts.error_backoff_ms)
 
+    def _identity(self, profile: str) -> Dict[str, str]:
+        """`{"model": ..., "lora": ...}` from the backend, never raising.
+
+        A backend that cannot say, or that throws while being asked, must not
+        cost a history entry - so the model becomes "unknown" and the picture
+        is still saved.
+        """
+        identity: Dict[str, Any] = {}
+        describe = getattr(self.backend, "identity", None)
+        if callable(describe):
+            try:
+                identity = describe(profile) or {}
+            except Exception:  # pragma: no cover - a backend that will not say
+                log.debug("the backend could not describe itself", exc_info=True)
+                identity = {}
+        out: Dict[str, str] = {"model": str(identity.get("model") or "unknown")}
+        lora = identity.get("lora")
+        if lora:
+            out["lora"] = str(lora)
+        return out
+
     async def _generate_once(
         self,
         job: RenderJob,
@@ -466,6 +487,11 @@ class AIScheduler:
                                 "profile": req.profile,
                                 "aiResolution": resolution,
                                 "latencyMs": latency_ms,
+                                # Which checkpoint made it. Everything else in
+                                # this entry is reproducible only against the
+                                # model that ran, and a saved JPEG cannot say
+                                # which that was.
+                                **self._identity(req.profile),
                             }
                         )
                     except Exception:  # pragma: no cover - the store swallows its own

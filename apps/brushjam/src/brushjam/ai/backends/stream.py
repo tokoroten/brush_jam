@@ -97,6 +97,10 @@ class StreamBackend:
         #: only asks the worker to stop at its next diffusion step, so a retry
         #: issued immediately would queue behind the job we just abandoned.
         self._settling: Optional[asyncio.Task] = None
+        #: What the last successful probe said it was running. Kept so a
+        #: history entry can name the model without a round trip on the path
+        #: of an accepted result.
+        self._sampling: Dict[str, Any] = {}
 
     def _client(self, timeout_ms: float) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -205,6 +209,10 @@ class StreamBackend:
             return v if isinstance(v, str) and v else None
 
         active = body.get("negative_prompt_active")
+        self._sampling = {
+            "model": text(body.get("model")),
+            "lora": text(body.get("lora")),
+        }
         return StreamHealth(
             ok=True,
             warm=body.get("warm") is True,
@@ -222,6 +230,18 @@ class StreamBackend:
                 "lora": text(body.get("lora")),
             },
         )
+
+    def identity(self, profile: str) -> Dict[str, str]:
+        """Whatever the worker last said it was running, or "unknown".
+
+        It is another process on another machine; there is nothing here that
+        could know better, and guessing would be worse than saying so.
+        """
+        out: Dict[str, str] = {"model": self._sampling.get("model") or "unknown"}
+        lora = self._sampling.get("lora")
+        if lora:
+            out["lora"] = lora
+        return out
 
     async def capabilities(self) -> BackendCapabilities:
         """One fused few-step LoRA, so there is no quality profile to offer:

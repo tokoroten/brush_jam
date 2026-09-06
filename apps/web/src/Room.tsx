@@ -1025,6 +1025,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
                 <span className="hint">
                   {shown.profile} · {shown.aiResolution}px · denoise {shown.denoise} · seed {shown.seed} ·{' '}
                   {formatLatency(shown.latencyMs)}
+                  {/* Absent on entries saved before the server recorded it, and
+                      the caption simply says less rather than saying "unknown". */}
+                  {shown.model ? ` · ${shown.model}` : ''}
                 </span>
                 <div className="shot-actions">
                   <a href={shown.url} download={historyFileName(roomId, shown.n)}>

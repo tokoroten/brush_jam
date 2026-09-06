@@ -123,6 +123,26 @@ class InprocBackend:
             negative_prompt_active=s.negative_prompt_active(),
         )
 
+    def identity(self, profile: str) -> Dict[str, str]:
+        """The checkpoint file name, and the LoRA when it is actually fused in.
+
+        Split rather than `model_name()`'s combined string, because the two
+        answer different questions: the checkpoint is what made the picture,
+        the LoRA is which of the two profiles it was made under.
+        """
+        out: Dict[str, str] = {}
+        try:
+            checkpoint = getattr(self.settings, "checkpoint", None)
+            name = checkpoint.name if checkpoint is not None else ""
+            out["model"] = name or self.pipeline.model_name()
+            # `quality` detaches the adapter, so naming it there would be a
+            # record of something that did not run.
+            if profile != "quality":
+                out["lora"] = self.settings.lora_spec()[2]
+        except Exception:  # pragma: no cover - a misconfigured settings object
+            log.debug("could not describe the model", exc_info=True)
+        return out
+
     def status(self) -> Dict[str, Any]:
         """The fields the stream worker publishes on /healthz, so the same
         tooling can read them off this server instead."""

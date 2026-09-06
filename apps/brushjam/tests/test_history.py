@@ -296,6 +296,9 @@ def test_a_generation_is_saved_and_served(tmp_path: Path) -> None:
         assert len(listing["entries"]) == 1
         saved = listing["entries"][0]
         assert saved["prompt"] == "a hill"
+        # The backend names itself, and the mock says so rather than passing
+        # for a checkpoint.
+        assert saved["model"] == "mock"
         assert saved["profile"] in ("fast", "quality")
         assert saved["aiResolution"] == 512 and saved["latencyMs"] >= 0
         assert saved["url"] == f"/rooms/{room_id}/history/0.jpg"

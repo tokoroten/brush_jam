@@ -240,6 +240,15 @@ export interface HistoryEntry {
   profile: AIProfileName;
   aiResolution: number;
   latencyMs: number;
+  /**
+   * The checkpoint that made it - the file name, e.g.
+   * `novaAnimeXL_ilV190.safetensors`, or `"mock"`, or `"unknown"` from a
+   * backend that cannot say. Absent on entries recorded before the server
+   * saved it.
+   */
+  model?: string;
+  /** The LoRA that was attached, when one was. `fast` has one; `quality` does not. */
+  lora?: string;
 }
 
 export interface HistoryListing {

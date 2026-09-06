@@ -352,7 +352,23 @@ is what the model saw.
 The entry is still defined by its JSON, so an entry with no input - one written
 before this existed, or one whose encode failed - is a perfectly good entry.
 Its bytes are charged to the entry, eviction removes all three files, and the
-listing carries `inputUrl` only when the file is there.
+listing carries `inputUrl` only when the file is there. **A room that was in use
+before this shipped therefore has entries with no `.in.jpg`**: they list without
+an `inputUrl`, they appear in the zip's manifest with `"draw": null` and no
+`draw_NNNNN.jpg` file, and in the video their left half is white. That is the
+expected reading of an old entry, not a fault - the drawing was never saved,
+and nothing can reconstruct it.
+
+The JSON also records **`model`** - the checkpoint file name the result was
+generated with, e.g. `novaAnimeXL_ilV190.safetensors`, or `"mock"`, or
+`"unknown"` from a backend that will not say - and **`lora`** when one was
+attached, which under `inproc` means the `fast` profile only, since `quality`
+detaches it. Backends supply these through an optional `identity(profile)`, and
+a backend that raises while being asked costs the entry a name, never the
+entry: everything else in a history entry is reproducible only against the
+model that ran, and the JPEG cannot say which that was. Entries written before
+this have no `model` key at all, so `HistoryEntry.model` is optional and the
+manifest carries `null` for them.
 
 | route | what it returns |
 | --- | --- |

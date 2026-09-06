@@ -226,6 +226,62 @@ async def test_stop_cancels_the_pending_timer() -> None:
     assert backend.requests == []
 
 
+class RecordingHost(FakeHost):
+    """A host that keeps a history, so what the entry says can be read back."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entries: List[Dict[str, Any]] = []
+
+    async def record_history(self, entry: Dict[str, Any]) -> Optional[int]:
+        self.entries.append(entry)
+        return len(self.entries) - 1
+
+
+async def _one_entry(backend, profile: str = "fast") -> Dict[str, Any]:
+    host = RecordingHost()
+    host.profile = profile
+    scheduler = make(host, backend)
+    host.revision += 1
+    scheduler.mark_dirty([{"x": 0, "y": 0, "width": 1, "height": 1}])
+    await settle()
+    scheduler.stop()
+    assert host.entries, "nothing was recorded"
+    return host.entries[0]
+
+
+async def test_the_entry_names_the_model_the_backend_reports() -> None:
+    class NamedBackend(FakeBackend):
+        def identity(self, profile: str) -> Dict[str, str]:
+            return (
+                {"model": "novaAnimeXL_ilV190.safetensors", "lora": "dmd2.safetensors"}
+                if profile != "quality"
+                else {"model": "novaAnimeXL_ilV190.safetensors"}
+            )
+
+    fast = await _one_entry(NamedBackend(), "fast")
+    assert fast["model"] == "novaAnimeXL_ilV190.safetensors"
+    assert fast["lora"] == "dmd2.safetensors"
+    # The quality profile detaches the adapter, so naming one would be a record
+    # of something that did not run.
+    quality = await _one_entry(NamedBackend(), "quality")
+    assert quality["model"] == "novaAnimeXL_ilV190.safetensors"
+    assert "lora" not in quality
+
+
+async def test_a_backend_that_cannot_say_costs_the_name_not_the_entry() -> None:
+    class SilentBackend(FakeBackend):
+        pass
+
+    class BrokenBackend(FakeBackend):
+        def identity(self, profile: str) -> Dict[str, str]:
+            raise RuntimeError("no idea")
+
+    assert (await _one_entry(SilentBackend()))["model"] == "unknown"
+    broken = await _one_entry(BrokenBackend())
+    assert broken["model"] == "unknown" and broken["prompt"] == "a town"
+
+
 @pytest.mark.parametrize(
     "err,permanent",
     [

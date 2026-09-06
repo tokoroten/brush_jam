@@ -55,6 +55,8 @@ def entry(**kw) -> Dict[str, Any]:
         "profile": "fast",
         "aiResolution": 768,
         "latencyMs": 1800,
+        "model": "novaAnimeXL_ilV190.safetensors",
+        "lora": "dmd2_sdxl_4step_lora_fp16.safetensors",
     }
     base.update(kw)
     return base
@@ -251,6 +253,23 @@ def test_the_zip_holds_every_frame_and_a_manifest(tmp_path: Path) -> None:
     assert first["denoise"] == 0.8 and first["aiResolution"] == 768
     assert first["latencyMs"] == 1800 and first["aiRevision"] == 3
     assert first["aiGeneration"] == 1 and first["time"] == 1_700_000_000_000
+    assert first["model"] == "novaAnimeXL_ilV190.safetensors"
+    assert first["lora"] == "dmd2_sdxl_4step_lora_fp16.safetensors"
+
+
+def test_an_entry_from_before_the_model_was_recorded_is_null(tmp_path: Path) -> None:
+    """A room that was in use before this shipped. Every frame has the same
+    shape; the fields that were never written are null rather than missing."""
+    store = HistoryStore(tmp_path / "history")
+    old = entry()
+    del old["model"], old["lora"]
+    store.record("abcd", jpeg(), old)
+    dest = tmp_path / "out.zip"
+    build_zip(store, "abcd", dest, canvas_size=512)
+    with zipfile.ZipFile(dest) as archive:
+        frame = json.loads(archive.read("manifest.json"))["frames"][0]
+    assert frame["model"] is None and frame["lora"] is None and frame["draw"] is None
+    assert frame["gen"] == "gen_00000.jpg" and frame["prompt"] == "a hill"
 
 
 def test_an_entry_with_no_input_has_a_null_draw(tmp_path: Path) -> None:
