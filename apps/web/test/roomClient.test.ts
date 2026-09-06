@@ -1066,3 +1066,49 @@ describe('close codes', () => {
     }
   });
 });
+
+/**
+ * Review 6: a socket carries messages from `onopen`, but the client does not
+ * know what the room holds until its snapshot arrives. A shared setting
+ * written in that window is a write against a value nobody has read, which is
+ * what every reconnect race in reviews 4 and 5 was made of.
+ */
+describe('room-wide settings wait for the snapshot', () => {
+  it('refuses a setting until this socket has been admitted', async () => {
+    const wire = sockets();
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', { ...loader.deps, ...wire.deps });
+    client.connect();
+    const socket = wire.all[0]!;
+    socket.open();
+
+    // Open, and carrying strokes - but not yet a shared setting.
+    expect(client.admitted).toBe(false);
+    expect(client.sendSetting({ t: 'set_prompt', prompt: 'mine' })).toBe(false);
+    expect(socket.sent).toEqual([]);
+    expect(client.send({ t: 'undo' })).toBe(true); // a stroke is not a shared value
+
+    client.receive(snapshot({ prompt: 'the room' }));
+    await tick();
+    expect(client.admitted).toBe(true);
+    expect(client.sendSetting({ t: 'set_prompt', prompt: 'mine' })).toBe(true);
+    expect(socket.sent.at(-1)).toContain('mine');
+  });
+
+  it('closes admission again when the socket goes', async () => {
+    const wire = sockets();
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', { ...loader.deps, ...wire.deps });
+    client.connect();
+    const socket = wire.all[0]!;
+    socket.open();
+    client.receive(snapshot());
+    await tick();
+    expect(client.admitted).toBe(true);
+
+    socket.onclose?.({ code: 1006 });
+    expect(client.admitted).toBe(false);
+    expect(client.sendSetting({ t: 'set_prompt', prompt: 'mine' })).toBe(false);
+    client.dispose();
+  });
+});

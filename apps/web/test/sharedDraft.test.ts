@@ -45,8 +45,9 @@ class Field {
     if (this.state.pending !== null && this.state.pending === this.state.draft) return;
     const value = this.state.draft;
     // What the hook does with a send that reports failure: nothing is pending,
-    // and the field still owes the room its text.
-    if (!this.online) return;
+    // and the field still owes the room its text. `RoomClient.sendSetting`
+    // reports failure for a socket that is up but has no snapshot yet.
+    if (!this.online || !this.admitted) return;
     this.sent.push(value);
     this.state = sentDraft(this.state, value, this.server, this.connection);
     // Whatever the field considers pending, the server will echo.
@@ -72,10 +73,13 @@ class Field {
 
   /** Which socket is on the wire (`RoomClient.connectionEpoch`). */
   connection = 1;
+  /** Whether this socket's snapshot has arrived (`RoomClient.admitted`). */
+  admitted = true;
 
-  /** The socket came back. It accepts writes; its snapshot has not arrived. */
+  /** The socket came back. Its snapshot has not arrived, so nothing is sent. */
   newSocket(): void {
     this.online = true;
+    this.admitted = false;
     this.connection += 1;
     this.inFlight.length = 0; // nothing from the dead socket will be echoed
   }
@@ -89,6 +93,7 @@ class Field {
    * flush pays it.
    */
   snapshot(server: string): void {
+    this.admitted = true;
     const changed = server !== this.server;
     this.server = server;
     if (changed) this.state = changedDraft(this.state, server);
@@ -577,7 +582,7 @@ describe('joining and reconnecting without an edit', () => {
  * overwrote what had been typed since.
  */
 describe('a write made on the new socket before its snapshot', () => {
-  it('is still owed its echo, and does not overwrite later typing', () => {
+  it('waits for the snapshot and then sends only the latest text', () => {
     vi.useFakeTimers();
     try {
       const field = new Field('a hill');
@@ -585,22 +590,13 @@ describe('a write made on the new socket before its snapshot', () => {
       field.newSocket(); // the socket is up; the snapshot is not here yet
       field.type('a hill at dawn');
       vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
-      expect(field.sent).toEqual(['a hill at dawn']); // A went out
-      field.type('a hill at dusk'); // B, typed before the snapshot
+      expect(field.sent).toEqual([]); // nothing is written against an unread room
+      expect(field.state.pending).toBeNull();
+      field.type('a hill at dusk'); // typed on, still before the snapshot
 
-      // The snapshot was taken before the server saw A, and happens to carry B
-      // (another player typed it, or this is a slow route home).
       field.snapshot('a hill at dusk');
-      // B is re-sent, because A is still on its way and will land after this
-      // snapshot: the room will show A before it shows B again.
-      expect(field.sent).toEqual(['a hill at dawn', 'a hill at dusk']);
-      expect(field.state.pending).toBe('a hill at dusk');
-      expect(field.state.dirty).toBe(true);
-
-      field.deliverEcho(); // A comes back at last
-      expect(field.state.draft).toBe('a hill at dusk'); // NOT overwritten by A
-      expect(field.state.foreign).toBe('a hill at dawn'); // offered, not taken
-      field.deliverEcho(); // and then B's own echo settles it
+      // The room already holds what the field shows, so there is nothing owed.
+      expect(field.sent).toEqual([]);
       expect(field.state.draft).toBe('a hill at dusk');
       expect(field.state.dirty).toBe(false);
       expect(field.state.pending).toBeNull();
@@ -609,15 +605,20 @@ describe('a write made on the new socket before its snapshot', () => {
     }
   });
 
-  it('settles on the room value when nothing was typed after it', () => {
+  it('pays a pre-snapshot edit exactly once, after the snapshot', () => {
     vi.useFakeTimers();
     try {
       const field = new Field('a hill');
       field.newSocket();
       field.type('a castle');
       vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
-      field.snapshot('a hill'); // the snapshot predates our write
-      expect(field.sent).toEqual(['a castle']); // not sent twice
+      expect(field.sent).toEqual([]);
+      field.snapshot('a hill'); // the room still holds the old value
+      expect(field.sent).toEqual(['a castle']);
+      // Nothing resends it: the debounce, a blur, another render.
+      field.flush();
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS * 4);
+      expect(field.sent).toEqual(['a castle']);
       field.deliverEcho();
       expect(field.state.draft).toBe('a castle');
       expect(field.state.dirty).toBe(false);
@@ -652,8 +653,7 @@ describe('a write the server will not echo', () => {
       expect(field.state.pending).toBe('a');
       field.newSocket(); // a new socket, whose snapshot has not arrived
 
-      // The player puts B back before the snapshot lands. The server already
-      // holds B, so it broadcasts nothing at all.
+      // The player puts B back before the snapshot lands.
       field.type('b');
       vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
       field.snapshot('b');
@@ -718,5 +718,75 @@ describe('a write the server will not echo', () => {
     const resent = sentDraft(typedBack, 'b', 'b', 2);
     expect(resent.pending).toBeNull();
     expect(resent.dirty).toBe(false);
+  });
+});
+
+
+/**
+ * Review 6: the structural fix. A socket carries messages from `onopen`, but
+ * this client does not know what the room holds until its snapshot arrives, so
+ * a shared setting written in that window is a write against a value nobody
+ * has read. Every reconnect bug in reviews 4 and 5 was a version of that, so
+ * the fields do not write until they have been admitted.
+ */
+describe('nothing is written against a room that has not been read', () => {
+  it('ends on the last value typed, whatever went out before the snapshot', () => {
+    vi.useFakeTimers();
+    try {
+      // The reported sequence: the room holds B; on the new socket, before its
+      // snapshot, A is submitted and then B.
+      const field = new Field('b');
+      field.newSocket();
+      field.type('a');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      field.type('b');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual([]); // neither of them left
+
+      field.snapshot('b'); // ...and the snapshot changes nothing
+      expect(field.state.draft).toBe('b');
+      expect(field.state.foreign).toBeNull(); // no offer of a value we abandoned
+      expect(field.state.dirty).toBe(false);
+      expect(field.state.pending).toBeNull();
+
+      // Nothing arrives later to undo it, because nothing was ever sent.
+      expect(field.sent).toEqual([]);
+      expect(field.state.draft).toBe('b');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not resend a dead connection write when the room already has it', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.type('a castle');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual(['a castle']); // it went out, then the socket died
+      field.newSocket();
+      // The snapshot proves it landed: nothing is owed and nothing is resent.
+      field.snapshot('a castle');
+      expect(field.sent).toEqual(['a castle']);
+      expect(field.state.dirty).toBe(false);
+      expect(field.state.pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resends a dead connection write only while the draft still owes it', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.type('a castle');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      field.newSocket();
+      field.snapshot('a hill'); // the write never landed
+      expect(field.sent).toEqual(['a castle', 'a castle']);
+      expect(field.state.pending).toBe('a castle');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

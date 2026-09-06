@@ -143,6 +143,19 @@ export class RoomClient {
    * can be told apart from one the previous socket swallowed (sharedDraft.ts).
    */
   connectionEpoch = 0;
+  /**
+   * A snapshot has arrived on the socket that is open *now*.
+   *
+   * Between `onopen` and that snapshot the socket will happily carry a
+   * message, and the server will happily apply it - but this client does not
+   * yet know what the room holds, so a room-wide setting sent in that window
+   * is a write against a value nobody has read. Every one of the reconnect
+   * bugs (a joiner's defaults over the room's prompt, a write dropped as if
+   * the old socket had swallowed it, a field left waiting for an echo the
+   * server never had reason to send) was a version of that race, so the fields
+   * simply do not write until this is true.
+   */
+  admitted = false;
   lastCrop: Rect | null = null;
   /** Exact area the server said was authoritative (never hard-coded here). */
   lastApply: Rect | null = null;
@@ -212,6 +225,7 @@ export class RoomClient {
     const socket = this.deps.openSocket(`${protocol}://${host}/ws/rooms/${this.roomId}?${query}`);
     this.socket = socket;
     this.connectionEpoch += 1;
+    this.admitted = false;
     socket.onopen = () => {
       this.connected = true;
       // The backoff is NOT reset here. A server with no room for another
@@ -225,6 +239,7 @@ export class RoomClient {
       // a socket we already replaced or disposed must not drive state
       if (this.socket !== socket) return;
       this.connected = false;
+      this.admitted = false;
       const code = event?.code;
       if (code === CLOSE_SUPERSEDED) {
         // Another tab took this identity. Reconnecting would take it straight
@@ -309,6 +324,21 @@ export class RoomClient {
     if (this.socket?.readyState !== SOCKET_OPEN) return false;
     this.socket.send(JSON.stringify(msg));
     return true;
+  }
+
+  /**
+   * Put a room-wide setting on the wire, once this connection has been
+   * admitted. False means it did not go, and the caller still owes it.
+   *
+   * Strokes do not go through this: a stroke is the sender's own and says what
+   * it is. A setting is a change to a shared value, and changing one before
+   * reading it is what the whole class of reconnect races was made of - so it
+   * waits for the snapshot, which is the moment this client knows what it is
+   * changing. `useSharedDraft` then flushes what is owed (sharedDraft.ts).
+   */
+  sendSetting(msg: ClientMessage): boolean {
+    if (!this.admitted) return false;
+    return this.send(msg);
   }
 
   layerCanvas(layerId: string): HTMLCanvasElement {
@@ -454,6 +484,7 @@ export class RoomClient {
         // unacknowledged forever, so the fields are told to reconcile with the
         // room's value and resend whatever it does not have.
         this.sessionEpoch += 1;
+        this.admitted = true;
         this.youUserId = s.youUserId;
         this.members = s.members;
         this.layers = s.layers;

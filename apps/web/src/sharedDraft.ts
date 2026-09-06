@@ -213,6 +213,12 @@ export interface SharedDraft<T> {
  *
  * `server` is the room's current value and `send` puts a new one on the wire;
  * everything else is the caller's markup.
+ *
+ * `send` is `RoomClient.sendSetting`, which refuses while the current socket
+ * has no snapshot yet. A refusal is not a loss: the draft stays dirty, so the
+ * flush on admission below pays it. That gate is what makes the reconnect
+ * rules here small - nothing of ours can be in flight against a room we have
+ * not read.
  */
 export function useSharedDraft<T>(
   server: T,

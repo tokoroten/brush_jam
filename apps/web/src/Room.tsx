@@ -163,10 +163,13 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   // server and everyone else's edits in the meantime. See sharedDraft.ts.
   // The session epoch is passed to every shared field: a field has to know
   // that the connection it was talking to is gone, or an edit typed during a
-  // reconnect is never sent and then overwritten by the snapshot.
+  // reconnect is never sent and then overwritten by the snapshot. They write
+  // through `sendSetting`, which does not put anything on a socket whose
+  // snapshot has not arrived: until this client has read the room, it has no
+  // business changing what everyone shares.
   const promptField = useSharedDraft(
     client.prompt,
-    (value) => client.send({ t: 'set_prompt', prompt: value }),
+    (value) => client.sendSetting({ t: 'set_prompt', prompt: value }),
     client.sessionEpoch,
     client.connectionEpoch,
   );
@@ -178,19 +181,19 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const [advanced, setAdvanced] = useState(false);
   const denoiseField = useSharedDraft(
     client.denoise,
-    (value) => client.send({ t: 'set_ai_settings', denoise: value }),
+    (value) => client.sendSetting({ t: 'set_ai_settings', denoise: value }),
     client.sessionEpoch,
     client.connectionEpoch,
   );
   const negativeField = useSharedDraft(
     client.negativePrompt,
-    (value) => client.send({ t: 'set_ai_settings', negativePrompt: value }),
+    (value) => client.sendSetting({ t: 'set_ai_settings', negativePrompt: value }),
     client.sessionEpoch,
     client.connectionEpoch,
   );
   const seedField = useSharedDraft(
     client.seed,
-    (value) => client.send({ t: 'set_ai_settings', seed: value }),
+    (value) => client.sendSetting({ t: 'set_ai_settings', seed: value }),
     client.sessionEpoch,
     client.connectionEpoch,
   );
@@ -202,7 +205,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     denoise: denoiseField,
     maxDenoise: client.maxDenoise,
     profiles: client.aiProfiles,
-    send: (aiProfile: AIProfileName) => client.send({ t: 'set_ai_settings', aiProfile }),
+    send: (aiProfile: AIProfileName) => client.sendSetting({ t: 'set_ai_settings', aiProfile }),
   };
 
   /** "use these settings" writes the same fields a preset does, plus the seed. */
@@ -655,7 +658,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
                 className={client.aiProfile === p ? 'active' : ''}
                 disabled={!supported}
                 title={supported ? undefined : `the ${backendLabel} backend has no ${p} profile`}
-                onClick={() => client.send({ t: 'set_ai_settings', aiProfile: p })}
+                onClick={() => client.sendSetting({ t: 'set_ai_settings', aiProfile: p })}
               >
                 {p}
               </button>
@@ -756,7 +759,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             AI resolution
             <select
               value={client.aiResolution}
-              onChange={(e) => client.send({ t: 'set_ai_settings', aiResolution: Number(e.target.value) })}
+              onChange={(e) => client.sendSetting({ t: 'set_ai_settings', aiResolution: Number(e.target.value) })}
             >
               {AI_RESOLUTIONS.filter((r) => r <= client.aiResolutionMax).map((r) => (
                 <option key={r} value={r}>
