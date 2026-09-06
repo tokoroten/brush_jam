@@ -39,11 +39,18 @@ pnpm build                       # builds the web client into the Python package
 cp .env.example .env             # then set INPROC_CHECKPOINT (see below)
 
 cd apps/brushjam
-uv sync --extra inproc           # torch + diffusers; omit --extra inproc for a GPU-free run
+uv sync --extra inproc           # torch + diffusers
 cd ../..
 
 pnpm start                       # http://localhost:8787
 ```
+
+**Without a GPU**, install without the extra (`uv sync`) and set
+`AI_BACKEND=mock` in `.env`: everything works except the model, which returns
+instant grey rectangles. `AI_BACKEND=inproc` is not a preference but an
+instruction, and the server refuses to start rather than quietly running
+something else - it is `AI_BACKEND=auto` that falls back to ComfyUI and then to
+the mock.
 
 If you do not have a checkpoint yet:
 
@@ -64,9 +71,10 @@ right. The startup log says which backend it chose and why:
 [brushjam] server on http://127.0.0.1:8787
 ```
 
-Without torch, or without a checkpoint, it falls back to ComfyUI if one is
-running and to the mock backend otherwise, saying so rather than failing
-silently.
+With `AI_BACKEND=auto`, no torch and no checkpoint, it falls back to ComfyUI if
+one is running and to the mock backend otherwise, saying which and why. With
+`AI_BACKEND=inproc` it refuses to start instead: an explicit choice that cannot
+be honoured is an error, not something to work around silently.
 
 ## Playing with friends
 
