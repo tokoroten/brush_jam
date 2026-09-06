@@ -634,3 +634,89 @@ describe('a write made on the new socket before its snapshot', () => {
     expect(after.dirty).toBe(true);
   });
 });
+
+
+/**
+ * Review 5 finding 3: a write the server has no reason to echo left the field
+ * pending for ever - and a field that is for ever dirty never adopts anybody
+ * else's value again, so the prompt input stopped following the room.
+ */
+describe('a write the server will not echo', () => {
+  it('does not leave the field waiting for an echo that cannot come', () => {
+    vi.useFakeTimers();
+    try {
+      // The room holds B. A is typed and sent, and the socket dies with it.
+      const field = new Field('b');
+      field.type('a');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.state.pending).toBe('a');
+      field.newSocket(); // a new socket, whose snapshot has not arrived
+
+      // The player puts B back before the snapshot lands. The server already
+      // holds B, so it broadcasts nothing at all.
+      field.type('b');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      field.snapshot('b');
+
+      expect(field.state.pending).toBeNull();
+      expect(field.state.dirty).toBe(false);
+
+      // ...and the field follows the room again.
+      field.foreignChange('c');
+      expect(field.state.draft).toBe('c');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('settles a write the snapshot already carries, even mid-edit', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.newSocket();
+      field.type('a castle');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      // The snapshot was taken after the server accepted it: no echo is due,
+      // because the value never changed again.
+      field.snapshot('a castle');
+      expect(field.state.pending).toBeNull();
+      expect(field.state.dirty).toBe(false);
+      field.foreignChange('a castle in the rain');
+      expect(field.state.draft).toBe('a castle in the rain');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the room value on blur rather than staying stuck', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('b');
+      field.state = focusDraft(field.state);
+      field.type('a');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      field.newSocket();
+      field.type('b');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      field.snapshot('b');
+      // Somebody else sets something while this field is focused: offered.
+      field.foreignChange('c');
+      expect(field.state.foreign).toBe('c');
+      field.state = blurDraft(field.state);
+      expect(field.state.draft).toBe('c');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not count a dead connection write when deciding an echo is due', () => {
+    // Sent on connection 1, lost; the same value sent again on connection 2
+    // when the server already holds it is settled at once.
+    const lost = sentDraft(editDraft(initialDraft('b'), 'a'), 'a', 'b', 1);
+    expect(lost.pending).toBe('a');
+    const typedBack = editDraft(lost, 'b'); // the player puts the room's value back
+    const resent = sentDraft(typedBack, 'b', 'b', 2);
+    expect(resent.pending).toBeNull();
+    expect(resent.dirty).toBe(false);
+  });
+});

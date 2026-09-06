@@ -76,9 +76,12 @@ export function sentDraft<T>(
 ): DraftState<T> {
   // "The server already holds this, so nothing will be echoed" only holds when
   // nothing of ours is on its way: an older write of ours lands AFTER this
-  // snapshot value, so the room will move away from it and back again, and
-  // both echoes are still coming.
-  if (state.pending === null && Object.is(value, server)) {
+  // value, so the room will move away from it and back again, and both echoes
+  // are still coming. Only a write on THIS connection can still do that - one
+  // the previous socket swallowed will never arrive, and counting it left the
+  // field waiting for an echo the server had no reason to send.
+  const outstanding = state.pending !== null && state.pendingConnection === connection;
+  if (!outstanding && Object.is(value, server)) {
     return { ...state, pending: null, dirty: !Object.is(state.draft, value) };
   }
   return { ...state, pending: value, pendingConnection: connection };
@@ -155,6 +158,18 @@ export function reconnectedDraft<T>(
   connection = 0,
 ): DraftState<T> {
   if (state.pending !== null && state.pendingConnection === connection) {
+    if (Object.is(state.pending, server)) {
+      // The snapshot already carries what we sent: the server does not echo a
+      // write that changes nothing, so this is settled rather than pending.
+      // Waiting for that echo left the field dirty for ever, and a field that
+      // is for ever dirty never adopts anybody else's value again.
+      return {
+        ...state,
+        pending: null,
+        dirty: !Object.is(state.draft, server),
+        foreign: null,
+      };
+    }
     // This write went out on the socket that has just been admitted, not on
     // the one that died: its echo is still coming, and the snapshot was taken
     // before the server saw it. Dropping it here let the echo arrive later as
