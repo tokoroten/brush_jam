@@ -71,7 +71,15 @@ befc694a296f75e996488ebf9f9db8a1493bd059b6e704b975829e87d5aeb4fa  waiNSFWIllustr
 b3d9173815a4b595991c3a7a0e0e63ad821080f314a0b2a3cc31ecd7fcf2cbb8  dmd2_sdxl_4step_lora_fp16.safetensors
 ```
 
-The checkpoint is Civitai model **827184** ("WAI-illustrious-SDXL") version
+> **Superseded 2026-09-06.** The repo default is now Civitai version **2940478**
+> (Nova Anime XL IL v19.0, model 376130, `novaAnimeXL_ilV190.safetensors`,
+> SHA-256 `fa486caafc330f133605d3c18b418d183812f14946631c6544bfb28730db6d6f`),
+> because WAI's Civitai permissions do not allow use on a generation service.
+> The volume described below still holds the WAI file; a pod keeps using it
+> until the file at `sdxl-checkpoint.safetensors` is replaced, since the
+> bootstrap only downloads when nothing large is there yet.
+
+The checkpoint was Civitai model **827184** ("WAI-illustrious-SDXL") version
 **2167369** ("v15.0"). Civitai serves it as `waiIllustriousSDXL_v150.safetensors`
 - it is renamed to `waiNSFWIllustrious_v150.safetensors` on the volume so the
 repo's default `COMFYUI_CHECKPOINT` keeps working unchanged. Its published
@@ -234,7 +242,7 @@ A pod (the loader kind) is deleted the same way: `DELETE /v1/pods/{podId}`.
 
 To rebuild the volume from scratch, the loader pod's recipe is: `python:3.12-slim`,
 `computeType: CPU`, `cpuFlavorIds: ["cpu3g"]`, the volume at `/workspace`, and a
-`dockerStartCmd` that `curl`s the Civitai version 2167369 download URL (with
+`dockerStartCmd` that `curl`s the Civitai version `CIVITAI_VERSION` download URL (with
 `Authorization: Bearer $CIVITAI_TOKEN`) into `/workspace/models/checkpoints` and
 the Hugging Face `tianweiy/DMD2` file into `/workspace/models/loras`.
 

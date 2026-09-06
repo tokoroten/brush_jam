@@ -141,7 +141,7 @@ would lock everyone out after the first few rooms.
 | `extract` | tarball landed |
 | `uv` | installing uv |
 | `deps` | `uv sync --extra inproc` (torch cu124, ~3 GB) |
-| `checkpoint` | Civitai version `CIVITAI_VERSION` (default 2167369, an Illustrious-class SDXL) → `sdxl-checkpoint.safetensors` (~7 GB, retried once, rejected under 6 GB — a Civitai auth failure is a small HTML page with HTTP 200) |
+| `checkpoint` | Civitai version `CIVITAI_VERSION` (default 2940478, Nova Anime XL IL v19.0, an Illustrious-class SDXL) → `sdxl-checkpoint.safetensors` (~7 GB, retried once, rejected under 6 GB — a Civitai auth failure is a small HTML page with HTTP 200) |
 | `server` | `uv run brushjam`; the DMD2 LoRA and the fp16-fix VAE are fetched by the pipeline itself into `HF_HOME`, then the model loads (~30 s) |
 
 `status` reports `server_healthy: true` when `/healthz` answers. The URL to send

@@ -44,7 +44,7 @@ USER_AGENT = "brushjam-deploy/1.0"
 GPU_TYPE = "NVIDIA GeForce RTX 4090"
 IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 CHECKPOINT = "/workspace/models/checkpoints/sdxl-checkpoint.safetensors"
-CIVITAI_VERSION = "2167369"
+CIVITAI_VERSION = "2940478"
 
 
 # --------------------------------------------------------------------------

@@ -24,8 +24,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DIR = REPO_ROOT / "models" / "checkpoints"
-#: Illustrious-based SDXL; what the measurements in docs/ were taken with.
-DEFAULT_VERSION = "2167369"
+#: Nova Anime XL IL v19.0 (Civitai model 376130): Illustrious-based SDXL whose
+#: Civitai permissions allow use on a generation service ("Rent"), which the
+#: earlier WAI checkpoint (version 2167369) does not. Same speed and VRAM;
+#: docs/experiments/2026-09-06-nova-vs-wai compares the two.
+DEFAULT_VERSION = "2940478"
 DEFAULT_NAME = "sdxl-illustrious.safetensors"
 #: A Civitai auth failure is a small HTML page with HTTP 200, so size is the
 #: only honest check that what arrived is a model.
@@ -52,16 +55,30 @@ def load_env() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+class _DropAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+    """Civitai answers with a 307 to a pre-signed object-storage URL. urllib
+    forwards every header on a redirect, and the storage rejects a request
+    that carries both a signature and an Authorization header (HTTP 400), so
+    the bearer token must go only to the host it was meant for."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and new.host != req.host:
+            new.remove_header("Authorization")
+        return new
+
+
 def download(url: str, dest: Path, token: str) -> None:
     request = urllib.request.Request(url)
     request.add_header("user-agent", "brushjam-download/1.0")
     if token:
         request.add_header("authorization", f"Bearer {token}")
+    opener = urllib.request.build_opener(_DropAuthOnCrossHostRedirect())
 
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with opener.open(request, timeout=120) as response:
             total = int(response.headers.get("content-length") or 0)
             done = 0
             with tmp.open("wb") as handle:

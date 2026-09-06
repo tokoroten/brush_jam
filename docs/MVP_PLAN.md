@@ -14,7 +14,7 @@ Derived from `BRUSHJAM_CONTEXT.md` §23 phases 1–3 and §26. Everything here i
 
 - Windows 11, Node 22, pnpm, Python 3.12, uv, git.
 - **ComfyUI 0.28.0 is installed at `E:\ComfyUI` and already running at `http://127.0.0.1:8188`.**
-- GPU: RTX 3070, 8 GB VRAM. Checkpoint: `waiNSFWIllustrious_v150.safetensors` (SDXL / Illustrious class).
+- GPU: RTX 3070, 8 GB VRAM. Checkpoint: `novaAnimeXL_ilV190.safetensors` (SDXL / Illustrious class; was `waiNSFWIllustrious_v150.safetensors` until 2026-09-06).
 - Core nodes available: `CheckpointLoaderSimple, LoadImage, VAEEncodeForInpaint, SetLatentNoiseMask, InpaintModelConditioning, KSampler, VAEDecode, SaveImage, ImageCompositeMasked`. Custom nodes: IPAdapter_plus, GGUF, VideoHelperSuite, Manager (none required).
 - `.env` (git-ignored, repo root) holds `RUNPOD_API_KEY, HF_TOKEN, CIVITAI_TOKEN, VASTAI_*`. Not needed for the local prototype.
 

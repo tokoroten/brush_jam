@@ -12,7 +12,7 @@ WORKSPACE="${WORKSPACE_DIR:-/workspace}"
 APP="$WORKSPACE/app/apps/brushjam"
 MODELS="$WORKSPACE/models"
 CHECKPOINT="${INPROC_CHECKPOINT:-$MODELS/checkpoints/sdxl-checkpoint.safetensors}"
-CIVITAI_VERSION="${CIVITAI_VERSION:-2167369}"
+CIVITAI_VERSION="${CIVITAI_VERSION:-2940478}"
 MIN_CHECKPOINT_BYTES=6000000000
 
 # The receiver publishes this file as `phase` in /status: one line, read with
