@@ -421,14 +421,36 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   };
   const reset = (): void => setCamera((cam) => ({ ...cam, zoom: 1 }));
 
-  // The world size comes from the snapshot, so the default view can only be
-  // fitted once the server has told us how big the canvas is.
+  // Fit once, when the page has loaded: the world size comes from the
+  // snapshot, and the stage has to have been laid out, and neither is true at
+  // mount. `canvasSize` is 1 until the snapshot arrives - fitting to THAT put
+  // the top-left corner of the canvas across the whole window at the maximum
+  // zoom, which is what a reload used to open on when the snapshot beat the
+  // layout. So: never fit the placeholder, and wait for the stage to have a
+  // size before fitting the real one.
   const fittedFor = useRef(0);
   useEffect(() => {
-    if (fittedFor.current === client.canvasSize) return;
-    fittedFor.current = client.canvasSize;
-    const rect = document.querySelector('.stage')?.getBoundingClientRect();
-    setCamera(fitCamera(rect?.width ?? 800, rect?.height ?? 600, client.canvasSize));
+    if (client.canvasSize <= 1 || fittedFor.current === client.canvasSize) return;
+    const size = client.canvasSize;
+    const el = document.querySelector('.stage');
+    const tryFit = (): boolean => {
+      const rect = el?.getBoundingClientRect();
+      if (!rect || rect.width < 2 || rect.height < 2) return false;
+      fittedFor.current = size;
+      setCamera(fitCamera(rect.width, rect.height, size));
+      return true;
+    };
+    if (tryFit()) return;
+    if (!el || typeof ResizeObserver === 'undefined') {
+      fittedFor.current = size;
+      setCamera(fitCamera(800, 600, size));
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      if (tryFit()) observer.disconnect();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [client.canvasSize]);
 
   // --- drawing --------------------------------------------------------------
