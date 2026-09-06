@@ -91,7 +91,7 @@ import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, sc
 import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pasteLimit, pastePlacement } from './paste.js';
-import { applyRandomPreset, onPresetChange } from './presetPicker.js';
+import { applyRandomPreset, denoiseCeiling, onPresetChange } from './presetPicker.js';
 import { RoomClient } from './roomClient.js';
 import type { HistoryListing } from '@brushjam/shared';
 import { useSharedDraft } from './sharedDraft.js';
@@ -674,13 +674,15 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       {advanced ? (
         <div className="tools">
           <label>
-            denoise {Math.min(denoiseField.value, client.maxDenoise).toFixed(2)}
+            {/* The ceiling on the grid the slider actually moves on, so the
+                number under the thumb is one the server will accept back. */}
+            denoise {Math.min(denoiseField.value, denoiseCeiling(client.maxDenoise)).toFixed(2)}
             <input
               type="range"
               min={MIN_DENOISE}
-              max={client.maxDenoise}
+              max={denoiseCeiling(client.maxDenoise)}
               step={DENOISE_STEP}
-              value={Math.min(denoiseField.value, client.maxDenoise)}
+              value={Math.min(denoiseField.value, denoiseCeiling(client.maxDenoise))}
               onChange={(e) => denoiseField.set(Number(e.target.value))}
               onPointerUp={denoiseField.flush}
               onBlur={denoiseField.onBlur}

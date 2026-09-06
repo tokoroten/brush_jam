@@ -13,6 +13,7 @@ import {
   applyPromptPreset,
   applyRandomPreset,
   clampPresetDenoise,
+  denoiseCeiling,
   onPresetChange,
   type PresetTarget,
 } from '../src/presetPicker.js';
@@ -213,5 +214,31 @@ describe('prompt presets', () => {
     prompt.set('1girl, holding a cat');
     prompt.flush();
     expect(prompt.sent.at(-1)).toBe('1girl, holding a cat');
+  });
+});
+
+/**
+ * Review 2 finding 4: the ceiling was applied after the grid rounding, so a
+ * backend cap that is not a multiple of 0.05 produced a value the server
+ * either refuses (0.83 rounds up to 0.85, above the cap) or silently changes
+ * (0.82 becomes 0.80, and this side waits for an echo of 0.82 forever).
+ */
+describe('a backend cap that is off the slider grid', () => {
+  it('is floored onto the grid, not rounded onto it', () => {
+    expect(denoiseCeiling(0.83)).toBe(0.8);
+    expect(denoiseCeiling(0.82)).toBe(0.8);
+    expect(denoiseCeiling(0.9)).toBe(0.9);
+    // 0.95 / 0.05 is 18.999999999999996 in binary floating point.
+    expect(denoiseCeiling(MAX_DENOISE)).toBe(MAX_DENOISE);
+    expect(denoiseCeiling(0)).toBe(MAX_DENOISE); // unknown means the default
+    expect(denoiseCeiling(2)).toBe(MAX_DENOISE); // never above the protocol max
+    expect(denoiseCeiling(0.01)).toBe(MIN_DENOISE);
+  });
+
+  it('sends a value the room can hold, for either awkward ceiling', () => {
+    expect(clampPresetDenoise(0.9, 0.83)).toBe(0.8);
+    expect(clampPresetDenoise(0.9, 0.82)).toBe(0.8);
+    expect(clampPresetDenoise(0.75, 0.83)).toBe(0.75);
+    expect(clampPresetDenoise(0.95, MAX_DENOISE)).toBe(MAX_DENOISE);
   });
 });
