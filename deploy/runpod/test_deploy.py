@@ -545,6 +545,32 @@ def test_idle_watch() -> None:
     tracker.observe(health(generation=int((at - 4 * 3600) * 1000), generations=9), at)
     check("a long-idle pod is stopped at the first poll", tracker.stop_reason(at) is not None)
 
+    # Review 4 finding 4: an unreachable poll used to inherit the last-use
+    # deadline, so one failed request seconds after a generation 29m50s old
+    # stopped the pod and claimed half an hour of silence.
+    tracker = IdleTracker(1800)
+    at = 4_800_000.0
+    tracker.observe(health(generation=int((at - 29 * 60 - 50) * 1000), generations=3), at)
+    at += 20
+    tracker.observe(None, at)
+    check("one failed poll does not stop the pod", tracker.stop_reason(at) is None, tracker.describe(at))
+    at += 29 * 60
+    tracker.observe(None, at)
+    check("...nor most of an outage", tracker.stop_reason(at) is None, tracker.describe(at))
+    at += 2 * 60
+    tracker.observe(None, at)
+    check("...but a full window of silence does", tracker.stop_reason(at) is not None)
+
+    # And the outage clock resets the moment the server answers again.
+    tracker = IdleTracker(1800)
+    at = 4_900_000.0
+    for _ in range(60):
+        tracker.observe(None, at)
+        at += 60
+        tracker.observe(health(sockets=1), at)  # it comes back every other poll
+        at += 60
+    check("a flapping server is not stopped", tracker.stop_reason(at) is None, tracker.describe(at))
+
     # A server that does not report activity is never stopped.
     tracker = IdleTracker(1800)
     at = 6_000_000.0

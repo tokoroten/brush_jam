@@ -105,7 +105,9 @@ at sixty minutes on a `--idle-minutes 30` watch. The same rule means a watch
 started beside a pod that has been idle for hours stops it at the first poll.
 
 A pod that stops answering `/healthz` for the whole window is stopped as well:
-that is the GPU burning money with nothing to show for it. A server too old to
+that is the GPU burning money with nothing to show for it. The outage is timed
+from its own start, not from the last activity, so a single failed request
+after a busy afternoon is a hiccup rather than a shutdown. A server too old to
 report either field is `unknown` and is never stopped - a watcher that cannot
 see the players must not turn the lights off.
 

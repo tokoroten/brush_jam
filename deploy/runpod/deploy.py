@@ -397,11 +397,21 @@ class IdleTracker:
         #: window, and only then did the idle clock start, so a default watch
         #: stopped an hour after the last picture rather than half an hour.
         self.active_at: Optional[float] = None
+        #: When /healthz first stopped answering, cleared by every reply. An
+        #: outage is its own window: a single failed request seconds after a
+        #: healthy poll is a hiccup, not thirty minutes of silence, and it used
+        #: to stop the pod outright by inheriting the last-use deadline.
+        self.unreachable_since: Optional[float] = None
         self._generation_marker: Any = None
 
     def observe(self, health: Optional[Dict[str, Any]], at: float) -> bool:
         """Take one poll. True if the situation changed and is worth printing."""
         state, detail, activity = self._classify(health, at)
+        if state == "unreachable":
+            if self.unreachable_since is None:
+                self.unreachable_since = at
+        else:
+            self.unreachable_since = None
         if state == "unknown":
             self.active_at = None
         elif activity is not None:
@@ -452,19 +462,25 @@ class IdleTracker:
             return "busy: %s" % self.detail
         if self.state == "unknown":
             return "unknown: %s" % self.detail
-        waited = int(self.idle_for(at) // 60)
-        what = "unreachable" if self.state == "unreachable" else "idle"
-        return "%s (%d/%d min)" % (what, waited, int(self.idle_seconds // 60))
+        if self.state == "unreachable":
+            out = 0.0 if self.unreachable_since is None else max(0.0, at - self.unreachable_since)
+            return "unreachable (%d/%d min)" % (int(out // 60), int(self.idle_seconds // 60))
+        return "idle (%d/%d min)" % (int(self.idle_for(at) // 60), int(self.idle_seconds // 60))
 
     def stop_reason(self, at: float) -> Optional[str]:
         """Why the pod should be stopped now, or None to keep watching."""
-        if self.state not in ("idle", "unreachable"):
+        minutes = int(self.idle_seconds // 60)
+        if self.state == "unreachable":
+            # The outage is timed from its own start. Otherwise one failed
+            # request just after a generation 29 minutes old stopped the pod
+            # and announced half an hour of silence that never happened.
+            if self.unreachable_since is None or at - self.unreachable_since < self.idle_seconds:
+                return None
+            return "the server has not answered /healthz for %d minutes" % minutes
+        if self.state != "idle":
             return None
         if self.active_at is None or self.idle_for(at) < self.idle_seconds:
             return None
-        minutes = int(self.idle_seconds // 60)
-        if self.state == "unreachable":
-            return "the server has not answered /healthz for %d minutes" % minutes
         return "nobody has been connected and nothing has been generated for %d minutes" % minutes
 
 
