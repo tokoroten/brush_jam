@@ -906,6 +906,38 @@ describe('close codes', () => {
     }
   });
 
+  it('reports whether a message actually went out', () => {
+    const { deps, all } = sockets();
+    const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+    // Nothing sent before connect(): there is no socket at all.
+    expect(client.send({ t: 'undo' })).toBe(false);
+    client.connect();
+    // ...nor while the handshake is still open.
+    expect(client.send({ t: 'set_prompt', prompt: 'a hill' })).toBe(false);
+    all[0]!.open();
+    expect(client.send({ t: 'set_prompt', prompt: 'a hill' })).toBe(true);
+    expect(all[0]!.sent).toEqual([JSON.stringify({ t: 'set_prompt', prompt: 'a hill' })]);
+    client.dispose();
+    expect(client.send({ t: 'undo' })).toBe(false);
+  });
+
+  it('counts a session per snapshot, so the fields know a connection was lost', () => {
+    const { deps, all } = sockets();
+    const client = new RoomClient('r1', 'Me', { ...makeLoader().deps, ...deps });
+    client.connect();
+    expect(client.sessionEpoch).toBe(0);
+    all[0]!.open();
+    all[0]!.onmessage?.({ data: JSON.stringify(snapshot()) });
+    return tick().then(() => {
+      expect(client.sessionEpoch).toBe(1);
+      all[0]!.onmessage?.({ data: JSON.stringify(snapshot({ prompt: 'q' })) });
+      return tick().then(() => {
+        expect(client.sessionEpoch).toBe(2);
+        client.dispose();
+      });
+    });
+  });
+
   it('backs off when the server says it is full', () => {
     vi.useFakeTimers();
     try {

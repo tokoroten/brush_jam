@@ -123,6 +123,13 @@ export class RoomClient {
    * a server with the history off is never asked for a listing.
    */
   latestHistoryN: number | null = null;
+  /**
+   * Bumped by every snapshot, which is what an admitted connection looks like.
+   * Shared fields watch it to resend what a lost socket swallowed, and the
+   * capacity backoff resets on it - a refused connection is *opened* and then
+   * closed, so `onopen` is not evidence of anything.
+   */
+  sessionEpoch = 0;
   lastCrop: Rect | null = null;
   /** Exact area the server said was authoritative (never hard-coded here). */
   lastApply: Rect | null = null;
@@ -272,8 +279,18 @@ export class RoomClient {
     for (const l of this.listeners) l();
   }
 
-  send(msg: ClientMessage): void {
-    if (this.socket?.readyState === SOCKET_OPEN) this.socket.send(JSON.stringify(msg));
+  /**
+   * Put a message on the wire. False means it did not go: there is no socket,
+   * or it is not open yet.
+   *
+   * The caller has to know. A shared field that treats a dropped message as
+   * sent waits forever for an echo that cannot come, and the text typed during
+   * a reconnect is simply lost (see sharedDraft.ts).
+   */
+  send(msg: ClientMessage): boolean {
+    if (this.socket?.readyState !== SOCKET_OPEN) return false;
+    this.socket.send(JSON.stringify(msg));
+    return true;
   }
 
   layerCanvas(layerId: string): HTMLCanvasElement {
@@ -413,6 +430,10 @@ export class RoomClient {
     switch (msg.t) {
       case 'snapshot': {
         const s = msg.snapshot;
+        // A new session. Everything sent on the socket this replaces is
+        // unacknowledged forever, so the fields are told to reconcile with the
+        // room's value and resend whatever it does not have.
+        this.sessionEpoch += 1;
         this.youUserId = s.youUserId;
         this.members = s.members;
         this.layers = s.layers;

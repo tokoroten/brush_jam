@@ -156,18 +156,35 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
   // Room-level fields: what is typed here has to survive the round trip to the
   // server and everyone else's edits in the meantime. See sharedDraft.ts.
-  const promptField = useSharedDraft(client.prompt, (value) => client.send({ t: 'set_prompt', prompt: value }));
+  // The session epoch is passed to every shared field: a field has to know
+  // that the connection it was talking to is gone, or an edit typed during a
+  // reconnect is never sent and then overwritten by the snapshot.
+  const promptField = useSharedDraft(
+    client.prompt,
+    (value) => client.send({ t: 'set_prompt', prompt: value }),
+    client.sessionEpoch,
+  );
   const [copied, setCopied] = useState(false);
   // Read once per render rather than at module scope: jsdom and SSR have no
   // location, and the value has to follow whatever address the page was opened
   // with (a LAN IP, if the invite is to work for anyone else).
   const inviteUrl = typeof location === 'undefined' ? '' : location.href;
   const [advanced, setAdvanced] = useState(false);
-  const denoiseField = useSharedDraft(client.denoise, (value) => client.send({ t: 'set_ai_settings', denoise: value }));
-  const negativeField = useSharedDraft(client.negativePrompt, (value) =>
-    client.send({ t: 'set_ai_settings', negativePrompt: value }),
+  const denoiseField = useSharedDraft(
+    client.denoise,
+    (value) => client.send({ t: 'set_ai_settings', denoise: value }),
+    client.sessionEpoch,
   );
-  const seedField = useSharedDraft(client.seed, (value) => client.send({ t: 'set_ai_settings', seed: value }));
+  const negativeField = useSharedDraft(
+    client.negativePrompt,
+    (value) => client.send({ t: 'set_ai_settings', negativePrompt: value }),
+    client.sessionEpoch,
+  );
+  const seedField = useSharedDraft(
+    client.seed,
+    (value) => client.send({ t: 'set_ai_settings', seed: value }),
+    client.sessionEpoch,
+  );
   /** See presetPicker.ts: a one-shot fill of the prompt fields (and, for the
    * presets that carry them, the denoise and profile they want). */
   const presetTarget = {

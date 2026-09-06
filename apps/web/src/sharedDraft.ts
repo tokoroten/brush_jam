@@ -76,9 +76,19 @@ export function changedDraft<T>(state: DraftState<T>, value: T): DraftState<T> {
   }
   if (Object.is(state.draft, value)) {
     // The room arrived at what this field already shows - somebody typed the
-    // same thing, or our own change came back by another route. Nothing to
-    // send and nothing to offer.
-    return { ...state, dirty: false, pending: null, foreign: null };
+    // same thing, or our own change came back by another route.
+    if (state.pending === null) {
+      // Nothing of ours is in flight, so this is settled: nothing to send and
+      // nothing to offer.
+      return { ...state, dirty: false, pending: null, foreign: null };
+    }
+    // But a write of ours is still on its way, and it will land AFTER this
+    // value: the room agreeing with the draft right now does not mean it will
+    // still agree once our own older write arrives. Clearing `dirty` here lost
+    // the newer text entirely (start at X, send A, type B, another player sets
+    // B: the field went clean, and A's echo was then adopted over the B nobody
+    // had any obligation left to send).
+    return { ...state, foreign: null };
   }
   const editing = state.focused || state.dirty || state.pending !== null;
   if (editing) return { ...state, foreign: value };
@@ -106,6 +116,22 @@ export function blurDraft<T>(state: DraftState<T>): DraftState<T> {
   return { ...next, focused: false };
 }
 
+/**
+ * The connection this field was talking to is gone and a new session has
+ * started (a snapshot arrived).
+ *
+ * Whatever was in flight will never be echoed, so the pending value is
+ * dropped; and if the snapshot does not carry what this field shows, the send
+ * never happened - the socket was closed when the debounce fired - so the
+ * field owes the room its text again. Typing during a disconnect used to leave
+ * a draft that was marked sent, waited for an echo forever, and was then
+ * quietly overwritten by the room.
+ */
+export function reconnectedDraft<T>(state: DraftState<T>, server: T): DraftState<T> {
+  const unsent = !Object.is(state.draft, server);
+  return { ...state, pending: null, dirty: unsent, foreign: unsent ? state.foreign : null };
+}
+
 export const DRAFT_DEBOUNCE_MS = 500;
 
 export interface SharedDraft<T> {
@@ -127,7 +153,16 @@ export interface SharedDraft<T> {
  * `server` is the room's current value and `send` puts a new one on the wire;
  * everything else is the caller's markup.
  */
-export function useSharedDraft<T>(server: T, send: (value: T) => void): SharedDraft<T> {
+export function useSharedDraft<T>(
+  server: T,
+  /** Returns false if the message did not go out (a closed socket). */
+  send: (value: T) => boolean | void,
+  /**
+   * The room's session counter (`RoomClient.sessionEpoch`). Every change is an
+   * admitted connection, and the cue to resend what the previous one lost.
+   */
+  epoch = 0,
+): SharedDraft<T> {
   const [state, setState] = useState<DraftState<T>>(() => initialDraft(server));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Read inside callbacks that must not be re-created on every keystroke.
@@ -144,7 +179,9 @@ export function useSharedDraft<T>(server: T, send: (value: T) => void): SharedDr
     const { state: current, server: known, send: post } = latest.current;
     if (!current.dirty) return;
     if (current.pending !== null && Object.is(current.pending, current.draft)) return;
-    post(current.draft);
+    // A message that never left is not pending: the field stays dirty and owes
+    // the room its text, which it will pay on the next flush or reconnect.
+    if (post(current.draft) === false) return;
     setState((s) => sentDraft(s, current.draft, known));
   }, [cancel]);
 
@@ -165,6 +202,15 @@ export function useSharedDraft<T>(server: T, send: (value: T) => void): SharedDr
   useEffect(() => {
     setState((s) => changedDraft(s, server));
   }, [server]);
+
+  // A new session: reconcile with the snapshot and resend anything it lacks.
+  useEffect(() => {
+    if (!epoch) return;
+    const next = reconnectedDraft(latest.current.state, latest.current.server);
+    latest.current.state = next;
+    setState(next);
+    flush();
+  }, [epoch, flush]);
 
   useEffect(() => cancel, [cancel]);
 

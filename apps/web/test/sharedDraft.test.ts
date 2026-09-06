@@ -8,6 +8,7 @@ import {
   editDraft,
   focusDraft,
   initialDraft,
+  reconnectedDraft,
   sentDraft,
   type DraftState,
 } from '../src/sharedDraft.js';
@@ -43,6 +44,9 @@ class Field {
     if (!this.state.dirty) return;
     if (this.state.pending !== null && this.state.pending === this.state.draft) return;
     const value = this.state.draft;
+    // What the hook does with a send that reports failure: nothing is pending,
+    // and the field still owes the room its text.
+    if (!this.online) return;
     this.sent.push(value);
     this.state = sentDraft(this.state, value, this.server);
     if (value !== this.server) this.inFlight.push(value);
@@ -60,6 +64,19 @@ class Field {
   foreignChange(value: string): void {
     this.server = value;
     this.state = changedDraft(this.state, value);
+  }
+
+  /** The socket is down: `RoomClient.send` reports false and nothing goes. */
+  online = true;
+
+  /** A snapshot arrived, carrying whatever the room actually holds. */
+  reconnect(server: string): void {
+    this.online = true;
+    this.server = server;
+    this.state = reconnectedDraft(this.state, server);
+    // ...and the hook flushes straight away, which is what pays the debt.
+    this.flush();
+    this.state = changedDraft(this.state, server);
   }
 }
 
@@ -360,5 +377,103 @@ describe('the seed control', () => {
     const rolls = Array.from({ length: 200 }, () => randomSeed());
     expect(rolls.every((s) => Number.isInteger(s) && s >= 0 && s <= MAX_SEED)).toBe(true);
     expect(new Set(rolls).size).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * Review 2 finding 2: the room reaching the draft's value is only settlement
+ * if nothing of ours is still in flight. An older write of our own lands after
+ * it, so the obligation to send the newest text stands.
+ */
+describe('a foreign value equal to the draft, with a write still in flight', () => {
+  it('does not release the draft, and the newest text still reaches the room', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('x');
+      field.type('A');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual(['A']); // A is on the wire, unacknowledged
+      field.type('B'); // typed before A's echo comes back
+
+      field.foreignChange('B'); // another player happens to set B
+      expect(field.state.dirty).toBe(true);
+      expect(field.state.pending).toBe('A');
+      expect(field.state.foreign).toBeNull(); // nothing to offer: it IS the draft
+
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual(['A', 'B']);
+
+      // The server applied B (theirs), then A (ours), then B (ours again), and
+      // broadcasts in that order. The field ends where the last person to type
+      // left it, which is what was lost before: with no send of B, the room
+      // itself would have stopped at A.
+      field.foreignChange('A');
+      field.foreignChange('B');
+      expect(field.state.draft).toBe('B');
+      expect(blurDraft(field.state).draft).toBe('B');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still settles when the room reaches the draft with nothing in flight', () => {
+    const settled = changedDraft(editDraft(initialDraft('x'), 'B'), 'B');
+    expect(settled.dirty).toBe(false);
+    expect(settled.pending).toBeNull();
+    expect(settled.foreign).toBeNull();
+  });
+});
+
+/**
+ * Review 2 finding 3: RoomClient.send used to drop a message when the socket
+ * was not open, while flush recorded it as pending. Typing during a
+ * disconnect left a draft that was waiting for an echo nobody would ever
+ * send, and blur returned early because pending equalled the draft.
+ */
+describe('editing while the connection is down', () => {
+  it('keeps the text owed and sends it after the reconnect', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.online = false;
+      field.type('a hill with a house');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual([]); // nothing left the machine
+      expect(field.state.pending).toBeNull(); // and nothing is pretending it did
+      expect(field.state.dirty).toBe(true);
+
+      // The snapshot still says what the room had before the drop.
+      field.reconnect('a hill');
+      expect(field.sent).toEqual(['a hill with a house']);
+      expect(field.state.draft).toBe('a hill with a house');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not resend what the room already got before the socket died', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.type('a hill with a house');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual(['a hill with a house']);
+      // The send landed; the echo did not, because the socket died first. The
+      // snapshot proves it landed.
+      field.reconnect('a hill with a house');
+      expect(field.sent).toEqual(['a hill with a house']);
+      expect(field.state.dirty).toBe(false);
+      expect(field.state.pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forgets a pending value from a connection that is gone', () => {
+    const state = sentDraft(editDraft(initialDraft('x'), 'B'), 'B', 'x');
+    expect(state.pending).toBe('B');
+    const after = reconnectedDraft(state, 'x');
+    expect(after.pending).toBeNull();
+    expect(after.dirty).toBe(true); // the room does not have it: send it again
   });
 });
