@@ -124,8 +124,8 @@ so treat the link as the only access control there is.
   generation, so adding a stroke changes the picture instead of reshuffling it.
   The dice beside the field asks for a different picture from the same drawing.
 - **resolution.** Generation size; the result is scaled onto the canvas.
-- **overlay.** Lays the AI's result over your own canvas at an opacity you
-  choose (40% by default), so you can trace it: draw a rough hill, let the
+- **overlay.** At the top of the layer panel: lays the AI's result over your
+  own canvas at an opacity you choose (40% by default), so you can trace it: draw a rough hill, let the
   model make a hill of it, then draw over what it invented. Hold Tab to see
   what you have actually drawn. **pin** freezes the picture so the next
   generation does not move it under your hand, and any entry in the history

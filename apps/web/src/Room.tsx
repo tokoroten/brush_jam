@@ -61,7 +61,6 @@ import {
 import { loadImageElement } from './raster.js';
 import {
   historyOverlayUrl,
-  initialOverlay,
   loadOverlay,
   overlaySource,
   overlayStorage,
@@ -69,11 +68,7 @@ import {
   overlayVisible,
   peekOverlay,
   pinAsOverlay,
-  pinOverlay,
   saveOverlay,
-  setOverlayOpacity,
-  toggleOverlay,
-  unpinOverlay,
 } from './overlay.js';
 import { browserDownloadDeps, historyFileName, saveAiImage, saveDrawing } from './save.js';
 
@@ -755,43 +750,6 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         >
           history
         </button>
-        <div className="overlay-controls">
-          <button
-            className={overlay.on ? 'active' : ''}
-            title="lay the AI result over the drawing, to trace on (hold Tab to peek under it)"
-            onClick={() => setOverlay(toggleOverlay)}
-          >
-            overlay
-          </button>
-          {overlay.on ? (
-            <>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={Math.round(overlay.opacity * 100)}
-                title={`overlay opacity ${Math.round(overlay.opacity * 100)}%`}
-                aria-label="overlay opacity"
-                onChange={(e) => setOverlay((o) => setOverlayOpacity(o, Number(e.target.value) / 100))}
-              />
-              <button
-                className={overlay.pinned ? 'active' : ''}
-                disabled={!overlay.pinned && overlayUrl === null}
-                title={
-                  overlay.pinned
-                    ? 'following one frozen picture; click to follow the latest result again'
-                    : 'freeze the picture on screen, so later generations do not replace it'
-                }
-                onClick={() =>
-                  setOverlay((o) => (o.pinned ? unpinOverlay(o) : pinOverlay(o, overlaySource(o, roomId, client.aiRevision))))
-                }
-              >
-                {overlay.pinned ? 'pinned' : 'pin'}
-              </button>
-            </>
-          ) : null}
-        </div>
         <button className={advanced ? 'active' : ''} onClick={() => setAdvanced((v) => !v)}>
           advanced
         </button>
@@ -1055,6 +1013,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           activeLayerId={activeLayer?.id ?? null}
           maxLayers={MAX_LAYERS}
           onSelect={setActiveLayerId}
+          overlay={{ state: overlay, roomId, aiRevision: client.aiRevision, set: setOverlay }}
         />
       </div>
     </div>

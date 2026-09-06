@@ -1,6 +1,14 @@
 import { useState, type JSX } from 'react';
 import type { Layer } from '@brushjam/shared';
 import { LAYER_SCALE_STEP, MAX_LAYER_SCALE, MIN_LAYER_SCALE } from './move.js';
+import {
+  overlaySource,
+  pinOverlay,
+  setOverlayOpacity,
+  toggleOverlay,
+  unpinOverlay,
+  type OverlayState,
+} from './overlay.js';
 import type { RoomClient } from './roomClient.js';
 
 export interface LayerPanelProps {
@@ -11,6 +19,20 @@ export interface LayerPanelProps {
   onSelect: (id: string) => void;
   /** Injectable so tests can take both the confirmed and the cancelled path. */
   confirm?: (message: string) => boolean;
+  /**
+   * The AI overlay (overlay.ts), shown above the layer list.
+   *
+   * It sits here rather than in the header because that is what it is: a
+   * sheet over the drawing, alongside the layers it covers - and the rules of
+   * it (what is pinned, what Tab does) belong next to the thing they affect.
+   */
+  overlay?: {
+    state: OverlayState;
+    /** The room, for deriving what "pin" would freeze. */
+    roomId: string;
+    aiRevision: number;
+    set: (update: (state: OverlayState) => OverlayState) => void;
+  };
 }
 
 const browserConfirm = (message: string): boolean =>
@@ -45,6 +67,7 @@ export function LayerPanel({
   maxLayers,
   onSelect,
   confirm = browserConfirm,
+  overlay,
 }: LayerPanelProps): JSX.Element {
   const [renaming, setRenaming] = useState<string | null>(null);
   const front = [...layers].reverse();
@@ -60,14 +83,71 @@ export function LayerPanel({
 
   const { clear: clearLayer, remove: deleteLayer } = layerActions(client, confirm);
 
+  const overlayPin = overlay
+    ? overlaySource(overlay.state, overlay.roomId, overlay.aiRevision)
+    : null;
+
   return (
     <aside className="layers">
+      {overlay ? (
+        <div className="overlay-block">
+          <div className="layer-row">
+            <label title="lay the AI result over the drawing, to trace on">
+              <input
+                type="checkbox"
+                checked={overlay.state.on}
+                onChange={() => overlay.set(toggleOverlay)}
+              />{' '}
+              AI overlay
+            </label>
+          </div>
+          {overlay.state.on ? (
+            <>
+              <div className="layer-row slider-row">
+                <label title="how much of the AI result shows through">
+                  <span className="slider-label">opacity</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    aria-label="overlay opacity"
+                    value={Math.round(overlay.state.opacity * 100)}
+                    onChange={(e) =>
+                      overlay.set((o) => setOverlayOpacity(o, Number(e.target.value) / 100))
+                    }
+                  />
+                  <span className="slider-value">{Math.round(overlay.state.opacity * 100)}%</span>
+                </label>
+              </div>
+              <div className="layer-row actions">
+                <button
+                  className={overlay.state.pinned ? 'active' : ''}
+                  disabled={!overlay.state.pinned && overlayPin === null}
+                  title={
+                    overlay.state.pinned
+                      ? 'showing one frozen picture; click to follow the latest result again'
+                      : 'freeze the picture on screen, so later generations do not replace it'
+                  }
+                  onClick={() =>
+                    overlay.set((o) => (o.pinned ? unpinOverlay(o) : pinOverlay(o, overlayPin)))
+                  }
+                >
+                  {overlay.state.pinned ? 'pinned' : 'pin'}
+                </button>
+              </div>
+              <p className="hint">Hold Tab to look underneath.</p>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <div className="layers-head">
         <span>Layers</span>
         <button disabled={layers.length >= maxLayers} onClick={() => client.send({ t: 'layer_create', layer: { kind: 'draw' } })}>
           + add
         </button>
       </div>
+      <div className="layer-list">
       {front.map((layer) => (
         <div key={layer.id} className={`layer ${layer.id === activeLayerId ? 'active' : ''}`} onClick={() => onSelect(layer.id)}>
           <div className="layer-row">
@@ -153,6 +233,7 @@ export function LayerPanel({
         Space or Shift + drag to pan, wheel to zoom. Ctrl/Cmd+V pastes an image as a reference layer. Undo affects only your own
         strokes.
       </p>
+      </div>
     </aside>
   );
 }
