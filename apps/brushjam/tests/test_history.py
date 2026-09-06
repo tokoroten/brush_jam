@@ -537,3 +537,104 @@ def test_a_part_file_on_disk_is_cleaned_up_at_load(tmp_path: Path) -> None:
     assert s.count("abcd") == 0
     assert not (room / "0.jpg.part").exists()
     assert s.total_bytes_used == 0
+
+
+# --------------------------------------- review 5: what eviction may not take
+
+
+def test_the_entry_just_recorded_is_never_the_one_evicted(tmp_path: Path, monkeypatch) -> None:
+    """`record` returns a number the client is about to fetch. Skipping over a
+    protected room used to walk the eviction loop all the way to the newest
+    entry, so a full store answered with a number whose image it had just
+    deleted."""
+    _plant(tmp_path, "aaaa", 0)  # an old room, and its counter will not write
+    real = _history._write_atomic
+
+    def refuse_that_rooms_counter(path: Path, data: bytes) -> None:
+        if path.name == "counter" and "aaaa" in str(path):
+            raise OSError("read-only file system")
+        real(path, data)
+
+    monkeypatch.setattr(_history, "_write_atomic", refuse_that_rooms_counter)
+    s = store(tmp_path, room_bytes=10_000_000, total_bytes=1_000)
+    assert s.unprotected() == {"aaaa"}  # over budget and cannot be evicted
+
+    n = s.record("bbbb", JPEG, entry())
+    assert n == 0
+    assert s.read("bbbb", 0) == JPEG, "the store returned a number it had deleted"
+    assert [e["n"] for e in s.list("bbbb")] == [0]
+
+
+def test_a_room_over_its_own_budget_keeps_the_entry_just_written(tmp_path: Path) -> None:
+    s = store(tmp_path, room_bytes=100, total_bytes=10_000_000)
+    for _ in range(3):
+        n = s.record("abcd", JPEG, entry())
+        assert s.read("abcd", n) == JPEG
+    assert [e["n"] for e in s.list("abcd")] == [2]
+
+
+def test_incomplete_files_are_kept_until_their_number_is_written_down(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Finding 4. A pre-counter room left holding only `7.json` after an
+    interrupted eviction: deleting it and then failing to write the counter
+    threw away the only evidence that 7 was ever used, and a restart would
+    reissue that immutable URL."""
+    room = tmp_path / "history" / "abcd"
+    room.mkdir(parents=True)
+    (room / "7.json").write_text('{"n": 7}', encoding="utf-8")  # half an entry
+    real = _history._write_atomic
+
+    def refuse_counter(path: Path, data: bytes) -> None:
+        if path.name == "counter":
+            raise OSError("read-only file system")
+        real(path, data)
+
+    monkeypatch.setattr(_history, "_write_atomic", refuse_counter)
+    s = store(tmp_path)
+    assert s.count("abcd") == 0  # it is not an entry
+    assert (room / "7.json").exists(), "the only record of number 7 was deleted"
+    assert s.unprotected() == {"abcd"}
+    assert s.total_bytes_used == (room / "7.json").stat().st_size  # ...but counted
+
+    # The disk comes back. The counter is written, and only then is the
+    # leftover cleaned up.
+    monkeypatch.undo()
+    assert s.record("abcd", JPEG, entry()) == 8  # 7 is spent, and stays spent
+    assert (room / "counter").read_text(encoding="ascii").strip() == "9"
+    assert not (room / "7.json").exists()
+    assert s.stray() == set()
+
+
+def test_a_counter_temporary_that_survives_is_counted_and_retried(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Finding 6."""
+    s = store(tmp_path)
+    real_replace = os.replace
+    real_unlink = Path.unlink
+    locked = {"on": True}
+
+    def refuse_counter(src, dst, *args, **kw):
+        if str(dst).endswith("counter"):
+            raise OSError("no space left on device")
+        return real_replace(src, dst, *args, **kw)
+
+    def refuse_unlink(self: Path, *args, **kw):
+        if locked["on"] and self.name == "counter.part":
+            raise PermissionError("the file is open in another process")
+        return real_unlink(self, *args, **kw)
+
+    monkeypatch.setattr(_history.os, "replace", refuse_counter)
+    monkeypatch.setattr(Path, "unlink", refuse_unlink)
+    assert s.record("abcd", JPEG, entry()) is None
+    leftover = tmp_path / "history" / "abcd" / "counter.part"
+    assert leftover.exists()
+    assert leftover in s.stray()
+    assert s.total_bytes_used == leftover.stat().st_size
+
+    monkeypatch.undo()
+    locked["on"] = False
+    assert s.record("abcd", JPEG, entry()) == 0
+    assert not leftover.exists()
+    assert s.stray() == set()

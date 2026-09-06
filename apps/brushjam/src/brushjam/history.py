@@ -148,10 +148,36 @@ class HistoryStore:
                     continue
                 found[kind][n] = stat.st_size
                 stamps[n] = max(stamps.get(n, 0.0), stat.st_mtime)
+            self._next[room.name] = max(counter, high_water)
+            written = counter >= high_water or self._persist_counter(
+                # A room written before there were counters, or one whose
+                # counter was lost. Its numbering exists only in the names of
+                # the files that are here, so write it down BEFORE touching any
+                # of them - including the incomplete ones below, whose names
+                # may be the highest number this room ever used.
+                room.name,
+                self._next[room.name],
+            )
             sizes: Dict[int, int] = {}
             for n in sorted(set(found["jpg"]) | set(found["json"])):
                 if n in found["jpg"] and n in found["json"]:
                     sizes[n] = found["jpg"][n] + found["json"][n]
+                    continue
+                if not written:
+                    # The counter did not go down. These filenames are the only
+                    # record of the numbers this room has spent, so they stay -
+                    # unlisted, but on the disk - until a later write manages to
+                    # write the counter (`_retry_deletions`).
+                    log.warning(
+                        "history: room %s entry %d is incomplete but its counter is not "
+                        "written; keeping the file as the record of that number",
+                        room.name,
+                        n,
+                    )
+                    for kind, found_sizes in found.items():
+                        if n in found_sizes:
+                            self._stray[self.root / room.name / f"{n}.{kind}"] = found_sizes[n]
+                            self._total += found_sizes[n]
                     continue
                 # Half a pair: the write was interrupted between installing the
                 # image and installing the entry, or between deleting them.
@@ -160,14 +186,6 @@ class HistoryStore:
                 log.info("history: room %s entry %d is incomplete; removing it", room.name, n)
                 for suffix in ("jpg", "json"):
                     self._discard_file(self.root / room.name / f"{n}.{suffix}")
-            self._next[room.name] = max(counter, high_water)
-            if counter < high_water:
-                # A room written before there were counters, or one whose
-                # counter was lost. Its numbering exists only in the names of
-                # the files that are here, so write it down NOW: an eviction
-                # later in this same load would take those names away, and a
-                # restart after that would begin again at 0.
-                self._persist_counter(room.name, self._next[room.name])
             if not sizes:
                 continue
             self._sizes[room.name] = sizes
@@ -189,6 +207,10 @@ class HistoryStore:
             (self.root / room_id).mkdir(parents=True, exist_ok=True)
             _write_atomic(self.root / room_id / COUNTER_NAME, f"{nxt}\n".encode("ascii"))
         except Exception as err:
+            # `_write_atomic` takes its own temporary with it where it can;
+            # what it could not remove is counted and retried like any other
+            # stray byte.
+            self._discard_file(self.root / room_id / (COUNTER_NAME + ".part"))
             if room_id not in self._unprotected:
                 log.warning(
                     "history: cannot write the counter for room %s (%s); "
@@ -248,31 +270,34 @@ class HistoryStore:
                 self._sizes.setdefault(room_id, {})[n] = size
                 self._order.append((room_id, n))
                 self._total += size
-                self._evict(room_id)
+                self._evict(room_id, keep=(room_id, n))
                 return n
         except Exception as err:
             log.warning("history: could not store a result for room %s (%s)", room_id, err)
             return None
 
-    def _evict(self, room_id: str) -> None:
+    def _evict(self, room_id: str, keep: Optional[Tuple[str, int]] = None) -> None:
         """Oldest first: the room's own budget, then the whole store's.
 
-        The entry just written is the newest, so it is last in `_order` and in
-        the room's numbering: both loops stop before reaching it. Storing a
+        `keep` is the entry just written, and it is never evicted: storing a
         result and immediately deleting it would hand the client a number
-        nothing serves, which is worse than being a little over budget.
+        nothing serves, which is worse than being a little over budget. It used
+        to be enough that it was last in `_order`, until protected rooms could
+        be skipped over - and then the "last one standing" was the entry whose
+        number `record` was about to return.
         """
-        while room_id not in self._unprotected and len(self._sizes.get(room_id) or {}) > 1:
-            room_sizes = self._sizes[room_id]
+        while room_id not in self._unprotected:
+            room_sizes = self._sizes.get(room_id) or {}
             if sum(room_sizes.values()) <= self.room_bytes:
                 break
-            self._remove(room_id, min(room_sizes))
+            oldest = min((n for n in room_sizes if (room_id, n) != keep), default=None)
+            if oldest is None:
+                break
+            self._remove(room_id, oldest)
         index = 0
-        while self._total > self.total_bytes and len(self._order) > 1:
-            if index >= len(self._order):
-                break  # everything left is protected or is the newest entry
+        while self._total > self.total_bytes and index < len(self._order):
             room, n = self._order[index]
-            if room in self._unprotected:
+            if room in self._unprotected or (room, n) == keep:
                 index += 1
                 continue
             self._remove(room, n)
@@ -330,10 +355,14 @@ class HistoryStore:
             room_id, n = key
             if self._delete_files(room_id, n):
                 self._total -= self._undeleted.pop(key)
-        for path in list(self._stray):
-            self._discard_file(path)
         for room_id in list(self._unprotected):
             self._persist_counter(room_id, self._next.get(room_id, 0))
+        for path in list(self._stray):
+            # A file kept because its name is the only record of a number is
+            # not litter until that number is written down.
+            if path.parent.name in self._unprotected:
+                continue
+            self._discard_file(path)
 
     # -- reading ----------------------------------------------------------
 
