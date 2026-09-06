@@ -12,6 +12,13 @@ export interface StageViewProps {
   onPointerUp?: (e: React.PointerEvent<HTMLCanvasElement>) => void;
   onWheel?: (e: React.WheelEvent<HTMLCanvasElement>) => void;
   label: string;
+  /**
+   * The AI result laid over the drawing, to trace on (overlay.ts). Display
+   * only: it is drawn last, it is not part of what "save drawing" composites,
+   * and it is a canvas draw rather than an element, so it cannot take a
+   * pointer event away from the stage.
+   */
+  overlay?: { image: CanvasImageSource | null; alpha: number };
 }
 
 const CURSOR_TTL_MS = 4000;
@@ -19,6 +26,10 @@ const CURSOR_TTL_MS = 4000;
 /** One viewport onto the shared world. Human and AI stages share one camera. */
 export function StageView(props: StageViewProps): JSX.Element {
   const { client, camera, kind, label } = props;
+  // Read through a ref: the frame loop is started once, and re-creating it on
+  // every opacity change would drop a frame each time the slider moves.
+  const overlayRef = useRef(props.overlay);
+  overlayRef.current = props.overlay;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
@@ -74,6 +85,16 @@ export function StageView(props: StageViewProps): JSX.Element {
           ctx.strokeStyle = 'rgba(90,160,255,0.3)';
           ctx.strokeRect(inner.x, inner.y, inner.width, inner.height);
         }
+      }
+
+      // Last, so it reads as a sheet on top of the drawing rather than
+      // something mixed into it - but still in world space, so it lies on the
+      // canvas and pans and zooms with it.
+      const sheet = overlayRef.current;
+      if (sheet?.image) {
+        ctx.globalAlpha = sheet.alpha;
+        ctx.drawImage(sheet.image, 0, 0, client.canvasSize, client.canvasSize);
+        ctx.globalAlpha = 1;
       }
       ctx.restore();
 

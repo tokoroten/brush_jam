@@ -58,6 +58,23 @@ import {
   shouldFetch,
   toggleGallery,
 } from './gallery.js';
+import { loadImageElement } from './raster.js';
+import {
+  historyOverlayUrl,
+  initialOverlay,
+  loadOverlay,
+  overlaySource,
+  overlayStorage,
+  overlayTakesTab,
+  overlayVisible,
+  peekOverlay,
+  pinAsOverlay,
+  pinOverlay,
+  saveOverlay,
+  setOverlayOpacity,
+  toggleOverlay,
+  unpinOverlay,
+} from './overlay.js';
 import { browserDownloadDeps, historyFileName, saveAiImage, saveDrawing } from './save.js';
 
 /**
@@ -210,6 +227,51 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
 
   /** "use these settings" writes the same fields a preset does, plus the seed. */
   const historyTarget = { ...presetTarget, seed: seedField };
+
+  // --- the AI overlay -------------------------------------------------------
+  // Display-only, per browser, per room: see overlay.ts. Nothing here reaches
+  // the server, the other players, or the picture the AI is given.
+  const overlayStore = useMemo(() => overlayStorage(), []);
+  const [overlay, setOverlay] = useState(() => loadOverlay(overlayStore, roomId));
+  useEffect(() => {
+    setOverlay(loadOverlay(overlayStore, roomId));
+  }, [overlayStore, roomId]);
+  useEffect(() => {
+    saveOverlay(overlayStore, roomId, overlay);
+  }, [overlayStore, roomId, overlay]);
+
+  const overlayUrl = overlaySource(overlay, roomId, client.aiRevision);
+  const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
+  useEffect(() => {
+    // Only while it is being shown: following the room would otherwise fetch
+    // every result of a session nobody is tracing.
+    if (!overlay.on || overlayUrl === null) {
+      setOverlayImage(null);
+      return;
+    }
+    let live = true;
+    void (async () => {
+      try {
+        const image = await loadImageElement(overlayUrl);
+        if (live) setOverlayImage(image);
+      } catch {
+        // A pinned entry the store has evicted, or a result that has gone.
+        // Nothing is drawn, and the toggle stays exactly as the player left it.
+        if (live) setOverlayImage(null);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [overlay.on, overlayUrl]);
+
+  const overlaySheet = useMemo(
+    () => ({
+      image: overlayVisible(overlay, overlayUrl) ? overlayImage : null,
+      alpha: overlay.opacity,
+    }),
+    [overlay, overlayUrl, overlayImage],
+  );
 
   // --- the history strip ----------------------------------------------------
   const [gallery, setGallery] = useState(initialGallery);
@@ -479,6 +541,12 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         spaceRef.current = true;
         e.preventDefault();
       }
+      // Held, not toggled: a glance under the overlay should end when the key
+      // does, or the next stroke goes down blind.
+      if (overlayTakesTab(e, e.target)) {
+        e.preventDefault();
+        setOverlay((o) => peekOverlay(o, true));
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !isTyping(e.target)) {
         e.preventDefault();
         client.send({ t: 'undo' });
@@ -486,12 +554,20 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     };
     const up = (e: KeyboardEvent): void => {
       if (e.code === 'Space') spaceRef.current = false;
+      // No `overlayTakesTab` here: whatever the focus is now, a key that went
+      // down has to come back up, or the overlay stays hidden for ever.
+      if (e.key === 'Tab') setOverlay((o) => peekOverlay(o, false));
     };
+    // A window that loses the focus never delivers the keyup (alt-tabbing away
+    // is exactly that), and the overlay would come back to a hidden canvas.
+    const blur = (): void => setOverlay((o) => peekOverlay(o, false));
+    window.addEventListener('blur', blur);
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     return () => {
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
     };
   }, [client]);
 
@@ -679,6 +755,43 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         >
           history
         </button>
+        <div className="overlay-controls">
+          <button
+            className={overlay.on ? 'active' : ''}
+            title="lay the AI result over the drawing, to trace on (hold Tab to peek under it)"
+            onClick={() => setOverlay(toggleOverlay)}
+          >
+            overlay
+          </button>
+          {overlay.on ? (
+            <>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={Math.round(overlay.opacity * 100)}
+                title={`overlay opacity ${Math.round(overlay.opacity * 100)}%`}
+                aria-label="overlay opacity"
+                onChange={(e) => setOverlay((o) => setOverlayOpacity(o, Number(e.target.value) / 100))}
+              />
+              <button
+                className={overlay.pinned ? 'active' : ''}
+                disabled={!overlay.pinned && overlayUrl === null}
+                title={
+                  overlay.pinned
+                    ? 'following one frozen picture; click to follow the latest result again'
+                    : 'freeze the picture on screen, so later generations do not replace it'
+                }
+                onClick={() =>
+                  setOverlay((o) => (o.pinned ? unpinOverlay(o) : pinOverlay(o, overlaySource(o, roomId, client.aiRevision))))
+                }
+              >
+                {overlay.pinned ? 'pinned' : 'pin'}
+              </button>
+            </>
+          ) : null}
+        </div>
         <button className={advanced ? 'active' : ''} onClick={() => setAdvanced((v) => !v)}>
           advanced
         </button>
@@ -888,6 +1001,12 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
                   >
                     use these settings
                   </button>
+                  <button
+                    title="lay this result over the drawing, to trace on"
+                    onClick={() => setOverlay((o) => pinAsOverlay(o, historyOverlayUrl(roomId, shown.n)))}
+                  >
+                    pin as overlay
+                  </button>
                   <button onClick={() => setGallery((g) => selectEntry(g, null))}>close</button>
                 </div>
               </div>
@@ -910,6 +1029,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               camera={camera}
               kind="human"
               label="Human canvas"
+              overlay={overlaySheet}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}

@@ -61,6 +61,10 @@ select.preset { max-width: 14rem; }
 .segmented button.active { background: #3d6bd8; color: #fff; }
 header .hint { font-size: 11px; white-space: nowrap; }
 
+/* The AI overlay: one group, so the slider reads as belonging to the toggle. */
+.overlay-controls { display: inline-flex; align-items: center; gap: 6px; }
+.overlay-controls input[type='range'] { width: 84px; }
+
 @media (max-width: 900px) {
   .body { flex-direction: column; }
   .stages { flex-direction: column; }
