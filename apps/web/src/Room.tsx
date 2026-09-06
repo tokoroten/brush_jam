@@ -296,10 +296,15 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   // cancelled the request would cancel the one it had just started, and the
   // strip would say "loading..." forever. Only a *newer* request cancels an
   // older one.
+  // Everything that leaves the room leaves through one button now: two PNGs
+  // made in this browser and two files the server builds (exportOptions.ts).
+  const [exportOpen, setExportOpen] = useState(false);
   const galleryFetch = useRef(0);
   useEffect(() => {
     const now = Date.now();
-    if (!shouldFetch(gallery, now)) {
+    // The export dialog wants the listing too: a joiner has heard no
+    // announcement, so without it "nothing generated yet" is all it can say.
+    if (!shouldFetch(exportOpen ? { ...gallery, open: true } : gallery, now)) {
       // Waiting out a backoff after a failure: wake up when it expires rather
       // than leaving the strip stuck on an error until something else renders.
       if (gallery.open && gallery.retryAt !== null && gallery.retryAt > now) {
@@ -322,12 +327,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         }
       }
     })();
-  }, [gallery, roomId]);
+  }, [gallery, roomId, exportOpen]);
 
   const shown = selectedEntry(gallery);
-  // Everything that leaves the room leaves through one button now: two PNGs
-  // made in this browser and two files the server builds (exportOptions.ts).
-  const [exportOpen, setExportOpen] = useState(false);
   const downloads = useMemo(() => browserDownloadDeps(), []);
   const saveAi = async (): Promise<void> => {
     if (!(await saveAiImage(roomId, client.aiRevision, downloads))) {
@@ -1052,7 +1054,12 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         roomId={roomId}
         open={exportOpen}
         onClose={() => setExportOpen(false)}
-        history={{ enabled: gallery.enabled, entries: gallery.entries.length, latestN: gallery.latestN }}
+        history={{
+          enabled: gallery.enabled,
+          entries: gallery.entries.length,
+          latestN: gallery.latestN,
+          loaded: gallery.loaded,
+        }}
         onDownloadDrawing={() => void saveHuman()}
         onDownloadAi={() => void saveAi()}
       />

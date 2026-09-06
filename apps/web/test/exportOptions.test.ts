@@ -31,7 +31,10 @@ describe('what the dialog offers', () => {
     expect(off.ready).toBe(false);
     expect(off.hint).toContain('HISTORY_ENABLED=0');
     // ...against "not yet", which is a different thing to tell somebody.
-    const empty = historyExportAvailability({ enabled: true, entries: 0, latestN: null });
+    const unknown = historyExportAvailability({ enabled: true, entries: 0, latestN: null, loaded: false });
+    expect(unknown.ready).toBe(false);
+    expect(unknown.hint).toMatch(/checking/);
+    const empty = historyExportAvailability({ enabled: true, entries: 0, latestN: null, loaded: true });
     expect(empty.ready).toBe(false);
     expect(empty.hint).toBe('nothing generated in this room yet');
     // A server with the history off never announces anything, but if one ever

@@ -55,12 +55,20 @@ export function historyExportAvailability(input: {
   entries: number;
   /** The newest entry the room has announced, listed or not. */
   latestN: number | null;
+  /**
+   * Whether the server has answered a listing yet. Someone who joined after
+   * the results were made has heard no announcement, so until the listing is
+   * in, "nothing yet" would be a guess; the dialog fetches it when it opens.
+   */
+  loaded?: boolean;
 }): HistoryExportAvailability {
   if (!input.enabled) {
     return { ready: false, hint: 'this server keeps no history (HISTORY_ENABLED=0)' };
   }
   if (input.entries === 0 && input.latestN === null) {
-    return { ready: false, hint: 'nothing generated in this room yet' };
+    return input.loaded === false
+      ? { ready: false, hint: 'checking the history...' }
+      : { ready: false, hint: 'nothing generated in this room yet' };
   }
   return { ready: true, hint: null };
 }

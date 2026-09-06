@@ -15,7 +15,7 @@ export interface ExportDialogProps {
   open: boolean;
   onClose: () => void;
   /** Enough of the gallery state to say whether there is a history to take. */
-  history: { enabled: boolean; entries: number; latestN: number | null };
+  history: { enabled: boolean; entries: number; latestN: number | null; loaded?: boolean };
   /** The two pictures this browser makes itself (save.ts). */
   onDownloadDrawing: () => void;
   onDownloadAi: () => void;
