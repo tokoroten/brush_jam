@@ -144,10 +144,21 @@ so treat the link as the only access control there is.
 
 ## Saving and history
 
-The header has **save AI** (the current AI result, as a PNG from the server)
-and **save drawing** (the visible layers composited in the browser at canvas
-size, on white). Both land as `brushjam-<room>-<revision>-ai.png` /
-`-drawing.png`.
+**export** in the header opens one dialog with every way out of a room:
+
+- **Download drawing (PNG)** - the visible layers composited in the browser at
+  canvas size, on white, exactly as they are on the stage.
+- **Download AI image (PNG)** - the current AI result, as a PNG from the
+  server. Both land as `brushjam-<room>-<revision>-drawing.png` / `-ai.png`.
+- **Export history as ZIP** - `history.zip`: every stored frame as
+  `draw_NNNNN.jpg` and `gen_NNNNN.jpg`, plus a `manifest.json` of the settings
+  behind each one.
+- **Download video (Motion JPEG AVI)** - `history.avi`: the drawing on the left
+  and the result on the right, one frame per generation, at 2, 4 or 8 fps. It
+  plays in VLC and opens in any video editor.
+
+The last two are greyed out, with the reason beside them, on a server started
+with `HISTORY_ENABLED=0` or in a room that has not generated anything yet.
 
 **history** opens a strip of every AI result the room has made, newest first.
 The server writes each accepted result to `HISTORY_DIR` (`./data/history` by

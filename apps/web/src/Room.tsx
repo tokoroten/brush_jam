@@ -326,7 +326,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
 
   const shown = selectedEntry(gallery);
   // Everything that leaves the room leaves through one button now: two PNGs
-  // made in this browser and two files the server builds (exportDialog.ts).
+  // made in this browser and two files the server builds (exportOptions.ts).
   const [exportOpen, setExportOpen] = useState(false);
   const downloads = useMemo(() => browserDownloadDeps(), []);
   const saveAi = async (): Promise<void> => {

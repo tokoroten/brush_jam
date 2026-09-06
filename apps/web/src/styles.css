@@ -101,8 +101,24 @@ select.preset { max-width: 14rem; }
 .shot-meta .prompt-text { color: #e7e9ee; line-height: 1.4; word-break: break-word; }
 .shot-actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
 .shot-actions a { color: #9db4ee; }
-.gallery-exports { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.gallery-exports a { color: #9db4ee; }
+
+/* Everything that leaves the room, behind the header's one "export" button.
+   A native <dialog>, so the backdrop and Esc are the browser's; the panel
+   inside borrows the layer panel's borders so it reads as part of the app. */
+.export-dialog { border: 1px solid #3a3f48; border-radius: 8px; background: #1d2026; color: #e7e9ee; padding: 0; max-width: min(34rem, 92vw); }
+.export-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.export-body { display: flex; flex-direction: column; gap: 14px; padding: 14px 16px 16px; }
+.export-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #272b32; padding-bottom: 8px; }
+.export-item { display: flex; flex-direction: column; gap: 4px; }
+.export-item .hint { font-size: 11px; }
+.export-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.export-row label { display: flex; align-items: center; gap: 4px; color: #b9bec9; }
+/* A link that has to look like the buttons above it: same box, same hover. */
+.export-link { display: inline-block; align-self: flex-start; background: #2b2f36; border: 1px solid #3a3f48; border-radius: 4px; padding: 4px 8px; color: #e7e9ee; text-decoration: none; cursor: pointer; }
+.export-link:hover { background: #363b44; }
+.export-link.disabled { opacity: 0.4; cursor: default; }
+.export-link.disabled:hover { background: #2b2f36; }
+.export-why { margin: 0; }
 
 /* The colour swatch belongs to the pen; greyed out under every other tool. */
 .tools input[type="color"]:disabled { opacity: 0.35; filter: grayscale(1); cursor: not-allowed; }
