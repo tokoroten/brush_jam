@@ -148,7 +148,14 @@ const snapshot = (extra: Partial<RoomSnapshot> = {}): ServerMessage => ({
 });
 
 const rect = { x: 0, y: 0, width: 64, height: 64 };
-const aiResult = (n: number, latencyMs = 10, profile: 'fast' | 'quality' = 'fast'): ServerMessage => ({
+type AiResult = Extract<ServerMessage, { t: 'ai_result' }>;
+const aiResult = (
+  n: number,
+  latencyMs = 10,
+  profile: 'fast' | 'quality' = 'fast',
+  /** For the case the numbers cannot express: a second result at one revision. */
+  extra: Partial<AiResult> = {},
+): AiResult => ({
   t: 'ai_result',
   aiGeneration: n,
   profile,
@@ -158,6 +165,7 @@ const aiResult = (n: number, latencyMs = 10, profile: 'fast' | 'quality' = 'fast
   crop: rect,
   apply: rect,
   latencyMs,
+  ...extra,
 });
 
 /** Finding B7: a snapshot must wipe the previous room's AI pixels. */
@@ -448,6 +456,46 @@ describe('stale ai.png loads', () => {
     await tick();
     const ctx = (client.aiCanvas as unknown as ReturnType<typeof createCanvas>).getContext('2d');
     expect(ctx.getImageData(1, 1, 1, 1).data[3]).toBeGreaterThan(0);
+    client.dispose();
+  });
+});
+
+/**
+ * The overlay bug: `aiRevision` is the HUMAN revision, so a regeneration
+ * caused by a prompt, denoise, seed or profile change on an unchanged drawing
+ * comes back at the *same* revision. The overlay used to be
+ * `/rooms/{id}/ai.png?v={aiRevision}`, whose address therefore never changed,
+ * and it went on showing the previous picture while the AI panel beside it -
+ * which paints `aiCanvas` directly - had already moved on. `aiPaintGeneration`
+ * is the signal that does change, which is why the overlay follows it now.
+ */
+describe('a second result at the same revision', () => {
+  it('repaints the AI raster and bumps the paint generation', async () => {
+    const loader = makeLoader();
+    const client = new RoomClient('r1', 'Me', loader.deps);
+    client.receive(snapshot());
+    await tick();
+
+    client.receive(aiResult(4));
+    await tick();
+    loader.resolve('/patch-4.png');
+    await tick();
+    expect(client.aiRevision).toBe(4);
+    const paintedOnce = client.aiPaintGeneration;
+
+    // Nobody drew: a settings change generated again, so the revision stands.
+    const ctx = (client.aiCanvas as unknown as ReturnType<typeof createCanvas>).getContext('2d');
+    ctx.fillStyle = '#0000ff';
+    ctx.fillRect(0, 0, 8, 8);
+    client.receive(aiResult(4, 10, 'fast', { aiGeneration: 5, url: '/patch-4b.png' }));
+    await tick();
+    loader.resolve('/patch-4b.png');
+    await tick();
+
+    expect(client.aiRevision).toBe(4); // the URL an overlay keyed on it would use
+    expect(client.aiPaintGeneration).toBeGreaterThan(paintedOnce);
+    const px = ctx.getImageData(1, 1, 1, 1).data;
+    expect([px[0], px[1], px[2]]).toEqual([255, 136, 0]); // the new patch, not the marker
     client.dispose();
   });
 });

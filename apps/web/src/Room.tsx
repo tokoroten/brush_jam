@@ -62,7 +62,7 @@ import { loadImageElement } from './raster.js';
 import {
   historyOverlayUrl,
   loadOverlay,
-  overlaySource,
+  overlayFollowing,
   overlayStorage,
   overlayTakesTab,
   overlayVisible,
@@ -235,37 +235,49 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     saveOverlay(overlayStore, roomId, overlay);
   }, [overlayStore, roomId, overlay]);
 
-  const overlayUrl = overlaySource(overlay, roomId, client.aiRevision);
-  const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
+  // A pin is an address and has to be fetched; following is not, so there is
+  // nothing to fetch for it (see overlay.ts).
+  const pinnedUrl = overlay.pinned;
+  const [pinnedImage, setPinnedImage] = useState<HTMLImageElement | null>(null);
   useEffect(() => {
-    // Only while it is being shown: following the room would otherwise fetch
-    // every result of a session nobody is tracing.
-    if (!overlay.on || overlayUrl === null) {
-      setOverlayImage(null);
+    // Only while it is being shown: a pin nobody is looking at is not worth a
+    // request, and turning the overlay back on re-runs this.
+    if (!overlay.on || pinnedUrl === null) {
+      setPinnedImage(null);
       return;
     }
     let live = true;
     void (async () => {
       try {
-        const image = await loadImageElement(overlayUrl);
-        if (live) setOverlayImage(image);
+        const image = await loadImageElement(pinnedUrl);
+        if (live) setPinnedImage(image);
       } catch {
         // A pinned entry the store has evicted, or a result that has gone.
         // Nothing is drawn, and the toggle stays exactly as the player left it.
-        if (live) setOverlayImage(null);
+        if (live) setPinnedImage(null);
       }
     })();
     return () => {
       live = false;
     };
-  }, [overlay.on, overlayUrl]);
+  }, [overlay.on, pinnedUrl]);
 
+  // The raster the client repaints on every ai_result, drawn directly: a
+  // regeneration from a prompt, denoise, seed or profile change makes a new
+  // picture at the *same* aiRevision, and the old ai.png?v={rev} was never
+  // refetched for it. Blank until the first result, which draws as nothing.
+  // `aiPaintGeneration` is read at render (bump() re-renders on every write to
+  // the raster) purely so the sheet below is a new object each time.
+  const aiPaint = client.aiPaintGeneration;
+  const overlayImage: CanvasImageSource | null = overlayFollowing(overlay) ? client.aiCanvas : pinnedImage;
   const overlaySheet = useMemo(
     () => ({
-      image: overlayVisible(overlay, overlayUrl) ? overlayImage : null,
+      image: overlayVisible(overlay, overlayImage) ? overlayImage : null,
       alpha: overlay.opacity,
     }),
-    [overlay, overlayUrl, overlayImage],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- aiPaint is the
+    // signal that the followed raster changed; it is not read in the body.
+    [overlay, overlayImage, aiPaint],
   );
 
   // --- the history strip ----------------------------------------------------
@@ -1013,7 +1025,13 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           activeLayerId={activeLayer?.id ?? null}
           maxLayers={MAX_LAYERS}
           onSelect={setActiveLayerId}
-          overlay={{ state: overlay, roomId, aiRevision: client.aiRevision, set: setOverlay }}
+          overlay={{
+            state: overlay,
+            roomId,
+            aiRevision: client.aiRevision,
+            historyN: client.latestHistoryN,
+            set: setOverlay,
+          }}
         />
       </div>
     </div>

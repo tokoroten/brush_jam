@@ -2,8 +2,8 @@ import { useState, type JSX } from 'react';
 import type { Layer } from '@brushjam/shared';
 import { LAYER_SCALE_STEP, MAX_LAYER_SCALE, MIN_LAYER_SCALE } from './move.js';
 import {
-  overlaySource,
   pinOverlay,
+  pinnableSource,
   setOverlayOpacity,
   toggleOverlay,
   unpinOverlay,
@@ -31,6 +31,8 @@ export interface LayerPanelProps {
     /** The room, for deriving what "pin" would freeze. */
     roomId: string;
     aiRevision: number;
+    /** The newest history entry, or null on a server that keeps none. */
+    historyN: number | null;
     set: (update: (state: OverlayState) => OverlayState) => void;
   };
 }
@@ -83,8 +85,10 @@ export function LayerPanel({
 
   const { clear: clearLayer, remove: deleteLayer } = layerActions(client, confirm);
 
+  // What "pin" would freeze: a followed overlay draws the live AI raster, which
+  // has no address, so the button needs one derived for it (overlay.ts).
   const overlayPin = overlay
-    ? overlaySource(overlay.state, overlay.roomId, overlay.aiRevision)
+    ? pinnableSource(overlay.roomId, overlay.aiRevision, overlay.historyN)
     : null;
 
   return (

@@ -6,12 +6,13 @@ import {
   initialOverlay,
   loadOverlay,
   overlayKey,
-  overlaySource,
+  overlayFollowing,
   overlayTakesTab,
   overlayVisible,
   peekOverlay,
   pinAsOverlay,
   pinOverlay,
+  pinnableSource,
   saveOverlay,
   setOverlayOpacity,
   toggleOverlay,
@@ -78,43 +79,54 @@ describe('turning the overlay on and off', () => {
 });
 
 describe('which picture is shown', () => {
-  it('follows the latest result in the room when nothing is pinned', () => {
-    expect(overlaySource(on(), ROOM, 7)).toBe('/rooms/abcd/ai.png?v=7');
-    // Keyed by revision rather than by the clock, so the browser caches one
-    // result and refetches exactly when there is a new one.
-    expect(overlaySource(on(), ROOM, 8)).toBe('/rooms/abcd/ai.png?v=8');
+  it("follows the room's live AI raster when nothing is pinned", () => {
+    // Not a URL: the followed overlay is the canvas the RoomClient repaints on
+    // every result. `ai.png?v={aiRevision}` was the old answer and it is wrong,
+    // because the revision is the *human* revision - a regeneration from a
+    // prompt, denoise, seed or profile change on an unchanged drawing produces
+    // a new picture at the same revision and the address never changes.
+    expect(overlayFollowing(on())).toBe(true);
+    expect(overlayFollowing(on({ pinned: '/rooms/abcd/history/3.jpg' }))).toBe(false);
   });
 
-  it('has nothing to show before the room has generated anything', () => {
-    expect(aiOverlayUrl(ROOM, 0)).toBeNull();
-    expect(overlaySource(on(), ROOM, 0)).toBeNull();
-    expect(overlayVisible(on(), null)).toBe(false);
-  });
-
-  it('freezes what is on screen when it is pinned', () => {
-    const pinned = pinOverlay(on(), overlaySource(on(), ROOM, 7));
-    expect(pinned.pinned).toBe('/rooms/abcd/ai.png?v=7');
+  it('freezes a history entry when it is pinned, so the pin survives a reload', () => {
+    // history/{n}.jpg is written once and never rewritten; ai.png is rewritten
+    // by every result, so it is only the fallback.
+    expect(pinnableSource(ROOM, 7, 12)).toBe('/rooms/abcd/history/12.jpg');
+    expect(pinnableSource(ROOM, 7, null)).toBe('/rooms/abcd/ai.png?v=7');
+    const pinned = pinOverlay(on(), pinnableSource(ROOM, 7, 12));
+    expect(pinned.pinned).toBe('/rooms/abcd/history/12.jpg');
     // The room moves on; the overlay does not.
-    expect(overlaySource(pinned, ROOM, 9)).toBe('/rooms/abcd/ai.png?v=7');
-    expect(overlaySource(unpinOverlay(pinned), ROOM, 9)).toBe('/rooms/abcd/ai.png?v=9');
+    expect(pinnableSource(ROOM, 9, 14)).toBe('/rooms/abcd/history/14.jpg');
+    expect(pinned.pinned).toBe('/rooms/abcd/history/12.jpg');
+    expect(overlayFollowing(unpinOverlay(pinned))).toBe(true);
+  });
+
+  it('has nothing to pin before the room has generated anything', () => {
+    expect(aiOverlayUrl(ROOM, 0)).toBeNull();
+    expect(pinnableSource(ROOM, 0, null)).toBeNull();
+    expect(overlayVisible(on(), null)).toBe(false);
   });
 
   it('does not pin nothing', () => {
     // Before the first generation there is no picture to freeze, and a pin
     // nobody can see is a pin nobody can clear.
     const state = on();
-    expect(pinOverlay(state, overlaySource(state, ROOM, 0))).toBe(state);
+    expect(pinOverlay(state, pinnableSource(ROOM, 0, null))).toBe(state);
   });
 
   it('pins one entry from the history strip, and turns itself on', () => {
     expect(historyOverlayUrl(ROOM, 12)).toBe('/rooms/abcd/history/12.jpg');
     const state = pinAsOverlay(initialOverlay, historyOverlayUrl(ROOM, 12));
     expect(state.on).toBe(true); // the button's whole point
-    expect(overlaySource(state, ROOM, 99)).toBe('/rooms/abcd/history/12.jpg');
+    expect(state.pinned).toBe('/rooms/abcd/history/12.jpg');
+    expect(overlayFollowing(state)).toBe(false);
   });
 
   it('is drawn only when it is on, not peeking, and has something to draw', () => {
-    const url = '/rooms/abcd/ai.png?v=3';
+    // A URL while pinned, the live canvas while following: this only ever asks
+    // whether there is anything at all.
+    const url = '/rooms/abcd/history/3.jpg';
     expect(overlayVisible(on(), url)).toBe(true);
     expect(overlayVisible(initialOverlay, url)).toBe(false);
     expect(overlayVisible(on({ peeking: true }), url)).toBe(false);

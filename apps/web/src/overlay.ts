@@ -18,9 +18,23 @@
  *   only way to see what you have actually drawn. Held, not toggled: a toggle
  *   would leave the overlay off after a glance and the next stroke would go
  *   down blind.
- * - **The URL is derived, never stored.** A pinned entry keeps its address; a
- *   followed one is rebuilt from the revision, so the browser caches each
- *   result and refetches exactly when there is a new one.
+ * - **Following draws the live canvas; only a pin is an address.** A followed
+ *   overlay is the very raster the RoomClient repaints on every `ai_result`,
+ *   so it changes with every result and nothing is fetched for it. It used to
+ *   be `ai.png?v={aiRevision}`, and that address is a lie: the revision is the
+ *   *human* revision, so a regeneration caused by a prompt, denoise, seed or
+ *   profile change on an unchanged drawing produces a new picture at the same
+ *   revision, the URL never changes, and the overlay silently kept showing the
+ *   previous result while the AI panel beside it had moved on.
+ * - **A pin freezes an address, not pixels.** The history entry when the
+ *   server keeps one - `history/{n}.jpg` is written once and never rewritten,
+ *   so the pin is genuinely frozen and survives a reload as a short string a
+ *   quota can hold. `ai.png?v={rev}` is the fallback for a server with the
+ *   history switched off: right at the moment of pinning, because the image is
+ *   fetched then, but a reload can pull a newer picture from that same address.
+ *   A snapshot of the canvas (a data: URL) would be frozen in every case and
+ *   was rejected: a 1024-square PNG is megabytes, and `saveOverlay` writes one
+ *   JSON blob, so it would take the opacity and the on/off switch down with it.
  */
 
 import type { StorageLike } from './session.js';
@@ -60,13 +74,27 @@ export const aiOverlayUrl = (roomId: string, aiRevision: number): string | null 
 export const historyOverlayUrl = (roomId: string, n: number): string =>
   `/rooms/${roomId}/history/${n}.jpg`;
 
-/** What to draw: the pinned image, or the room's latest, or nothing yet. */
-export function overlaySource(state: OverlayState, roomId: string, aiRevision: number): string | null {
-  return state.pinned ?? aiOverlayUrl(roomId, aiRevision);
+/**
+ * What "pin" would freeze right now, or null when there is nothing to freeze.
+ *
+ * Prefers the history entry, which is written once and never rewritten, so the
+ * pin still shows that picture tomorrow; `ai.png?v={rev}` is the fallback for a
+ * server that keeps no history.
+ */
+export function pinnableSource(roomId: string, aiRevision: number, historyN: number | null): string | null {
+  return historyN === null ? aiOverlayUrl(roomId, aiRevision) : historyOverlayUrl(roomId, historyN);
 }
 
-/** Whether the stage should draw it at all this frame. */
-export const overlayVisible = (state: OverlayState, source: string | null): boolean =>
+/** Nothing is pinned: the overlay is the room's live AI raster, not a URL. */
+export const overlayFollowing = (state: OverlayState): boolean => state.pinned === null;
+
+/**
+ * Whether the stage should draw it at all this frame.
+ *
+ * `source` is whatever would be drawn - a loaded pin, or the live canvas - so
+ * this stays the one place that knows "on, not peeking, and something to draw".
+ */
+export const overlayVisible = (state: OverlayState, source: CanvasImageSource | string | null): boolean =>
   state.on && !state.peeking && source !== null;
 
 export const toggleOverlay = (state: OverlayState): OverlayState => ({ ...state, on: !state.on });
@@ -79,7 +107,7 @@ export const setOverlayOpacity = (state: OverlayState, opacity: number): Overlay
 /**
  * Freeze what is on screen.
  *
- * `source` is what `overlaySource` returns right now, which is why pinning
+ * `source` is what `pinnableSource` returns right now, which is why pinning
  * before the first generation does nothing: there is no picture to freeze, and
  * pinning "nothing" would leave a pin nobody could clear by looking at it.
  */

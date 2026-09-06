@@ -195,8 +195,13 @@ export class RoomClient {
   /**
    * Bumped on every write to `aiCanvas`. A full ai.png load started before a
    * newer patch was painted must not overwrite it when it finally arrives.
+   *
+   * Public because the overlay follows it: `aiRevision` is the *human*
+   * revision, so a regeneration from a settings change repaints this raster
+   * without changing that number, and a view keyed on the revision alone would
+   * never notice (overlay.ts).
    */
-  private aiPaintGeneration = 0;
+  aiPaintGeneration = 0;
 
   constructor(
     readonly roomId: string,
