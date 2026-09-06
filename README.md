@@ -147,7 +147,12 @@ now rather than part of the look.
 
 It is on disk, not in the room, so it survives the room being evicted and the
 server restarting, and `GET /rooms/{id}/history` still answers for a room that
-no longer exists. Two budgets keep it from filling the disk -
+no longer exists. Each room also keeps a small `counter` file beside its
+entries: image URLs are served as immutable, so a number is spent when it is
+handed out and never comes round again, even after every entry that used one
+has been evicted. An entry is its JPEG *and* its JSON - the JSON is written
+last - and a half-written pair, like a leftover `.part` file, is cleaned up
+when the store is next read. Two budgets keep it from filling the disk -
 `HISTORY_ROOM_MB` (200) and `HISTORY_TOTAL_MB` (2000), oldest evicted first -
 and `HISTORY_ENABLED=0` turns the whole thing off.
 

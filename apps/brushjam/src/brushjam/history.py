@@ -9,6 +9,11 @@ Everything here is blocking and belongs on a worker thread; `record` is the
 only entry point the runtime uses, and it is called through `asyncio.to_thread`.
 Nothing in here may raise into a generation: a full disk must cost the history,
 never the picture.
+
+Three things on disk make one room: `<n>.jpg`, `<n>.json`, and a `counter` file
+holding the next number to hand out. An entry exists when *both* of its files
+do - the JSON is installed last and is the commit point - and a number is never
+handed out twice, because the counter outlives the entries it numbered.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 log = logging.getLogger("brushjam.history")
 
@@ -35,6 +40,15 @@ MAX_LIST_LIMIT = 500
 #: JPEG quality for the stored composite. 90 is where an SDXL result stops
 #: gaining anything visible and the file is a fifth of the PNG.
 JPEG_QUALITY = 90
+
+#: The next entry number this room will use, kept beside its entries.
+#:
+#: Rebuilding the number from the files that survive is not good enough: when
+#: the global budget evicts every entry a room has, a restart would begin again
+#: at 0 and reissue numbers that browsers already hold - and `/history/<n>.jpg`
+#: is declared immutable, so the old picture would be shown under the new
+#: entry's settings.
+COUNTER_NAME = "counter"
 
 
 def is_room_id(room_id: str) -> bool:
@@ -69,6 +83,10 @@ class HistoryStore:
         self._next: Dict[str, int] = {}
         #: (room, n) oldest first, which is the order eviction removes them in.
         self._order: List[Tuple[str, int]] = []
+        #: Entries whose files would not delete (a reader holding them open on
+        #: Windows, a read-only mount). Their bytes are still on the disk, so
+        #: they are still counted, and every later write tries again.
+        self._undeleted: Dict[Tuple[str, int], int] = {}
         self._total = 0
 
     # -- loading ----------------------------------------------------------
@@ -78,7 +96,9 @@ class HistoryStore:
 
         Restarting must not restart the numbering, or a new entry would
         overwrite an old one, and the budgets have to count what is already
-        there rather than only what this process wrote.
+        there rather than only what this process wrote. This is also where a
+        half-written pair is cleaned up: an interrupted write leaves a `.part`
+        file, and a crash between the two installs leaves a JPEG with no JSON.
         """
         if self._loaded:
             return
@@ -96,22 +116,46 @@ class HistoryStore:
                 files = list(os.scandir(room.path))
             except OSError:  # pragma: no cover - vanished between calls
                 continue
-            sizes: Dict[int, int] = {}
+            found: Dict[str, Dict[int, int]] = {"jpg": {}, "json": {}}
             stamps: Dict[int, float] = {}
+            high_water = 0
+            counter = 0
             for item in files:
-                n = _entry_number(item.name)
-                if n is None:
+                if item.name == COUNTER_NAME:
+                    counter = _read_counter(Path(item.path))
                     continue
+                if item.name.endswith(".part"):
+                    # An interrupted write. It was never installed, so nothing
+                    # refers to it and nothing counts it.
+                    _unlink(Path(item.path))
+                    continue
+                parsed = _entry_file(item.name)
+                if parsed is None:
+                    continue
+                n, kind = parsed
+                high_water = max(high_water, n + 1)
                 try:
                     stat = item.stat()
                 except OSError:  # pragma: no cover
                     continue
-                sizes[n] = sizes.get(n, 0) + stat.st_size
+                found[kind][n] = stat.st_size
                 stamps[n] = max(stamps.get(n, 0.0), stat.st_mtime)
+            sizes: Dict[int, int] = {}
+            for n in sorted(set(found["jpg"]) | set(found["json"])):
+                if n in found["jpg"] and n in found["json"]:
+                    sizes[n] = found["jpg"][n] + found["json"][n]
+                    continue
+                # Half a pair: the write was interrupted between installing the
+                # image and installing the entry, or between deleting them.
+                # Either way it is not an entry, and leaving it would be bytes
+                # on the disk that no budget knows about.
+                log.info("history: room %s entry %d is incomplete; removing it", room.name, n)
+                for suffix in ("jpg", "json"):
+                    _unlink(self.root / room.name / f"{n}.{suffix}")
+            self._next[room.name] = max(counter, high_water)
             if not sizes:
                 continue
             self._sizes[room.name] = sizes
-            self._next[room.name] = max(sizes) + 1
             self._total += sum(sizes.values())
             for n, size in sizes.items():
                 entries.append((stamps.get(n, 0.0), room.name, n, size))
@@ -133,17 +177,32 @@ class HistoryStore:
         try:
             with self._lock:
                 self._load()
+                self._retry_deletions()
                 n = self._next.get(room_id, 0)
-                self._next[room_id] = n + 1
                 directory = self.root / room_id
                 directory.mkdir(parents=True, exist_ok=True)
                 record = dict(entry)
                 record["n"] = n
+                blob = json.dumps(record, separators=(",", ":")).encode("utf-8")
                 jpg_path = directory / f"{n}.jpg"
                 json_path = directory / f"{n}.json"
-                _write_atomic(jpg_path, jpeg)
-                _write_atomic(json_path, json.dumps(record, separators=(",", ":")).encode("utf-8"))
-                size = len(jpeg) + json_path.stat().st_size
+                # The number is spent the moment it is written down, whether or
+                # not the files that follow land: reusing it after a failure
+                # would put two different pictures behind one immutable URL.
+                _write_atomic(directory / COUNTER_NAME, f"{n + 1}\n".encode("ascii"))
+                self._next[room_id] = n + 1
+                try:
+                    _write_atomic(jpg_path, jpeg)
+                    # The JSON is the commit point: an entry exists when both
+                    # files do, and `_load` cleans up anything that is half a
+                    # pair. So install it last, and take the image back out if
+                    # it does not land.
+                    _write_atomic(json_path, blob)
+                except Exception:
+                    _unlink(jpg_path)
+                    _unlink(json_path)
+                    raise
+                size = len(jpeg) + len(blob)
                 self._sizes.setdefault(room_id, {})[n] = size
                 self._order.append((room_id, n))
                 self._total += size
@@ -171,21 +230,40 @@ class HistoryStore:
             self._remove(room, n)
 
     def _remove(self, room_id: str, n: int) -> None:
+        """Take one entry out of the store, and off the disk if it will go.
+
+        The accounting follows the disk, not the intention: bytes that are
+        still there are still counted, and the deletion is tried again on the
+        next write. Subtracting first meant a store that reported nothing while
+        holding files it had failed to delete.
+        """
         size = (self._sizes.get(room_id) or {}).pop(n, 0)
-        self._total -= size
         try:
             self._order.remove((room_id, n))
         except ValueError:  # pragma: no cover - already gone
             pass
-        for suffix in (".jpg", ".json"):
-            try:
-                (self.root / room_id / f"{n}{suffix}").unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as err:  # pragma: no cover - locked by a reader
-                log.debug("history: could not remove %s/%s%s (%s)", room_id, n, suffix, err)
+        if self._delete_files(room_id, n):
+            self._total -= size
+        else:
+            self._undeleted[(room_id, n)] = size
         if not self._sizes.get(room_id):
             self._sizes.pop(room_id, None)
+
+    def _delete_files(self, room_id: str, n: int) -> bool:
+        """True when neither file is on the disk any more."""
+        gone = True
+        for suffix in (".jpg", ".json"):
+            path = self.root / room_id / f"{n}{suffix}"
+            if not _unlink(path):
+                gone = False
+        return gone
+
+    def _retry_deletions(self) -> None:
+        """Caller holds the lock. Files that would not delete last time."""
+        for key in list(self._undeleted):
+            room_id, n = key
+            if self._delete_files(room_id, n):
+                self._total -= self._undeleted.pop(key)
 
     # -- reading ----------------------------------------------------------
 
@@ -241,12 +319,42 @@ class HistoryStore:
             self._load()
             return len(self._sizes.get(room_id) or {})
 
+    def undeleted(self) -> Set[Tuple[str, int]]:
+        """Entries whose files are still on the disk after a failed delete."""
+        with self._lock:
+            return set(self._undeleted)
 
-def _entry_number(name: str) -> Optional[int]:
+
+def _entry_file(name: str) -> Optional[Tuple[int, str]]:
     stem, dot, suffix = name.rpartition(".")
     if not dot or suffix not in ("jpg", "json") or not stem.isdigit():
         return None
-    return int(stem)
+    return int(stem), suffix
+
+
+def _entry_number(name: str) -> Optional[int]:
+    parsed = _entry_file(name)
+    return None if parsed is None else parsed[0]
+
+
+def _read_counter(path: Path) -> int:
+    try:
+        return max(0, int(path.read_text(encoding="ascii").strip()))
+    except (OSError, ValueError):  # pragma: no cover - hand-edited or unreadable
+        log.warning("history: unreadable counter at %s; using the files instead", path)
+        return 0
+
+
+def _unlink(path: Path) -> bool:
+    """True when the path is not there afterwards."""
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError as err:
+        log.debug("history: could not remove %s (%s)", path, err)
+        return False
 
 
 def _write_atomic(path: Path, data: bytes) -> None:

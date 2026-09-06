@@ -21,6 +21,7 @@ from starlette.testclient import TestClient
 from brushjam.ai.backends.mock import MockBackend
 from brushjam.app import create_app
 from brushjam.config import load_config
+import brushjam.history as _history
 from brushjam.history import HistoryStore
 
 JPEG = b"\xff\xd8\xff" + b"x" * 4000
@@ -166,10 +167,13 @@ def test_stray_files_are_ignored(tmp_path: Path) -> None:
     (room / "7.jpg").write_bytes(JPEG)
     (tmp_path / "history" / "NOT-A-ROOM").mkdir()
     s = store(tmp_path)
-    assert s.count("abcd") == 1
-    # The next number follows the highest one already there.
+    # A JPEG with no JSON is half of an interrupted write, not an entry: it is
+    # cleaned up rather than left as bytes no budget knows about.
+    assert s.count("abcd") == 0
+    assert not (room / "7.jpg").exists()
+    assert (room / "notes.txt").exists()  # somebody else's file is not ours
+    # The number is still spent: 7 was handed out once, so it never is again.
     assert s.record("abcd", JPEG, entry()) == 8
-    # An entry whose JSON never landed is skipped by the listing, not fatal.
     assert [e["n"] for e in s.list("abcd")] == [8]
 
 
@@ -298,3 +302,107 @@ def test_healthz_reports_activity(tmp_path: Path) -> None:
         assert busy["generations"] == 1
         assert isinstance(busy["last_generation_at"], int)
         assert busy["active_sockets"] == 0
+
+
+# ------------------------------------------- review 3: numbering and rollback
+
+
+def test_numbers_are_never_reused_after_everything_is_evicted(tmp_path: Path) -> None:
+    """Finding 4. `/rooms/{id}/history/{n}.jpg` is declared immutable, so a
+    number that comes round again shows a browser the old picture under the new
+    entry's settings. The counter outlives the entries it numbered."""
+    first = store(tmp_path, room_bytes=10_000_000, total_bytes=10_000_000)
+    for _ in range(3):
+        first.record("abcd", JPEG, entry())
+    assert [e["n"] for e in first.list("abcd")] == [2, 1, 0]
+
+    # Another room fills up the store and evicts every one of abcd's entries.
+    evicting = store(tmp_path, room_bytes=10_000_000, total_bytes=5_000)
+    evicting.record("bbbb", JPEG, entry())
+    assert evicting.list("abcd") == []
+    assert evicting.count("abcd") == 0
+
+    # A restart sees a room directory with no entries left in it.
+    restarted = store(tmp_path)
+    assert restarted.count("abcd") == 0
+    assert restarted.record("abcd", JPEG, entry()) == 3
+
+
+def test_the_counter_survives_a_restart_with_no_entries_at_all(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    assert s.record("abcd", JPEG, entry()) == 0
+    for suffix in ("jpg", "json"):
+        (tmp_path / "history" / "abcd" / f"0.{suffix}").unlink()
+    assert store(tmp_path).record("abcd", JPEG, entry()) == 1
+
+
+def test_a_half_written_pair_is_rolled_back(tmp_path: Path, monkeypatch) -> None:
+    """Finding 5. The JPEG used to be installed before the JSON was even
+    written, so a failure there left an image nothing listed and no budget
+    counted."""
+    s = store(tmp_path)
+    real = _history._write_atomic
+
+    def fail_on_json(path: Path, data: bytes) -> None:
+        if path.name.endswith(".json"):
+            raise OSError("no space left on device")
+        real(path, data)
+
+    monkeypatch.setattr(_history, "_write_atomic", fail_on_json)
+    assert s.record("abcd", JPEG, entry()) is None
+    monkeypatch.undo()
+
+    room = tmp_path / "history" / "abcd"
+    assert not (room / "0.jpg").exists(), "the image outlived the entry"
+    assert list(room.glob("*.part")) == []
+    assert s.total_bytes_used == 0
+    # The number is still spent, and the store still works.
+    assert s.record("abcd", JPEG, entry()) == 1
+
+
+def test_an_interrupted_write_is_reconciled_on_load(tmp_path: Path) -> None:
+    room = tmp_path / "history" / "abcd"
+    room.mkdir(parents=True)
+    (room / "0.jpg").write_bytes(JPEG)  # installed
+    (room / "0.json").write_text('{"prompt":"a hill"}', encoding="utf-8")
+    (room / "1.jpg").write_bytes(JPEG)  # the crash landed here
+    (room / "2.jpg.part").write_bytes(JPEG)  # ...and here
+    s = store(tmp_path)
+    assert [e["n"] for e in s.list("abcd")] == [0]
+    assert not (room / "1.jpg").exists()
+    assert not (room / "2.jpg.part").exists()
+    assert s.total_bytes_used == (room / "0.jpg").stat().st_size + (
+        room / "0.json"
+    ).stat().st_size
+
+
+def test_bytes_that_would_not_delete_are_still_counted(tmp_path: Path, monkeypatch) -> None:
+    """Finding 5, second half: eviction subtracted the bytes and forgot the
+    files, so the store reported nothing while still holding them."""
+    s = store(tmp_path, room_bytes=10_000, total_bytes=10_000_000)
+    s.record("abcd", JPEG, entry())
+    s.record("abcd", JPEG, entry())
+    used = s.total_bytes_used
+
+    locked = {"on": True}
+    real_unlink = Path.unlink
+
+    def refuse(self: Path, *args, **kw):
+        if locked["on"] and self.name.startswith("0."):
+            raise PermissionError("the file is open in another process")
+        return real_unlink(self, *args, **kw)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    s.record("abcd", JPEG, entry())  # this one pushes entry 0 out
+    assert ("abcd", 0) in s.undeleted()
+    assert (tmp_path / "history" / "abcd" / "0.jpg").exists()
+    assert s.total_bytes_used > used - 1, "bytes still on the disk stopped being counted"
+
+    # The lock goes away and the next write clears the backlog.
+    locked["on"] = False
+    s.record("abcd", JPEG, entry())
+    assert s.undeleted() == set()
+    assert not (tmp_path / "history" / "abcd" / "0.jpg").exists()
+    assert s.total_bytes_used == sum(
+        f.stat().st_size for f in (tmp_path / "history" / "abcd").glob("*.js*")
+    ) + sum(f.stat().st_size for f in (tmp_path / "history" / "abcd").glob("*.jpg"))
