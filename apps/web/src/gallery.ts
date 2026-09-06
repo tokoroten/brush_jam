@@ -204,6 +204,20 @@ export function applyHistorySettings(entry: HistoryEntry, target: HistoryTarget)
 }
 
 /** "2.1 s", the way the status pill says it. */
+/**
+ * The whole room as one file: `zip` is every stored frame plus a manifest,
+ * `avi` is a Motion JPEG video of them, drawing on the left and result on the
+ * right. Plain links rather than fetches - the server streams a temp file it
+ * deletes afterwards, and the browser's own download does that better than we
+ * could with a blob.
+ */
+export const historyExportUrl = (roomId: string, kind: 'zip' | 'avi'): string =>
+  `/rooms/${encodeURIComponent(roomId)}/history.${kind}`;
+
+/** The same name the server's Content-Disposition asks for. */
+export const historyExportFileName = (roomId: string, kind: 'zip' | 'avi'): string =>
+  `brushjam-${roomId}-history.${kind}`;
+
 export const formatLatency = (ms: number): string =>
   !Number.isFinite(ms) || ms < 0 ? '' : ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`;
 

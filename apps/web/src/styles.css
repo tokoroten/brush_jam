@@ -101,3 +101,5 @@ select.preset { max-width: 14rem; }
 .shot-meta .prompt-text { color: #e7e9ee; line-height: 1.4; word-break: break-word; }
 .shot-actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
 .shot-actions a { color: #9db4ee; }
+.gallery-exports { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.gallery-exports a { color: #9db4ee; }

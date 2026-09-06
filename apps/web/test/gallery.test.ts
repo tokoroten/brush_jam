@@ -11,6 +11,8 @@ import {
   galleryLoaded,
   galleryLoading,
   galleryRetryDue,
+  historyExportFileName,
+  historyExportUrl,
   initialGallery,
   selectEntry,
   selectedEntry,
@@ -192,6 +194,19 @@ describe('use these settings', () => {
     expect(prompt.value).toBe('');
     expect(negative.value).toBe('');
     expect(seed.sent).toEqual([]);
+  });
+});
+
+describe('the whole-room exports', () => {
+  it('addresses the two server routes, and names the file the way the server does', () => {
+    expect(historyExportUrl('abcd', 'zip')).toBe('/rooms/abcd/history.zip');
+    expect(historyExportUrl('abcd', 'avi')).toBe('/rooms/abcd/history.avi');
+    expect(historyExportFileName('abcd', 'zip')).toBe('brushjam-abcd-history.zip');
+    expect(historyExportFileName('abcd', 'avi')).toBe('brushjam-abcd-history.avi');
+  });
+
+  it('never lets a room id out of its path segment', () => {
+    expect(historyExportUrl('../secret', 'zip')).toBe('/rooms/..%2Fsecret/history.zip');
   });
 });
 

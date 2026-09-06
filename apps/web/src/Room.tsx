@@ -53,6 +53,8 @@ import {
   galleryLoaded,
   galleryLoading,
   galleryRetryDue,
+  historyExportFileName,
+  historyExportUrl,
   initialGallery,
   selectEntry,
   selectedEntry,
@@ -974,6 +976,24 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               ))}
             </div>
           )}
+          {gallery.enabled && !gallery.error && gallery.entries.length > 0 ? (
+            <div className="gallery-exports">
+              <a
+                href={historyExportUrl(roomId, 'zip')}
+                download={historyExportFileName(roomId, 'zip')}
+                title="every frame this room made, plus a manifest of the settings"
+              >
+                download zip
+              </a>
+              <a
+                href={historyExportUrl(roomId, 'avi')}
+                download={historyExportFileName(roomId, 'avi')}
+                title="one frame per generation: the drawing on the left, the result on the right"
+              >
+                download video (MJPEG AVI)
+              </a>
+            </div>
+          ) : null}
           {shown ? (
             <div className="shot">
               <img src={shown.url} alt={`result ${shown.n}`} />
