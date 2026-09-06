@@ -6,6 +6,7 @@ import {
   DEFAULT_NEGATIVE_PROMPT,
   DENOISE_STEP,
   MAX_DENOISE,
+  PROMPT_PRESETS,
   MAX_SEED,
   clampSeed,
   randomSeed,
@@ -74,6 +75,7 @@ import { layerOrigin, layerPoint, movePatch, movedPosition, pickMovableLayer, sc
 import { newId } from './id.js';
 import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pasteLimit, pastePlacement } from './paste.js';
+import { onPresetChange } from './presetPicker.js';
 import { RoomClient } from './roomClient.js';
 import { useSharedDraft } from './sharedDraft.js';
 
@@ -149,6 +151,8 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     client.send({ t: 'set_ai_settings', negativePrompt: value }),
   );
   const seedField = useSharedDraft(client.seed, (value) => client.send({ t: 'set_ai_settings', seed: value }));
+  /** See presetPicker.ts: a one-shot fill of the two prompt fields. */
+  const presetFields = { prompt: promptField, negative: negativeField };
 
   const dragRef = useRef<Drag | null>(null);
   /** Image id of a paste we are still waiting for the server to turn into a layer. */
@@ -509,6 +513,19 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             </button>
           )}
         </div>
+        <select
+          className="preset"
+          title="fill the prompt from a preset; it stays editable afterwards"
+          value=""
+          onChange={(e) => onPresetChange(e, presetFields)}
+        >
+          <option value="">preset</option>
+          {PROMPT_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.label}
+            </option>
+          ))}
+        </select>
         <div className="segmented" title={profileHint}>
           {AI_PROFILES.map((p) => {
             const supported = client.aiProfiles.includes(p);

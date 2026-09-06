@@ -91,6 +91,10 @@ so treat the link as the only access control there is.
 - **fast / quality.** `fast` is a 4-step distilled LoRA at 768 - a couple of
   seconds an edit on a 3070, which is what makes the loop feel alive. `quality`
   is 14 steps at 1024, several times slower and considerably better. Room-wide.
+- **presets.** A picker beside the prompt fills it from a short list - 美少女 /
+  anime girl, 風景画 / landscape, 印象派 / impressionist, 建物 / architecture,
+  背景 / background art, and R18 (NSFW). It only fills the two prompt fields;
+  they stay editable, and nothing on the server knows a preset was used.
 - **prompt.** Shared. It steers the whole canvas. The negative prompt is in
   Advanced, and is inert on `fast`: a distilled model at CFG 1.0 never evaluates
   the negative branch, and the UI greys it out rather than pretending.

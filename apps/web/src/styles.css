@@ -22,6 +22,7 @@ input[type='text'], input.prompt, input:not([type]) { background: #1d2026; color
 .prompt-field { flex: 1 1 16rem; min-width: 12rem; display: flex; flex-direction: column; gap: 2px; }
 .prompt-field .prompt { flex: 1 1 auto; width: 100%; box-sizing: border-box; }
 input.seed { width: 7.5rem; }
+select.preset { max-width: 14rem; }
 /* The dice: same height as the controls beside it, one glyph wide. */
 .dice { padding: 4px 8px; font-size: 14px; line-height: 1; }
 .hint.foreign { background: none; border: none; padding: 0; text-align: left; font-size: 11px; color: #9aa3b0; text-decoration: underline; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
