@@ -118,6 +118,28 @@ so treat the link as the only access control there is.
   for whole layers. Ctrl/Cmd+V pastes a reference image as a layer, excluded
   from the AI's input until you tick "AI input".
 
+## Saving and history
+
+The header has **save AI** (the current AI result, as a PNG from the server)
+and **save drawing** (the visible layers composited in the browser at canvas
+size, on white). Both land as `brushjam-<room>-<revision>-ai.png` /
+`-drawing.png`.
+
+**history** opens a strip of every AI result the room has made, newest first.
+The server writes each accepted result to `HISTORY_DIR` (`./data/history` by
+default) as a JPEG plus a JSON entry recording the prompt, negative prompt,
+denoise, seed, profile, resolution and latency that produced it. Clicking a
+thumbnail shows it large with those settings, a download link, and **use these
+settings**, which puts the prompt, negative prompt, denoise and seed back into
+the room - not the profile or the resolution, which are what the machine can do
+now rather than part of the look.
+
+It is on disk, not in the room, so it survives the room being evicted and the
+server restarting, and `GET /rooms/{id}/history` still answers for a room that
+no longer exists. Two budgets keep it from filling the disk -
+`HISTORY_ROOM_MB` (200) and `HISTORY_TOTAL_MB` (2000), oldest evicted first -
+and `HISTORY_ENABLED=0` turns the whole thing off.
+
 ## How it works
 
 One Python process (`apps/brushjam`) serves the built client, the room protocol

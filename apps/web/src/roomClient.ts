@@ -117,6 +117,12 @@ export class RoomClient {
   aiState: AIState = 'idle';
   aiMessage = '';
   aiLatencyMs = 0;
+  /**
+   * The number the server saved the latest result under, or null when it keeps
+   * no history. The gallery refreshes on it rather than on every ai_result, so
+   * a server with the history off is never asked for a listing.
+   */
+  latestHistoryN: number | null = null;
   lastCrop: Rect | null = null;
   /** Exact area the server said was authoritative (never hard-coded here). */
   lastApply: Rect | null = null;
@@ -556,6 +562,9 @@ export class RoomClient {
         if (msg.latencyMs !== undefined) this.aiLatencyMs = msg.latencyMs;
         break;
       case 'ai_result': {
+        // Noted before the patch is fetched: the result exists in the history
+        // whether or not this client manages to paint it.
+        if (typeof msg.historyN === 'number') this.latestHistoryN = msg.historyN;
         // Load first: only advance the AI state once the pixels are really here.
         try {
           // Bounded await: ordering matters here, but a stalled request must

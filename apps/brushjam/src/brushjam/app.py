@@ -24,6 +24,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from .ai.backends import AIBackend, MockBackend
 from .config import Config
 from .constants import AI_RESOLUTIONS
+from .history import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from .raster import build_full_mask
 from .room import RoomLimits
 from .runtime import MAX_BUFFERED_BYTES, RoomRegistry
@@ -32,6 +33,9 @@ log = logging.getLogger("brushjam.http")
 
 ROOM_ID = re.compile(r"^[a-z0-9]{4,16}$")
 SESSION_TOKEN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+#: A saved result is `<n>.jpg` and nothing else; `n` is what the store numbered
+#: it. Matched rather than sanitised: the name becomes a path.
+HISTORY_IMAGE = re.compile(r"^(\d{1,9})\.jpg$")
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 #: One frame is never legitimately larger than this.
 MAX_WS_PAYLOAD = 1024 * 1024
@@ -291,7 +295,18 @@ def create_app(
         # (the retired Node server's scripts/latency.ts). A resident backend adds the fields
         # that tooling used to fetch from the stream worker's own /healthz -
         # steps, guidance, vae, model, lora - so there is one place to look.
-        body: Dict[str, Any] = {"ok": True, "backend": backend.name, "rooms": registry.size}
+        # `active_sockets` and `last_generation_at` are what an outside watcher
+        # needs to tell a busy server from an idle one - deploy/runpod's
+        # `watch` stops the pod on them - and neither can be inferred from
+        # `rooms`, which counts rooms nobody is in yet as well.
+        body: Dict[str, Any] = {
+            "ok": True,
+            "backend": backend.name,
+            "rooms": registry.size,
+            "active_sockets": registry.active_sockets,
+            "last_generation_at": registry.last_generation_at,
+            "generations": registry.generations,
+        }
         status = getattr(backend, "status", None)
         if callable(status):
             extra = status()
@@ -309,6 +324,39 @@ def create_app(
         if room is None or not room.has_ai():
             return JSONResponse({"error": "no AI output yet"}, status_code=404)
         return png(await room.ai_png())
+
+    @app.get("/rooms/{room_id}/history")
+    async def room_history(room_id: str, limit: int = DEFAULT_LIST_LIMIT) -> Response:
+        # No registry lookup on purpose: what a room made outlives the room, so
+        # a gallery still opens after the room has been evicted or the server
+        # restarted. The id is validated here because it becomes a directory.
+        if not ROOM_ID.match(room_id):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            wanted = max(1, min(int(limit), MAX_LIST_LIMIT))
+        except (TypeError, ValueError):
+            wanted = DEFAULT_LIST_LIMIT
+        entries = await asyncio.to_thread(registry.history.list, room_id, wanted)
+        return JSONResponse(
+            {"roomId": room_id, "enabled": registry.history.enabled, "entries": entries},
+            headers={"cache-control": "no-store"},
+        )
+
+    @app.get("/rooms/{room_id}/history/{name}")
+    async def room_history_image(room_id: str, name: str) -> Response:
+        if not ROOM_ID.match(room_id) or not HISTORY_IMAGE.match(name):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await asyncio.to_thread(
+            registry.history.read, room_id, int(name.split(".")[0])
+        )
+        if body is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return Response(
+            content=body,
+            media_type="image/jpeg",
+            # Immutable: entry n of a room is written once and never rewritten.
+            headers={"cache-control": "public, max-age=86400, immutable"},
+        )
 
     @app.get("/rooms/{room_id}/patches/{patch}")
     async def patch_png(room_id: str, patch: str) -> Response:

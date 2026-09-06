@@ -45,6 +45,21 @@ import {
   type SizedTool,
 } from './brushSize.js';
 import { browserCopyDeps, copyText } from './clipboard.js';
+import {
+  applyHistorySettings,
+  formatLatency,
+  formatTime,
+  galleryAnnounced,
+  galleryFailed,
+  galleryLoaded,
+  galleryLoading,
+  initialGallery,
+  selectEntry,
+  selectedEntry,
+  shouldFetch,
+  toggleGallery,
+} from './gallery.js';
+import { browserDownloadDeps, historyFileName, saveAiImage, saveDrawing } from './save.js';
 
 /**
  * What a pointer press means. Extracted so the one rule that is easy to get
@@ -78,6 +93,7 @@ import { StageView } from './StageView.js';
 import { ACCEPTED_PASTE_TYPES, downscaleBlob, pasteLimit, pastePlacement } from './paste.js';
 import { applyRandomPreset, onPresetChange } from './presetPicker.js';
 import { RoomClient } from './roomClient.js';
+import type { HistoryListing } from '@brushjam/shared';
 import { useSharedDraft } from './sharedDraft.js';
 
 export type Tool = 'pen' | 'noise' | 'eraser' | 'move';
@@ -161,6 +177,56 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     maxDenoise: client.maxDenoise,
     profiles: client.aiProfiles,
     send: (aiProfile: AIProfileName) => client.send({ t: 'set_ai_settings', aiProfile }),
+  };
+
+  /** "use these settings" writes the same fields a preset does, plus the seed. */
+  const historyTarget = { ...presetTarget, seed: seedField };
+
+  // --- the history strip ----------------------------------------------------
+  const [gallery, setGallery] = useState(initialGallery);
+  // Every ai_result carrying a historyN is an announcement that there is
+  // something newer to fetch - noted even while the strip is closed, so
+  // opening it later is one fetch rather than a fetch and then a correction.
+  useEffect(() => {
+    setGallery((g) => galleryAnnounced(g, client.latestHistoryN ?? undefined));
+  }, [client, client.latestHistoryN, version]);
+
+  useEffect(() => {
+    if (!shouldFetch(gallery)) return;
+    let cancelled = false;
+    setGallery(galleryLoading);
+    void (async () => {
+      try {
+        const res = await fetch(`/rooms/${roomId}/history`);
+        if (!res.ok) throw new Error(`server said ${res.status}`);
+        const listing = (await res.json()) as HistoryListing;
+        if (!cancelled) setGallery((g) => galleryLoaded(g, listing));
+      } catch (err) {
+        if (!cancelled) {
+          setGallery((g) => galleryFailed(g, err instanceof Error ? err.message : String(err)));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [gallery, roomId]);
+
+  const shown = selectedEntry(gallery);
+  const downloads = useMemo(() => browserDownloadDeps(), []);
+  const saveAi = async (): Promise<void> => {
+    if (!(await saveAiImage(roomId, client.aiRevision, downloads))) {
+      client.noteActionError('nothing to save yet: the AI has not produced a result in this room');
+    }
+  };
+  const saveHuman = async (): Promise<void> => {
+    try {
+      if (!(await saveDrawing(roomId, client.humanRevision, client, downloads))) {
+        client.noteActionError('could not save the drawing');
+      }
+    } catch (err) {
+      client.noteActionError(`could not save the drawing: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const dragRef = useRef<Drag | null>(null);
@@ -559,6 +625,19 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           })}
         </div>
         <span className="hint">{profileHint}</span>
+        <button title="download the AI result as a PNG" onClick={() => void saveAi()}>
+          save AI
+        </button>
+        <button title="download the drawing as a PNG, exactly as it looks here" onClick={() => void saveHuman()}>
+          save drawing
+        </button>
+        <button
+          className={gallery.open ? 'active' : ''}
+          title="every AI result this room has made"
+          onClick={() => setGallery(toggleGallery)}
+        >
+          history
+        </button>
         <button className={advanced ? 'active' : ''} onClick={() => setAdvanced((v) => !v)}>
           advanced
         </button>
@@ -717,6 +796,62 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         <button onClick={reset}>100%</button>
         <span className="zoom">{Math.round(camera.zoom * 100)}%</span>
       </div>
+
+      {gallery.open ? (
+        <div className="gallery">
+          {!gallery.enabled ? (
+            <span className="hint">this server keeps no history (HISTORY_ENABLED=0)</span>
+          ) : gallery.error ? (
+            <span className="hint">history unavailable: {gallery.error}</span>
+          ) : gallery.entries.length === 0 ? (
+            <span className="hint">{gallery.loading ? 'loading...' : 'nothing generated in this room yet'}</span>
+          ) : (
+            <div className="strip">
+              {gallery.entries.map((e) => (
+                <button
+                  key={e.n}
+                  className={`thumb ${gallery.selected === e.n ? 'active' : ''}`}
+                  title={`#${e.n} ${e.prompt || '(no prompt)'}`}
+                  onClick={() => setGallery((g) => selectEntry(g, e.n))}
+                >
+                  {/* Lazy: a long session's strip is hundreds of JPEGs, and
+                      the ones off the end of the row are never looked at. */}
+                  <img src={e.url} alt={`result ${e.n}`} loading="lazy" decoding="async" />
+                </button>
+              ))}
+            </div>
+          )}
+          {shown ? (
+            <div className="shot">
+              <img src={shown.url} alt={`result ${shown.n}`} />
+              <div className="shot-meta">
+                <strong>#{shown.n}</strong>
+                <span className="hint">{formatTime(shown.time)}</span>
+                <span className="prompt-text">{shown.prompt || '(no prompt)'}</span>
+                {shown.negativePrompt ? (
+                  <span className="hint">negative: {shown.negativePrompt}</span>
+                ) : null}
+                <span className="hint">
+                  {shown.profile} · {shown.aiResolution}px · denoise {shown.denoise} · seed {shown.seed} ·{' '}
+                  {formatLatency(shown.latencyMs)}
+                </span>
+                <div className="shot-actions">
+                  <a href={shown.url} download={historyFileName(roomId, shown.n)}>
+                    download
+                  </a>
+                  <button
+                    title="put this result's prompt, negative prompt, denoise and seed back into the room"
+                    onClick={() => applyHistorySettings(shown, historyTarget)}
+                  >
+                    use these settings
+                  </button>
+                  <button onClick={() => setGallery((g) => selectEntry(g, null))}>close</button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {actionError ? (
         <div className="toast" role="status" onClick={() => client.clearActionError()}>

@@ -22,7 +22,14 @@ from brushjam.raster import to_png
 
 
 def make_client(**env) -> TestClient:
-    settings = {"AI_BACKEND": "mock", "CANVAS_SIZE": "512", "AI_WINDOW": "512", "AI_DEBOUNCE_MS": "10"}
+    settings = {
+        "AI_BACKEND": "mock",
+        "CANVAS_SIZE": "512",
+        "AI_WINDOW": "512",
+        "AI_DEBOUNCE_MS": "10",
+        # See test_history.py: the suite does not write to the checkout.
+        "HISTORY_ENABLED": "0",
+    }
     settings.update(env)
     config = load_config(settings)
     # No web/dist in the test environment; the SPA route is exercised separately.

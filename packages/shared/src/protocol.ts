@@ -197,5 +197,42 @@ export type ServerMessage =
       latencyMs: number;
       /** The profile this result was generated with, not the room's current one. */
       profile: AIProfileName;
+      /**
+       * The number this result was saved under, when the server keeps a
+       * history (`HISTORY_ENABLED`). Absent means nothing was stored - the
+       * history is off, or the write failed - so the gallery is simply not
+       * refreshed rather than showing an entry that does not exist.
+       */
+      historyN?: number;
     }
   | { t: 'error'; message: string };
+
+/**
+ * One saved AI result, as `GET /rooms/{id}/history` returns it. Written next
+ * to the JPEG when the result was accepted, so it describes the settings that
+ * produced THAT picture rather than the room's current ones.
+ */
+export interface HistoryEntry {
+  n: number;
+  /** Path of the JPEG, relative to the server. */
+  url: string;
+  /** Unix ms when it was saved. */
+  time: number;
+  aiRevision: number;
+  aiGeneration: number;
+  prompt: string;
+  negativePrompt: string;
+  denoise: number;
+  seed: number;
+  profile: AIProfileName;
+  aiResolution: number;
+  latencyMs: number;
+}
+
+export interface HistoryListing {
+  roomId: string;
+  /** False when the server was started with HISTORY_ENABLED=0. */
+  enabled: boolean;
+  /** Newest first. */
+  entries: HistoryEntry[];
+}

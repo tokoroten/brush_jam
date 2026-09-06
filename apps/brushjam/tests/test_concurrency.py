@@ -37,6 +37,9 @@ def config(**env):
         "CANVAS_SIZE": "512",
         "AI_WINDOW": "512",
         "AI_DEBOUNCE_MS": "10",
+        # Nothing here is about the saved history, and a test suite must not
+        # write pictures into the checkout. tests/test_history.py turns it on.
+        "HISTORY_ENABLED": "0",
     }
     settings.update(env)
     return load_config(settings)

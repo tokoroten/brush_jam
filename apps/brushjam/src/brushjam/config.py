@@ -38,6 +38,10 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 #: Small enough to download on demand (the DMD2 LoRA, the fp16-fix VAE), so
 #: this one has a default. The checkpoint does not: it is 6-7 GB and personal.
 DEFAULT_INPROC_LORA_DIR = str(REPO_ROOT / "models" / "loras")
+#: Where saved results go. Relative to the working directory, not the checkout:
+#: on a pod that is /workspace/app, which is replaced by every upload, so an
+#: operator who wants them kept points HISTORY_DIR at the volume.
+DEFAULT_HISTORY_DIR = "./data/history"
 
 
 class ConfigError(Exception):
@@ -115,6 +119,12 @@ class Config:
     #: Load the model during startup rather than on the first generation, so the
     #: ~40 s wait happens once, before anyone is drawing.
     inproc_preload: bool = True
+    #: Saved AI results. Off is a single switch, because a shared machine may
+    #: not want a copy of everything anyone ever drew sitting on its disk.
+    history_enabled: bool = True
+    history_dir: str = ""
+    history_room_bytes: int = 200 * 1024 * 1024
+    history_total_bytes: int = 2000 * 1024 * 1024
     web_dist: Optional[str] = None
     explicit: ExplicitEnv = field(default_factory=ExplicitEnv)
     #: Ceiling for a room's generation size; the starting size is ai_window.
@@ -123,6 +133,14 @@ class Config:
 
 def _flag(raw: Optional[str]) -> bool:
     return (raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _on_by_default(raw: Optional[str]) -> bool:
+    """A switch that is on unless it is turned off. Unset and empty both mean
+    on, so `HISTORY_ENABLED=` in a .env is not a way to lose the history."""
+    if raw is None or raw.strip() == "":
+        return True
+    return _flag(raw)
 
 
 def _num(
@@ -305,6 +323,14 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         ),
         inproc_dry_run=_flag(env.get("INPROC_DRY_RUN") or env.get("STREAM_DRY_RUN")),
         inproc_preload=not _flag(env.get("INPROC_NO_PRELOAD")),
+        history_enabled=_on_by_default(env.get("HISTORY_ENABLED")),
+        history_dir=env.get("HISTORY_DIR") or DEFAULT_HISTORY_DIR,
+        history_room_bytes=int(
+            _num(env, "HISTORY_ROOM_MB", 200, min=1, max=1_000_000, errors=errors) * 1024 * 1024
+        ),
+        history_total_bytes=int(
+            _num(env, "HISTORY_TOTAL_MB", 2000, min=1, max=10_000_000, errors=errors) * 1024 * 1024
+        ),
         web_dist=env.get("WEB_DIST") or None,
         explicit=explicit,
     )

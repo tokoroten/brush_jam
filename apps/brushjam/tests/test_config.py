@@ -106,3 +106,21 @@ def test_a_pinned_setting_the_backend_cannot_run_is_an_error() -> None:
     message = str(err.value)
     assert "AI_PROFILE=quality is not supported by the stream backend" in message
     assert "AI_WINDOW=1024 is larger than the stream backend accepts (768)" in message
+
+
+def test_history_settings() -> None:
+    default = load_config({})
+    assert default.history_enabled is True
+    assert default.history_dir == "./data/history"
+    assert default.history_room_bytes == 200 * 1024 * 1024
+    assert default.history_total_bytes == 2000 * 1024 * 1024
+    # An empty value in a .env is not a way to lose the history.
+    assert load_config({"HISTORY_ENABLED": ""}).history_enabled is True
+    assert load_config({"HISTORY_ENABLED": "0"}).history_enabled is False
+    assert load_config({"HISTORY_ENABLED": "no"}).history_enabled is False
+    sized = load_config({"HISTORY_ROOM_MB": "50", "HISTORY_TOTAL_MB": "500", "HISTORY_DIR": "/tmp/h"})
+    assert sized.history_room_bytes == 50 * 1024 * 1024
+    assert sized.history_total_bytes == 500 * 1024 * 1024
+    assert sized.history_dir == "/tmp/h"
+    with pytest.raises(ConfigError):
+        load_config({"HISTORY_ROOM_MB": "0"})

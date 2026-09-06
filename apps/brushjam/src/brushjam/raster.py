@@ -629,5 +629,18 @@ class AICanvas:
     def to_png(self) -> bytes:
         return to_png(self.image)
 
+    def to_jpeg(self, quality: int = 90) -> bytes:
+        """The canvas as a JPEG, for the saved history.
+
+        JPEG has no alpha, and the canvas has plenty: anything the model has
+        not painted yet is transparent, which would come out black. It is
+        flattened onto white, the same background the drawing is composited on.
+        """
+        flat = Image.new("RGB", self.image.size, (255, 255, 255))
+        flat.paste(self.image, (0, 0), self.image)
+        out = io.BytesIO()
+        flat.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+
     def clear(self) -> None:
         self.image = Image.new("RGBA", (self.size, self.size), (0, 0, 0, 0))

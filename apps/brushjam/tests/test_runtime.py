@@ -45,7 +45,13 @@ class FakeSocket:
 
 
 def config(**env):
-    settings = {"AI_BACKEND": "mock", "CANVAS_SIZE": "512", "AI_WINDOW": "512"}
+    settings = {
+        "AI_BACKEND": "mock",
+        "CANVAS_SIZE": "512",
+        "AI_WINDOW": "512",
+        # See test_history.py: the suite does not write to the checkout.
+        "HISTORY_ENABLED": "0",
+    }
     settings.update(env)
     return load_config(settings)
 

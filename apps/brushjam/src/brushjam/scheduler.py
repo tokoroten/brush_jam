@@ -93,6 +93,13 @@ class SchedulerHost(Protocol):
     def on_error(self, message: str, repeated: int) -> None:
         ...
 
+    async def record_history(self, entry: Dict[str, Any]) -> Optional[int]:
+        """Save the result that was just applied; returns its number, or None.
+
+        Optional: a host that does not implement it simply has no history, and
+        `ai_result` then carries no `historyN`.
+        """
+
 
 @dataclass
 class SchedulerOptions:
@@ -425,6 +432,30 @@ class AIScheduler:
                         len(image_png) // 1024,
                         len(patch) // 1024,
                     )
+                # Saved after the result is applied and before it is announced,
+                # so `historyN` can travel with the message the client already
+                # reacts to. A host without a history returns None; a store
+                # that could not write logs and returns None as well.
+                history_n: Optional[int] = None
+                recorder = getattr(self.host, "record_history", None)
+                if callable(recorder):
+                    try:
+                        history_n = await recorder(
+                            {
+                                "aiRevision": for_revision,
+                                "aiGeneration": applied["aiGeneration"],
+                                "time": int(time.time() * 1000),
+                                "prompt": job.prompt,
+                                "negativePrompt": negative,
+                                "denoise": req.denoise,
+                                "seed": request_seed,
+                                "profile": req.profile,
+                                "aiResolution": resolution,
+                                "latencyMs": latency_ms,
+                            }
+                        )
+                    except Exception:  # pragma: no cover - the store swallows its own
+                        log.debug("history could not be saved", exc_info=True)
                 self.host.emit(
                     {
                         "t": "ai_result",
@@ -437,6 +468,7 @@ class AIScheduler:
                         "latencyMs": latency_ms,
                         # The profile this run used, not the room's current one.
                         "profile": job.profile or "quality",
+                        **({"historyN": history_n} if history_n is not None else {}),
                     }
                 )
                 if prompt_epoch != self._prompt_epoch:

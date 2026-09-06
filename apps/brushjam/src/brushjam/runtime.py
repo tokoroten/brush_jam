@@ -17,6 +17,7 @@ from .ai.backends import AIBackend
 from .config import Config
 from .constants import CLOSE_SUPERSEDED
 from .geometry import Rect, intersect_rect
+from .history import HistoryStore, JPEG_QUALITY
 from .ids import short_id
 from .imageinfo import check_image
 from .protocol import Message
@@ -127,8 +128,10 @@ class RoomRuntime:
         config: Config,
         limits: Optional[RoomLimits] = None,
         admission: Optional[GenerationAdmission] = None,
+        history: Optional[HistoryStore] = None,
     ) -> None:
         self.config = config
+        self.history = history
         self.state: RoomState = create_room(
             room_id,
             config.ai_denoise,
@@ -165,6 +168,11 @@ class RoomRuntime:
         self._pending_image_bytes = 0
         #: Set by the registry so a failure can trigger a capability re-probe.
         self.on_error: Optional[Callable[[str, int], None]] = None
+        #: Set by the registry: every accepted result, for /healthz.
+        self.on_generation: Optional[Callable[[], None]] = None
+        #: The JPEG of the result being applied, encoded in the same worker
+        #: thread as the composite and held until `record_history` writes it.
+        self._pending_jpeg: Optional[bytes] = None
 
         runtime = self
 
@@ -193,8 +201,13 @@ class RoomRuntime:
                 async with runtime._ai_lock:
                     # The canvas is built inside the lock and inside the thread:
                     # at a 2048 canvas its first allocation is 16 MiB, which is
-                    # not something to do on the event loop.
-                    png = await asyncio.to_thread(runtime._composite, patch, crop, mask)
+                    # not something to do on the event loop. The history JPEG is
+                    # encoded in the same thread and under the same lock, so it
+                    # is this result rather than whatever the next one leaves.
+                    png, jpeg = await asyncio.to_thread(
+                        runtime._composite_and_save, patch, crop, mask
+                    )
+                runtime._pending_jpeg = jpeg
                 patch_id = short_id(10)
                 runtime._patches[patch_id] = png
                 keep = MAX_PATCHES_FULL if config.ai_mode == "full" else MAX_PATCHES
@@ -206,11 +219,16 @@ class RoomRuntime:
                 # in an untouched room lands at revision 0, and a late joiner has
                 # to tell that from "nothing has ever been generated".
                 runtime.state.ai_generation += 1
+                if runtime.on_generation:
+                    runtime.on_generation()
                 return {
                     "rect": crop,
                     "url": f"/rooms/{room_id}/patches/{patch_id}.png",
                     "aiGeneration": runtime.state.ai_generation,
                 }
+
+            async def record_history(self, entry: Dict[str, Any]) -> Optional[int]:
+                return await runtime.record_history(entry)
 
             def emit(self, msg: Message) -> None:
                 runtime.broadcast(msg)
@@ -259,6 +277,34 @@ class RoomRuntime:
     def _composite(self, patch: bytes, crop: Rect, mask: Any) -> bytes:
         """Runs on a worker thread, inside `_ai_lock`."""
         return self._ai_canvas().composite(patch, crop, mask)
+
+    def _composite_and_save(
+        self, patch: bytes, crop: Rect, mask: Any
+    ) -> Tuple[bytes, Optional[bytes]]:
+        """The composite, plus the whole canvas as a JPEG when history is on.
+
+        Both on a worker thread: a 1024 JPEG is ~15 ms, which is a visible
+        stall for every other room's sockets if it happens on the event loop.
+        """
+        png = self._composite(patch, crop, mask)
+        if self.history is None or not self.history.enabled:
+            return png, None
+        try:
+            return png, self._ai_canvas().to_jpeg(JPEG_QUALITY)
+        except Exception:
+            log.warning("[room %s] could not encode the history JPEG", self.state.id, exc_info=True)
+            return png, None
+
+    async def record_history(self, entry: Dict[str, Any]) -> Optional[int]:
+        """Write the result that was just applied. Never raises."""
+        jpeg, self._pending_jpeg = self._pending_jpeg, None
+        if self.history is None or jpeg is None:
+            return None
+        try:
+            return await asyncio.to_thread(self.history.record, self.state.id, jpeg, entry)
+        except Exception:
+            log.warning("[room %s] could not save to history", self.state.id, exc_info=True)
+            return None
 
     async def ai_png(self) -> bytes:
         async with self._ai_lock:
@@ -889,10 +935,24 @@ def looks_like_limit_error(message: str) -> bool:
 
 class RoomRegistry:
     def __init__(
-        self, backend: AIBackend, config: Config, limits: Optional[RoomLimits] = None
+        self,
+        backend: AIBackend,
+        config: Config,
+        limits: Optional[RoomLimits] = None,
+        history: Optional[HistoryStore] = None,
     ) -> None:
         self.backend = backend
         self.config = config
+        self.history = history if history is not None else HistoryStore(
+            config.history_dir or "./data/history",
+            room_bytes=config.history_room_bytes,
+            total_bytes=config.history_total_bytes,
+            enabled=config.history_enabled,
+        )
+        #: When the last generation anywhere was accepted, epoch ms. Read by
+        #: /healthz, which is what the idle watcher in deploy/runpod polls.
+        self.last_generation_at: Optional[int] = None
+        self.generations = 0
         self.limits = (limits or RoomLimits()).copy()
         self._rooms: "Dict[str, RoomRuntime]" = {}
         self._sweeper: Optional[asyncio.Task] = None
@@ -1047,7 +1107,10 @@ class RoomRegistry:
         return self.create_named(room_id, client)
 
     def _make(self, room_id: str) -> RoomRuntime:
-        room = RoomRuntime(room_id, self.backend, self.config, self.limits, self.admission)
+        room = RoomRuntime(
+            room_id, self.backend, self.config, self.limits, self.admission, self.history
+        )
+        room.on_generation = self._note_generation
         # A failing generation is the first sign a worker changed under us.
         room.on_error = lambda message, repeated: (
             asyncio.ensure_future(self.refresh_capabilities())
@@ -1056,6 +1119,17 @@ class RoomRegistry:
         )
         self._rooms[room_id] = room
         return room
+
+    def _note_generation(self) -> None:
+        self.last_generation_at = now_ms()
+        self.generations += 1
+
+    @property
+    def active_sockets(self) -> int:
+        """Sockets that belong to a joined member, across every room. `not
+        idle` for the pod watcher: a reserved-but-unjoined socket is a
+        handshake in progress, not somebody playing."""
+        return sum(room.member_count for room in self._rooms.values())
 
     def sweep(self, now: Optional[int] = None) -> int:
         """Reclaim rooms nobody has been in for a while (each holds a raster)."""
