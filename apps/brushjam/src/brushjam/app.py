@@ -18,12 +18,27 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .ai.backends import AIBackend, MockBackend
 from .config import Config
 from .constants import AI_RESOLUTIONS
+from .export import (
+    DEFAULT_FPS,
+    MAX_FPS,
+    MAX_WIDTH,
+    MIN_FPS,
+    MIN_WIDTH,
+    ExportBusy,
+    ExportEmpty,
+    ExportGuard,
+    ExportTooLarge,
+    build_avi,
+    build_zip,
+    temp_path,
+)
 from .history import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from .raster import build_full_mask
 from .room import RoomLimits
@@ -57,6 +72,17 @@ MIME = {
     ".json": "application/json; charset=utf-8",
     ".ico": "image/x-icon",
 }
+
+
+def _remove(path: Path) -> None:
+    """Delete a finished (or abandoned) export. Never raises: a temp file that
+    will not go is a log line, not a failed download."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as err:  # pragma: no cover - a reader still holding it
+        log.warning("could not remove the export %s (%s)", path, err)
 
 
 class SocketConnection:
@@ -246,6 +272,9 @@ def create_app(
 ) -> FastAPI:
     backend = backend or MockBackend()
     registry = RoomRegistry(backend, config, limits)
+    #: One export per room and a couple in the process: an export reads and
+    #: re-encodes everything a room ever made, and it is an unauthenticated GET.
+    exports = ExportGuard()
     web_dist = Path(config.web_dist).resolve() if config.web_dist else default_web_dist()
     has_web = (web_dist / "index.html").exists()
 
@@ -271,6 +300,7 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.registry = registry
+    app.state.exports = exports
     app.state.config = config
     app.state.backend = backend
     app.state.web_dist = web_dist
@@ -371,6 +401,94 @@ def create_app(
             media_type="image/jpeg",
             # Immutable: entry n of a room is written once and never rewritten.
             headers={"cache-control": "public, max-age=86400, immutable"},
+        )
+
+    async def _export(room_id: str, suffix: str, build, media_type: str) -> Response:
+        """The shared half of both exports: validate, guard, build, hand over.
+
+        The build runs on a worker thread and writes a temp file, which the
+        response streams and a background task deletes. Nothing is held in
+        memory, and nothing survives the download.
+        """
+        if not ROOM_ID.match(room_id):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if not registry.history.enabled:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            with exports.claim(room_id):
+                dest = temp_path(registry.history, room_id, suffix)
+                try:
+                    await asyncio.to_thread(build, dest)
+                except BaseException:
+                    # Including a cancelled request: the caller went away, and
+                    # the half-built file must not stay behind.
+                    _remove(dest)
+                    raise
+        except ExportBusy as busy:
+            return JSONResponse(
+                {"error": "an export of this room is already being built"},
+                status_code=429,
+                headers={"retry-after": str(busy.retry_after), "cache-control": "no-store"},
+            )
+        except ExportEmpty:
+            return JSONResponse({"error": "nothing saved for this room"}, status_code=404)
+        except ExportTooLarge as big:
+            return JSONResponse({"error": str(big)}, status_code=413)
+        except Exception:
+            log.warning("[room %s] export failed", room_id, exc_info=True)
+            return JSONResponse({"error": "could not build the export"}, status_code=500)
+        return FileResponse(
+            dest,
+            media_type=media_type,
+            headers={
+                "content-disposition": (
+                    f'attachment; filename="brushjam-{room_id}-history{suffix}"'
+                ),
+                "cache-control": "no-store",
+            },
+            background=BackgroundTask(_remove, dest),
+        )
+
+    @app.get("/rooms/{room_id}/history.zip")
+    async def room_history_zip(room_id: str) -> Response:
+        return await _export(
+            room_id,
+            ".zip",
+            lambda dest: build_zip(
+                registry.history, room_id, dest, canvas_size=config.canvas_size
+            ),
+            "application/zip",
+        )
+
+    @app.get("/rooms/{room_id}/history.avi")
+    async def room_history_avi(
+        room_id: str, fps: int = DEFAULT_FPS, width: Optional[int] = None
+    ) -> Response:
+        # Clamped rather than refused: these are the two knobs on a download
+        # link, and a link with a silly number in it should still give you the
+        # video rather than an error page.
+        try:
+            rate = max(MIN_FPS, min(int(fps), MAX_FPS))
+        except (TypeError, ValueError):
+            rate = DEFAULT_FPS
+        target: Optional[int] = None
+        if width is not None:
+            try:
+                target = max(MIN_WIDTH, min(int(width), MAX_WIDTH))
+            except (TypeError, ValueError):
+                target = None
+        return await _export(
+            room_id,
+            ".avi",
+            lambda dest: build_avi(
+                registry.history,
+                room_id,
+                dest,
+                fps=rate,
+                width=target,
+                max_frames=config.history_export_max_frames,
+            ),
+            "video/x-msvideo",
         )
 
     @app.get("/rooms/{room_id}/patches/{patch}")

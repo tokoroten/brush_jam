@@ -129,6 +129,11 @@ class Config:
     history_dir: str = ""
     history_room_bytes: int = 200 * 1024 * 1024
     history_total_bytes: int = 2000 * 1024 * 1024
+    #: Most entries `/history.avi` will put in one video. Past it the answer is
+    #: 413 and the zip, which has no such limit: a video is decoded frame by
+    #: frame by whatever opens it, and a room with tens of thousands of entries
+    #: makes a file that is a burden rather than a keepsake.
+    history_export_max_frames: int = 3000
     web_dist: Optional[str] = None
     explicit: ExplicitEnv = field(default_factory=ExplicitEnv)
     #: Ceiling for a room's generation size; the starting size is ai_window.
@@ -335,6 +340,17 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         ),
         history_total_bytes=int(
             _num(env, "HISTORY_TOTAL_MB", 2000, min=1, max=10_000_000, errors=errors) * 1024 * 1024
+        ),
+        history_export_max_frames=int(
+            _num(
+                env,
+                "HISTORY_EXPORT_MAX_FRAMES",
+                3000,
+                min=1,
+                max=100_000,
+                integer=True,
+                errors=errors,
+            )
         ),
         web_dist=env.get("WEB_DIST") or None,
         explicit=explicit,

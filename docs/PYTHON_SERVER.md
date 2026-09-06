@@ -326,6 +326,90 @@ Four things keep the plumbing off the critical path:
 - **The full mask is built once per size.** In full-canvas mode it is an opaque
   square, identical for every run.
 
+## The saved history, and taking it away
+
+Every accepted `ai_result` is written to `HISTORY_DIR/<roomId>/` and served
+back regardless of whether that room still exists - it outlives the room, the
+eviction sweep and the process. One entry is up to three files plus a shared
+`counter`:
+
+| file | what it is |
+| --- | --- |
+| `<n>.jpg` | the AI canvas after that result was composited |
+| `<n>.in.jpg` | the human canvas that generation was made *from* - optional |
+| `<n>.json` | the settings that produced it, and the commit point of the entry |
+
+`<n>.in.jpg` is the raster the pipeline was handed, re-encoded from those exact
+PNG bytes rather than rendered a second time: a second render would capture
+whatever has been drawn since, and the pair would no longer be a before and an
+after. It is stashed on the accepted path only, so a run discarded as stale
+cannot leave its input behind for the next result to claim, and it is written
+*before* the pair, because the pair is what defines the entry and the optional
+file must never be the thing that is half installed. It is stored at the
+generation size (`aiResolution`), not the canvas size, for the same reason: it
+is what the model saw.
+
+The entry is still defined by its JSON, so an entry with no input - one written
+before this existed, or one whose encode failed - is a perfectly good entry.
+Its bytes are charged to the entry, eviction removes all three files, and the
+listing carries `inputUrl` only when the file is there.
+
+| route | what it returns |
+| --- | --- |
+| `GET /rooms/{id}/history?limit=` | newest first, JSON; each entry has `url` and maybe `inputUrl` |
+| `GET /rooms/{id}/history/{n}.jpg` | the AI result, `immutable` |
+| `GET /rooms/{id}/history/{n}.in.jpg` | its input, `immutable` |
+| `GET /rooms/{id}/history.zip` | every frame plus a `manifest.json` |
+| `GET /rooms/{id}/history.avi?fps=&width=` | a Motion JPEG video of the whole room |
+
+The zip is the archival form: the stored JPEGs byte for byte, `ZIP_STORED`
+because deflating a JPEG costs the export's CPU again and wins a fraction of a
+percent, named `draw_00000.jpg` / `gen_00000.jpg` by the entry's own number so a
+name in the zip and a number in the gallery are the same thing. `manifest.json`
+carries `roomId`, `canvasSize`, `exportedAt` and one `frames` entry per result
+with its file names (`draw` is `null` when there is no input) and its settings.
+
+The AVI is the form you can watch: one frame per entry, oldest first, the
+drawing on the left and what the model made of it on the right, entries with no
+input getting a white left half - the same background the AI input is
+composited on. Default frame size is the stored one (two 1024 halves = 2048 x
+1024); `width` (256-4096, the whole frame) scales both halves, `fps` is clamped
+to 1-30 and defaults to 4. Both are clamped rather than refused: they are the
+two knobs on a download link.
+
+`src/brushjam/avi.py` writes the container by hand - `avih`, one `strl` with a
+`strh`/`strf` whose `biCompression` is `MJPG`, a `movi` list of `00dc` chunks
+padded to even lengths, and an `idx1` index - about a page of `struct` calls.
+ffmpeg is used to *verify* it (`tests/test_export.py`, skipped when ffmpeg is
+not on PATH: `ffprobe` must report an `mjpeg` stream of the right size, frame
+count and rate, and `ffmpeg -f null -` must decode it silently) but is
+deliberately not a runtime dependency, because an export that needs a binary
+this box happens to have is a feature that works here and nowhere else. The
+header is conservative for the sake of desktop players rather than of ffmpeg:
+`dwTotalFrames`, `dwLength`, `dwMaxBytesPerSec` and a `dwSuggestedBufferSize`
+big enough for the largest chunk are all patched in by `close`, and
+`AVIF_HASINDEX` is set because there is an `idx1`. Plain AVI's 32-bit offsets
+mean the writer refuses at ~1.5 GB rather than growing into OpenDML.
+
+Both exports are built on a worker thread into a temp file under
+`HISTORY_DIR/.exports/` and streamed from there with `Cache-Control: no-store`
+and a `Content-Disposition` attachment name; a `BackgroundTask` deletes the
+file afterwards, and a build that fails or is abandoned deletes it on the way
+out. Nothing is held in memory: a room's history is hundreds of megabytes by
+the budget's own definition. Both are guarded - one export per room and two in
+the process, `429` with `Retry-After` past either - because an export reads and
+re-encodes everything a room ever made and is an unauthenticated GET. A room
+with nothing saved is `404`; more entries than `HISTORY_EXPORT_MAX_FRAMES`
+(3000) is `413` on the video, and the zip has no such limit.
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `HISTORY_ENABLED` | `1` | `0` keeps nothing at all, and turns the exports off with it |
+| `HISTORY_DIR` | `./data/history` | where the JPEGs and the temp exports go |
+| `HISTORY_ROOM_MB` | `200` | one room's budget; oldest first past it |
+| `HISTORY_TOTAL_MB` | `2000` | the whole store's budget |
+| `HISTORY_EXPORT_MAX_FRAMES` | `3000` | most frames one video may have |
+
 ## Differences from the Node server
 
 1. **Patch mode is not ported.** `AI_MODE=full` only; `AI_MODE=patch` refuses to
