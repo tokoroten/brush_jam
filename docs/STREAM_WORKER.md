@@ -161,21 +161,36 @@ sessions) rather than the current stateless latest-wins requests.
 
 `apps/stream-worker/src/stream_worker/`
 
-- `config.py` — env-driven `Settings`.
-- `pipeline.py` — model load, LoRA fuse, embedding cache, generation, mask
-  composite.
-- `app.py` — FastAPI: `POST /generate`, `GET /healthz`, one asyncio lock so the
-  single GPU serves one request at a time.
+- `config.py` — the worker's own settings: host, port, dry-run, and one
+  `PipelineSettings` for everything about the model.
+- `codec.py` — PNG in and out of the JSON body.
+- `app.py` — FastAPI: `POST /generate`, `GET /healthz`, `/cancel`, `/load`,
+  `/unload`, and one asyncio lock so the single GPU serves one request at a
+  time.
+
+**The pipeline itself is not here.** Model load, LoRA, embedding cache,
+generation and mask compositing live in
+`apps/brushjam/src/brushjam/ai/pipeline.py`, and the worker imports them: it
+depends on the `brushjam` package by path (`[tool.uv.sources]`, editable), so
+one file serves both the room server's `inproc` backend and this worker.
+
+It was a copy until then, and the copy fell behind - no LoRA fuse/unfuse, no
+per-stage timings, no allocator cleanup on a cancelled run - which is exactly
+the failure mode a second copy has. The worker asks that pipeline for the
+`fast` profile, which is the only one it has ever offered; `quality` is the
+room server's business.
 
 Decisions worth knowing:
 
 - **Single-file load.** The Illustrious `.safetensors` is loaded directly
   (`from_single_file`); no HF model repo, no second copy of the weights on disk.
   diffusers still fetches the small SDXL *config* JSONs from HF on first load.
-- **LoRA is fused** (`fuse_lora()` then `unload_lora_weights()`): zero per-step
-  PEFT overhead, no second copy of the deltas in VRAM. The trade-off is that the
-  LoRA cannot be swapped at runtime — restart the worker to change
-  `STREAM_LORA`.
+- **LoRA is fused into the UNet weights** for the fast profile: zero per-step
+  PEFT overhead, no second copy of the deltas in VRAM. Since the pipeline
+  became shared it is fused and *unfused* per profile rather than fused once at
+  load, so the same resident model can also run `quality` — which the worker
+  never asks for, but pays nothing for. The LoRA still cannot be swapped at
+  runtime: restart to change `STREAM_LORA`.
 - **Text encoders live on the CPU.** ~1.8 GB fp16 that only matters on an
   embedding-cache miss. This is what makes SDXL fit next to an idle-but-running
   ComfyUI on an 8 GB card, and it is precisely what the livepeer fork would not

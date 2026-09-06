@@ -107,6 +107,13 @@ def _env_float(name: str, default: float) -> float:
     return default if raw == "" else float(raw)
 
 
+def _env_float_opt(name: str) -> Optional[float]:
+    """A float that is genuinely unset when nobody set it, so a default that
+    depends on something else (the LoRA, below) can still apply."""
+    raw = _env(name, "")
+    return None if raw == "" else float(raw)
+
+
 @dataclass
 class PipelineSettings:
     checkpoint: Path = field(default_factory=lambda: Path(_env("CHECKPOINT", "")))
@@ -134,6 +141,12 @@ class PipelineSettings:
     #: otherwise reserves ~2.5 GB more than it uses and the next run spills.
     empty_cache_each_run: bool = field(default_factory=lambda: _env_bool("EMPTY_CACHE", True))
     embed_cache_size: int = field(default_factory=lambda: _env_int("EMBED_CACHE", 16))
+    #: Guidance for the fast profile, when the operator names one
+    #: (INPROC_GUIDANCE, or the stream worker's STREAM_GUIDANCE). Unset means
+    #: "whatever this LoRA wants", which is the right answer for both of them.
+    fast_guidance_override: Optional[float] = field(
+        default_factory=lambda: _env_float_opt("GUIDANCE")
+    )
 
     def lora_spec(self) -> Tuple[str, str, str]:
         if self.lora not in LORA_REPOS:
@@ -149,6 +162,8 @@ class PipelineSettings:
         return VAE_SOURCES[self.vae]
 
     def fast_guidance(self) -> float:
+        if self.fast_guidance_override is not None:
+            return self.fast_guidance_override
         return FAST_GUIDANCE.get(self.lora, 1.5)
 
     def guidance_for(self, profile: str) -> float:

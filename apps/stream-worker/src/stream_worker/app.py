@@ -24,15 +24,19 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from .config import Settings
-from .pipeline import (
-    CancelledError,
-    StreamPipeline,
-    decode_png_b64,
-    encode_png_b64,
+# The pipeline is the room server's: apps/brushjam/src/brushjam/ai/pipeline.py,
+# imported rather than copied. The worker keeps its own HTTP surface - the
+# queue, /cancel, /load and /unload are what it exists for - and asks that
+# pipeline for the `fast` profile, which is the only one it has ever offered.
+from brushjam.ai.pipeline import (
+    GenerationCancelled,
+    InprocPipeline,
     lcm_timesteps_for_strength,
     round_size,
 )
+
+from .codec import decode_png_b64, encode_png_b64
+from .config import PROFILE, Settings
 
 log = logging.getLogger("stream_worker.app")
 
@@ -84,7 +88,7 @@ class CancelBody(BaseModel):
 
 def create_app(settings: Settings | None = None, pipeline: Any | None = None) -> FastAPI:
     s = settings or Settings()
-    pipe = pipeline if pipeline is not None else (None if s.dry_run else StreamPipeline(s))
+    pipe = pipeline if pipeline is not None else (None if s.dry_run else InprocPipeline(s.pipeline))
     app = FastAPI(title="Brush Jam stream worker", version="0.1.0")
     # One GPU, one generation at a time. The lock (rather than a queue) keeps
     # the worker's behaviour identical to the ComfyUI backend the server already
@@ -289,6 +293,7 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
                     seed=body.seed,
                     width=width,
                     height=height,
+                    profile=PROFILE,
                     should_cancel=lambda: request_id in cancelled,
                     request_id=request_id,
                 )
@@ -296,7 +301,7 @@ def create_app(settings: Settings | None = None, pipeline: Any | None = None) ->
             state["current_request_id"] = request_id
             try:
                 result = await loop.run_in_executor(None, _run)
-            except CancelledError as err:
+            except GenerationCancelled as err:
                 log.info("generation cancelled: %s", request_id)
                 raise HTTPException(status_code=499, detail=str(err)) from err
             except Exception as err:

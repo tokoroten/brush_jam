@@ -9,18 +9,15 @@ license = "MIT"
 # this venv without a Python change. diffusers/torch work on 3.10-3.12.
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "torch>=2.4",
-    "diffusers>=0.31",
-    "transformers>=4.44",
-    "accelerate>=0.34",
-    "peft>=0.13",
-    "safetensors>=0.4",
-    "omegaconf>=2.3",
-    "pillow>=10.0",
-    "numpy>=1.26",
+    # The model pipeline is the room server's, imported rather than copied:
+    # brushjam.ai.pipeline. The `inproc` extra is the GPU stack it needs
+    # (torch, diffusers, transformers, accelerate, peft, safetensors,
+    # huggingface-hub), so this worker no longer pins those itself.
+    "brushjam[inproc]",
+    # What the worker's own HTTP surface needs directly.
     "fastapi>=0.115",
     "uvicorn>=0.30",
-    "huggingface-hub>=0.25",
+    "pillow>=10.0",
     "python-dotenv>=1.0",
 ]
 
@@ -40,6 +37,9 @@ packages = ["src/stream_worker"]
 # torch must come from the CUDA index, not PyPI (PyPI ships the CPU build on Windows).
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
+# Editable, and by path: the worker and the room server run the same pipeline
+# file, and an edit to it has to reach both without a reinstall.
+brushjam = { path = "../brushjam", editable = true }
 
 [[tool.uv.index]]
 name = "pytorch-cu124"

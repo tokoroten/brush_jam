@@ -387,3 +387,111 @@ async def test_a_cancelled_load_still_finishes_and_is_not_repeated() -> None:
     await backend.load()
     assert loads == [1], "the model was loaded twice"
     assert backend.loaded is True
+
+
+# ---------------------------------------------------- the allocator cleanup
+#
+# Moved here with the pipeline itself (it used to live in
+# apps/stream-worker/tests/test_contract.py, next to the copy of this file that
+# the worker kept). No GPU: torch is faked, which is the point - what is being
+# checked is that the `finally` runs on every exit path.
+
+class FakeTorch:
+    """Just enough torch for InprocPipeline.generate's bookkeeping."""
+
+    def __init__(self) -> None:
+        self.empty_cache_calls = 0
+        outer = self
+
+        class _Cuda:
+            @staticmethod
+            def synchronize() -> None:
+                pass
+
+            @staticmethod
+            def empty_cache() -> None:
+                outer.empty_cache_calls += 1
+
+        class _Generator:
+            def __init__(self, device: str | None = None) -> None:
+                pass
+
+            def manual_seed(self, seed: int) -> "_Generator":
+                return self
+
+        self.cuda = _Cuda()
+        self.Generator = _Generator
+
+
+def pipeline_that_fails(error: Exception):
+    """An InprocPipeline whose diffusion call raises, with torch faked out."""
+    p = InprocPipeline(PipelineSettings())
+    p._torch = FakeTorch()
+    p._embeds = lambda prompt, negative, cfg: (None, None, None, None)  # type: ignore[assignment]
+
+    def boom(**kwargs):
+        raise error
+
+    p.pipe = boom
+    return p
+
+
+def run_generate(p, **overrides):
+    return p.generate(
+        image=Image.new("RGB", (64, 64), (255, 255, 255)),
+        mask=None,
+        prompt="x",
+        negative_prompt="",
+        strength=0.8,
+        steps=4,
+        seed=1,
+        width=64,
+        height=64,
+        **overrides,
+    )
+
+
+def test_allocator_cache_is_returned_when_a_run_is_cancelled():
+    # The cleanup used to sit after the return, so a cancelled run skipped it -
+    # and cancellation is precisely when the next request is about to arrive.
+    # Leaving the allocator holding the activations reintroduces the 2-8x spill.
+    p = pipeline_that_fails(GenerationCancelled("req-1"))
+    with pytest.raises(GenerationCancelled):
+        run_generate(p)
+    assert p._torch.empty_cache_calls == 1
+
+
+def test_allocator_cache_is_returned_when_a_run_raises():
+    p = pipeline_that_fails(RuntimeError("CUDA out of memory"))
+    with pytest.raises(RuntimeError):
+        run_generate(p)
+    assert p._torch.empty_cache_calls == 1
+
+
+def test_allocator_cleanup_can_be_switched_off():
+    import dataclasses as dc
+
+    p = InprocPipeline(dc.replace(PipelineSettings(), empty_cache_each_run=False))
+    p._torch = FakeTorch()
+    p._embeds = lambda prompt, negative, cfg: (None, None, None, None)  # type: ignore[assignment]
+
+    def boom(**kwargs):
+        raise RuntimeError("nope")
+
+    p.pipe = boom
+    with pytest.raises(RuntimeError):
+        run_generate(p)
+    assert p._torch.empty_cache_calls == 0
+
+
+def test_cleanup_failure_does_not_mask_the_real_error():
+    # A driver-level empty_cache failure inside `finally` must not replace the
+    # exception the caller actually needs to see.
+    p = pipeline_that_fails(RuntimeError("the real problem"))
+
+    def explode() -> None:
+        raise RuntimeError("cleanup blew up")
+
+    p._torch.cuda.empty_cache = explode  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="the real problem"):
+        run_generate(p)

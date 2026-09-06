@@ -16,9 +16,10 @@ import httpx
 import pytest
 from PIL import Image
 
+from brushjam.ai.pipeline import GenerateResult, GenerationCancelled
+
 from stream_worker.app import create_app
 from stream_worker.config import Settings
-from stream_worker.pipeline import CancelledError, GenerateResult
 
 
 @pytest.fixture
@@ -74,7 +75,7 @@ class SlowPipeline:
         self.steps_run = 0
         for _ in range(self.steps):
             if should_cancel is not None and should_cancel():
-                raise CancelledError(request_id)
+                raise GenerationCancelled(request_id)
             self.steps_run += 1
             time.sleep(self.step_seconds)
         size = self.out_size or (width, height)

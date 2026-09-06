@@ -10,16 +10,21 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from stream_worker.app import create_app
-from stream_worker.config import Settings
-from stream_worker.pipeline import (
+# The model pipeline is the room server's; the worker imports it rather than
+# keeping a copy (which is how the copy fell a release behind). Its own tests
+# are in apps/brushjam/tests/test_inproc.py.
+from brushjam.ai.pipeline import (
+    GenerateResult,
+    PipelineSettings,
     composite_through_mask,
-    decode_png_b64,
-    encode_png_b64,
-    round_size,
     lcm_timesteps_for_strength,
+    round_size,
     steps_for_strength,
 )
+
+from stream_worker.app import create_app
+from stream_worker.codec import decode_png_b64, encode_png_b64
+from stream_worker.config import Settings
 
 
 def png_b64(img: Image.Image) -> str:
@@ -34,13 +39,14 @@ def base_request(size: int = 256) -> dict:
 
 
 class FakePipeline:
-    """Stands in for StreamPipeline: returns a flat colour, records the call."""
+    """Stands in for InprocPipeline: returns a flat colour, records the call."""
 
     backend = "fake"
 
     def __init__(self) -> None:
         self.warm = True
         self.calls: list[dict] = []
+        self.profiles: list[str | None] = []
         self.loads = 0
         self.unloads = 0
 
@@ -62,12 +68,11 @@ class FakePipeline:
         return {}
 
     def generate(self, **kwargs):
-        from stream_worker.pipeline import GenerateResult
-
-        # should_cancel / request_id are part of the pipeline signature now;
-        # the fake ignores them but must accept them.
+        # should_cancel / request_id / profile are part of the pipeline
+        # signature; the fake ignores them but must accept them.
         kwargs.pop("should_cancel", None)
         kwargs.pop("request_id", None)
+        self.profiles.append(kwargs.pop("profile", None))
         self.calls.append(kwargs)
         generated = Image.new("RGB", (kwargs["width"], kwargs["height"]), (255, 0, 0))
         out = composite_through_mask(kwargs["image"].convert("RGB"), generated, kwargs["mask"])
@@ -124,7 +129,16 @@ def test_negative_prompt_is_only_active_above_guidance_one():
 
 
 def replace_guidance(value: float) -> Settings:
-    return dataclasses.replace(Settings(), guidance=value)
+    """A worker configured for one guidance value.
+
+    Guidance belongs to the pipeline settings now, and `fast_guidance_override`
+    is what STREAM_GUIDANCE sets, so this builds the same thing that variable
+    would have produced.
+    """
+    return dataclasses.replace(
+        Settings(),
+        pipeline=dataclasses.replace(PipelineSettings(), fast_guidance_override=value),
+    )
 
 
 def test_healthz_reflects_a_non_default_guidance(monkeypatch):
@@ -387,108 +401,6 @@ def test_load_is_idempotent(client_and_pipe):
     assert pipe.loads == loads_before  # already loaded: no second load
 
 
-class FakeTorch:
-    """Just enough torch for StreamPipeline.generate's bookkeeping."""
-
-    def __init__(self) -> None:
-        self.empty_cache_calls = 0
-        outer = self
-
-        class _Cuda:
-            @staticmethod
-            def synchronize() -> None:
-                pass
-
-            @staticmethod
-            def empty_cache() -> None:
-                outer.empty_cache_calls += 1
-
-        class _Generator:
-            def __init__(self, device: str | None = None) -> None:
-                pass
-
-            def manual_seed(self, seed: int) -> "_Generator":
-                return self
-
-        self.cuda = _Cuda()
-        self.Generator = _Generator
-
-
-def pipeline_that_fails(error: Exception):
-    """A StreamPipeline whose diffusion call raises, with torch faked out."""
-    from stream_worker.pipeline import StreamPipeline
-
-    p = StreamPipeline(Settings())
-    p._torch = FakeTorch()
-    p._embeds = lambda prompt, negative, cfg: (None, None, None, None)  # type: ignore[assignment]
-
-    def boom(**kwargs):
-        raise error
-
-    p.pipe = boom
-    return p
-
-
-def run_generate(p, **overrides):
-    return p.generate(
-        image=Image.new("RGB", (64, 64), (255, 255, 255)),
-        mask=None,
-        prompt="x",
-        negative_prompt="",
-        strength=0.8,
-        steps=4,
-        seed=1,
-        width=64,
-        height=64,
-        **overrides,
-    )
-
-
-def test_allocator_cache_is_returned_when_a_run_is_cancelled():
-    # The cleanup used to sit after the return, so a cancelled run skipped it -
-    # and cancellation is precisely when the next request is about to arrive.
-    # Leaving the allocator holding the activations reintroduces the 2-8x spill.
-    from stream_worker.pipeline import CancelledError as PipelineCancelled
-
-    p = pipeline_that_fails(PipelineCancelled("req-1"))
-    with pytest.raises(PipelineCancelled):
-        run_generate(p)
-    assert p._torch.empty_cache_calls == 1
-
-
-def test_allocator_cache_is_returned_when_a_run_raises():
-    p = pipeline_that_fails(RuntimeError("CUDA out of memory"))
-    with pytest.raises(RuntimeError):
-        run_generate(p)
-    assert p._torch.empty_cache_calls == 1
-
-
-def test_allocator_cleanup_can_be_switched_off():
-    import dataclasses as dc
-
-    from stream_worker.pipeline import StreamPipeline
-
-    p = StreamPipeline(dc.replace(Settings(), empty_cache_each_run=False))
-    p._torch = FakeTorch()
-    p._embeds = lambda prompt, negative, cfg: (None, None, None, None)  # type: ignore[assignment]
-
-    def boom(**kwargs):
-        raise RuntimeError("nope")
-
-    p.pipe = boom
-    with pytest.raises(RuntimeError):
-        run_generate(p)
-    assert p._torch.empty_cache_calls == 0
-
-
-def test_cleanup_failure_does_not_mask_the_real_error():
-    # A driver-level empty_cache failure inside `finally` must not replace the
-    # exception the caller actually needs to see.
-    p = pipeline_that_fails(RuntimeError("the real problem"))
-
-    def explode() -> None:
-        raise RuntimeError("cleanup blew up")
-
-    p._torch.cuda.empty_cache = explode  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError, match="the real problem"):
-        run_generate(p)
+# The pipeline's own tests - the allocator cleanup in `finally`, the LCM
+# schedule, the LoRA fusing - live with the pipeline, in
+# apps/brushjam/tests/test_inproc.py. This file is the worker's HTTP contract.

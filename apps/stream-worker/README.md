@@ -9,6 +9,15 @@ It speaks the same request contract as the Brush Jam AI backends
 (`docs/MVP_PLAN.md` §6), so the room server can talk to it through
 `apps/brushjam/src/brushjam/ai/backends/stream.py`.
 
+**The model pipeline lives in the room server**, not here:
+`apps/brushjam/src/brushjam/ai/pipeline.py`. This package depends on `brushjam`
+by path and imports `InprocPipeline` from it, so the checkpoint load, the LoRA,
+the embedding cache, the timings and the cancellation are one implementation
+used by both. What is in this directory is the HTTP surface: the queue, the
+single-GPU lock, `/cancel`, and the `/load` `/unload` handover. It was a copy
+of that pipeline until it fell a release behind; a second copy of a thousand
+lines of GPU code is not worth the independence.
+
 Why diffusers and not StreamDiffusion: see `docs/STREAM_WORKER.md`.
 
 ## Install
@@ -23,7 +32,10 @@ uv sync --extra dev --python 3.10
 ```
 
 `torch` comes from the PyTorch CUDA 12.4 index (pinned in `pyproject.toml`);
-plain PyPI would install the CPU build on Windows.
+plain PyPI would install the CPU build on Windows. It arrives through
+`brushjam[inproc]`, the room server's GPU extra, along with diffusers,
+transformers, accelerate and peft: this package pins only what its own HTTP
+surface needs.
 
 The LCM LoRA is downloaded on first run into `STREAM_LORA_DIR` (`./models/loras`)
 (`lcm-lora-sdxl.safetensors`, ~394 MB) so ComfyUI can use the exact same file.
@@ -211,6 +223,11 @@ VAE fp32 upcast that is still costing ~1 s per request, is in
 ```bash
 uv run pytest            # pure-python tests, no GPU (uses STREAM_DRY_RUN)
 ```
+
+These are the worker's own: the HTTP contract, the queue, cancellation, the
+handover. The pipeline's tests - the LCM schedule, the LoRA fusing, the
+allocator cleanup on every exit path - moved with the pipeline and run in
+`apps/brushjam` (`uv run pytest`, and in CI).
 
 ## Troubleshooting
 
