@@ -88,3 +88,18 @@ export function stageCursor(input: {
   if (input.viewOnly === true || input.panning) return 'grab';
   return drawsWithBrush(input.tool) ? 'none' : 'default';
 }
+
+/**
+ * The pressure a stroke point records from a pointer event.
+ *
+ * Only a pen reports pressure it measured. A mouse reports the constant 0.5
+ * the Pointer Events spec assigns to hardware without a pressure sensor, and
+ * taking that at face value halved every mouse stroke - which is why the ring,
+ * drawn at the full width, looked twice the size of the line. Touch reports
+ * 0.5 or 1 depending on the browser and means neither, so it is treated the
+ * same way: full width.
+ */
+export function strokePressure(event: { pointerType: string; pressure: number }): number {
+  if (event.pointerType !== 'pen') return 1;
+  return event.pressure > 0 ? Math.min(1, event.pressure) : 1;
+}

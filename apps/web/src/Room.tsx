@@ -42,7 +42,7 @@ import {
   type BrushSizes,
   type SizedTool,
 } from './brushSize.js';
-import { stageCursor } from './brushCursor.js';
+import { stageCursor, strokePressure } from './brushCursor.js';
 import { browserCopyDeps, copyText } from './clipboard.js';
 import {
   applyHistorySettings,
@@ -473,7 +473,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     const liveKey = `${client.youUserId}:${strokeId}`;
     // The layer is rendered translated, so points are recorded in layer space
     // and the line appears exactly under the pointer.
-    const point: Point = { ...layerPoint(world, activeLayer), p: e.pressure > 0 ? e.pressure : 1 };
+    const point: Point = { ...layerPoint(world, activeLayer), p: strokePressure(e) };
     const strokeTool = tool === 'eraser' ? ('eraser' as const) : tool === 'noise' ? ('noise' as const) : ('pen' as const);
     const init = {
       id: liveKey,
@@ -522,7 +522,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
       const live = client.live.get(drag.liveKey);
       if (!live) return;
       const owner = client.findLayer(live.init.layerId);
-      live.points.push({ ...layerPoint(world, owner), p: e.pressure > 0 ? e.pressure : 1 });
+      live.points.push({ ...layerPoint(world, owner), p: strokePressure(e) });
       if (now - drag.lastChunkAt > CHUNK_INTERVAL_MS) {
         drag.lastChunkAt = now;
         const points = live.points.slice(drag.sentPoints);

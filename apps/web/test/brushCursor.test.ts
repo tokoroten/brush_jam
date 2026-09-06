@@ -6,6 +6,7 @@ import {
   brushScreenRadius,
   drawsWithBrush,
   stageCursor,
+  strokePressure,
   type BrushCursorTool,
 } from '../src/brushCursor.js';
 
@@ -78,5 +79,19 @@ describe('what the OS cursor does', () => {
     // The AI stage is a viewport: every drag there is a pan, whatever the
     // toolbar says.
     expect(stageCursor({ tool: 'pen', panning: false, viewOnly: true })).toBe('grab');
+  });
+});
+
+describe('what pressure a point records', () => {
+  it('takes a pen at its word', () => {
+    expect(strokePressure({ pointerType: 'pen', pressure: 0.3 })).toBe(0.3);
+    expect(strokePressure({ pointerType: 'pen', pressure: 1.5 })).toBe(1);
+  });
+  it('treats a resting pen as full width rather than nothing', () => {
+    expect(strokePressure({ pointerType: 'pen', pressure: 0 })).toBe(1);
+  });
+  it('ignores the constant 0.5 a mouse reports, so the line is as wide as the ring', () => {
+    expect(strokePressure({ pointerType: 'mouse', pressure: 0.5 })).toBe(1);
+    expect(strokePressure({ pointerType: 'touch', pressure: 0.5 })).toBe(1);
   });
 });
