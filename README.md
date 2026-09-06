@@ -20,7 +20,7 @@ arguing about the prompt is half the game.
 
 - **Python 3.10-3.12** and [uv](https://docs.astral.sh/uv/). One Python process
   is the whole server.
-- **Node 22+ and pnpm**, to build the browser client. Not needed at runtime.
+- **Node 20+ and pnpm**, to build the browser client. Not needed at runtime.
 - **An NVIDIA GPU with 8 GB or more**, or a rented one - `deploy/runpod/` puts
   the whole thing on a RunPod pod for a few dollars an hour. Without a GPU
   everything still runs against a mock backend that returns instant grey
