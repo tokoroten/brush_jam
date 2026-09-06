@@ -116,10 +116,84 @@ describe('prompt presets', () => {
     expect(r18.prompt).toContain('mature female');
   });
 
-  it('leaves every other preset on the built-in negative list', () => {
-    for (const preset of PROMPT_PRESETS.filter((p) => p.id !== 'r18')) {
-      expect(preset.negative, preset.id).toBe('');
+  it('keeps the built-in negative list whenever it sets a negative at all', () => {
+    // A preset's negative REPLACES the room's, so one that names the objects
+    // of its medium has to carry the ordinary quality tags with it or it
+    // quietly turns them off.
+    for (const preset of PROMPT_PRESETS) {
+      if (preset.negative === '') continue;
+      expect(preset.negative, preset.id).toContain(DEFAULT_NEGATIVE_PROMPT);
     }
+  });
+
+  /**
+   * A tag-trained model reads a noun as an object to draw: "ink wash painting,
+   * black ink on white paper" produced a picture of a brush and a sheet of
+   * paper rather than a drawing in that style
+   * (docs/experiments/2026-09-07-presets/REPORT.md).
+   */
+  describe('style and mood presets describe a look, not a thing', () => {
+    const looks = PROMPT_PRESETS.filter((p) => p.group === '画風 / style' || p.group === '雰囲気 / mood');
+
+    const OBJECTS = [
+      'brush strokes', // "brushwork" is the quality; "brush" is a thing
+      'paintbrush',
+      'on white paper',
+      'canvas',
+      'easel',
+      "children's book",
+      'storybook,',
+      'pages',
+      'cathedral',
+      'window',
+      'clay figures',
+      'miniature set',
+      'diorama',
+      'sprite sheet',
+      'typography',
+      'advertisement',
+      'annotations',
+      'mount fuji',
+      'waves,',
+    ];
+
+    it('names no object of the medium in the prompt', () => {
+      for (const preset of looks) {
+        for (const object of OBJECTS) {
+          expect(preset.prompt.toLowerCase(), `${preset.id}: ${object}`).not.toContain(object);
+        }
+      }
+    });
+
+    it('does not ask for polished character art', () => {
+      // On an Illustrious-class model this pair pulls towards a rendered
+      // character, which is a subject and not a look.
+      for (const preset of looks) {
+        expect(preset.prompt, preset.id).not.toContain('masterpiece');
+        expect(preset.prompt, preset.id).not.toContain('best quality');
+      }
+    });
+
+    it('leaves the drawing mostly alone', () => {
+      // A style is a way of drawing what is already there; a subject is
+      // permission to invent. Anything above 0.7 replaced the players'
+      // composition with a picture of its own.
+      for (const preset of looks) {
+        if (preset.denoise === undefined) continue;
+        expect(preset.denoise, preset.id).toBeLessThanOrEqual(0.8);
+      }
+      for (const preset of looks.filter((p) => p.group === '画風 / style')) {
+        expect(preset.denoise, preset.id).toBeLessThanOrEqual(0.65);
+      }
+    });
+
+    it('names the objects of its medium in the negative, for the quality profile', () => {
+      // Useless on `fast` - CFG 1.0 never evaluates the negative branch - and
+      // worth having on `quality`, which is where a stray brush shows up.
+      for (const preset of looks.filter((p) => p.group === '画風 / style')) {
+        expect(preset.negative, preset.id).not.toBe('');
+      }
+    });
   });
 
   it('sends the prompt and the negative prompt once each, immediately', () => {
@@ -135,7 +209,7 @@ describe('prompt presets', () => {
   it('sends the denoise a preset asks for, once', () => {
     const { t, denoise } = target();
     applyPromptPreset('sumi-e', t);
-    expect(denoise.sent).toEqual([0.65]);
+    expect(denoise.sent).toEqual([0.6]);
   });
 
   it('sends no denoise for a preset that does not carry one', () => {

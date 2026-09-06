@@ -11,6 +11,32 @@ import { DEFAULT_NEGATIVE_PROMPT } from './constants.js';
  * The tags are Danbooru-style because the checkpoint this was built against is
  * Illustrious-class, which is trained on them; on a photographic SDXL model
  * they still read as a sensible description.
+ *
+ * ## A style is not a thing
+ *
+ * A tag-trained model reads a noun as an object to draw. The first version of
+ * these presets said "ink wash painting ... black ink on white paper" and got
+ * back a picture *of* a brush and a sheet of paper; "children's book
+ * illustration" got a book, "cathedral window" got a window, "clay figures"
+ * got figurines on a table. The players' drawing was replaced by a still life
+ * of the medium (docs/experiments/2026-09-07-presets/REPORT.md).
+ *
+ * So, for anything in 画風 / style or 雰囲気 / mood:
+ *
+ * - name the medium as a *quality* - `X style`, `(medium)`, adjectives - and
+ *   never as an object. No brush, paper, canvas, book, pages, window, frame,
+ *   easel, tools, hands, typography, annotations, diorama, sprite sheet.
+ * - no scene nouns. A style has to combine with whatever the players drew, so
+ *   "waves, mount fuji" or "miniature set" is the preset drawing its own
+ *   picture over theirs.
+ * - no "masterpiece, best quality": on an Illustrious-class model that pair
+ *   pulls hard towards polished character art, which is a subject, not a look.
+ * - a lower denoise than a subject preset. A style is a way of drawing what is
+ *   already there (0.6-0.65); a subject is permission to invent (0.8-0.85).
+ * - a negative that names the objects of the medium anyway. It does nothing on
+ *   `fast`, where CFG 1.0 never evaluates the negative branch, and it is worth
+ *   having on `quality`. Those negatives are written as
+ *   `objects, ${DEFAULT_NEGATIVE_PROMPT}` so the ordinary quality tags stay.
  */
 export interface PromptPreset {
   id: string;
@@ -22,10 +48,10 @@ export interface PromptPreset {
   /** Empty means the server's default negative list is used unchanged. */
   negative: string;
   /**
-   * A denoise that suits this look, applied with the prompt. Ink wash wants a
-   * light touch (the drawing IS the picture); a nebula wants nearly all of it
-   * (the drawing is only a hint of where things go). Clamped to whatever the
-   * room and the backend allow.
+   * A denoise that suits this look, applied with the prompt. A style wants a
+   * light touch (the drawing IS the picture, 0.6-0.65); a subject wants nearly
+   * all of it (the drawing is only a hint of where things go, 0.8-0.85).
+   * Clamped to whatever the room and the backend allow.
    */
   denoise?: number;
   /** Only when the look genuinely needs the slower sampler. */
@@ -74,8 +100,9 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     label: '印象派 / impressionist',
     group: '基本 / basic',
     prompt:
-      'impressionism, oil painting, visible brush strokes, soft natural light, pastel palette, scenery, no humans',
-    negative: '',
+      'impressionism, oil painting (medium), visible brushwork, soft natural light, pastel palette, dappled light',
+    negative: `easel, paintbrush, palette, canvas, picture frame, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.6,
   },
   {
     id: 'architecture',
@@ -99,62 +126,73 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     id: 'sumi-e',
     label: '水墨画 / sumi-e',
     group: '画風 / style',
+    // "black ink on white paper" used to produce ink and paper, as objects.
     prompt:
-      'sumi-e, ink wash painting, monochrome, black ink on white paper, visible brush strokes, minimal, negative space, traditional japanese art',
-    negative: '',
+      'sumi-e style, ink wash style, monochrome, greyscale, traditional media, ink (medium), rough brushwork, minimalist, negative space, white background',
+    negative: `paintbrush, brush, ink bottle, paper, calligraphy, hands, text, ${DEFAULT_NEGATIVE_PROMPT}`,
     // The drawing is most of the picture here, so the model is given least room.
-    denoise: 0.65,
+    denoise: 0.6,
   },
   {
     id: 'ukiyo-e',
     label: '浮世絵 / ukiyo-e',
     group: '画風 / style',
+    // "waves, mount fuji" drew the famous print instead of the room's drawing.
     prompt:
-      'ukiyo-e, woodblock print, flat colors, bold outlines, traditional japanese, edo period, waves, mount fuji',
-    negative: '',
-    denoise: 0.75,
+      'ukiyo-e style, woodblock print style, flat color, bold outlines, limited palette, traditional japanese art style',
+    negative: `paper, seal, signature, text, picture frame, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.65,
   },
   {
     id: 'stained-glass',
     label: 'ステンドグラス / stained glass',
     group: '画風 / style',
-    prompt: 'stained glass, lead lines, glowing colored glass, cathedral window, geometric, backlit',
-    negative: '',
-    denoise: 0.8,
+    // The name is itself an object, and naming it at all - even as "stained
+    // glass style" - produced a picture OF a window. So it is described only
+    // by what it looks like, and the window is in the negative.
+    prompt:
+      'thick black outlines, translucent jewel-tone color cells, backlit glow, mosaic of flat color segments, luminous, high contrast',
+    negative: `window, cathedral, church, picture frame, lattice, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.65,
   },
   {
     id: 'pixel-art',
     label: 'ドット絵 / pixel art',
     group: '画風 / style',
-    prompt: 'pixel art, 16-bit, retro game, limited palette, dithering, sprite sheet style',
-    negative: '',
-    denoise: 0.75,
+    prompt:
+      'pixel art, 16-bit style, retro game aesthetic, limited palette, dithering, crisp pixels',
+    negative: `sprite sheet, grid, user interface, text, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.65,
   },
   {
     id: 'watercolor-book',
     label: '水彩絵本 / watercolor picture book',
     group: '画風 / style',
+    // "children's book illustration, storybook" drew books.
     prompt:
-      "watercolor, children's book illustration, soft edges, paper texture, warm, whimsical, storybook",
-    negative: '',
-    denoise: 0.7,
+      'watercolor (medium), traditional media, storybook illustration style, soft edges, paper texture, pastel colors, whimsical',
+    negative: `book, open book, pages, text, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.6,
   },
   {
     id: 'claymation',
     label: '粘土アニメ / claymation',
     group: '画風 / style',
+    // "clay figures, miniature set" built a set with figurines on it.
     prompt:
-      'claymation, clay figures, stop motion, plasticine texture, fingerprints, miniature set, studio lighting',
-    negative: '',
-    denoise: 0.8,
+      'claymation style, clay art style, plasticine texture, stop motion aesthetic, soft studio lighting, matte finish',
+    negative: `figurine, doll, miniature set, table, hands, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.65,
   },
   {
     id: 'papercraft',
     label: '切り絵 / papercraft',
     group: '画風 / style',
-    prompt: 'papercraft, paper cutout, layered paper, kirigami, soft shadows, handmade, diorama',
-    negative: '',
-    denoise: 0.8,
+    // "diorama" built a scene in a box.
+    prompt:
+      'paper cutout style, layered paper art style, kirigami style, soft drop shadows, flat shapes',
+    negative: `diorama, scissors, craft table, hands, box, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.65,
   },
 
   // ---------------------------------------------------------- 題材 / subject
@@ -208,9 +246,11 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     id: 'mecha-blueprint',
     label: 'メカ設計図 / mecha blueprint',
     group: '題材 / subject',
+    // "annotations" is a request for text, and the text a model writes is
+    // never text.
     prompt:
-      'mecha, blueprint, technical drawing, schematic lines, cyan background, annotations, mechanical details',
-    negative: '',
+      'mecha, blueprint style, technical drawing style, schematic line art, cyan background, mechanical details',
+    negative: `text, handwriting, watermark, ${DEFAULT_NEGATIVE_PROMPT}`,
     denoise: 0.8,
   },
   {
@@ -245,10 +285,11 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     id: 'retro-poster',
     label: '昭和レトロポスター / retro poster',
     group: '雰囲気 / mood',
+    // "bold typography, advertisement" drew a poster, with lettering on it.
     prompt:
-      'showa retro poster, vintage japanese advertisement, faded colors, halftone, bold typography, 1960s',
-    negative: '',
-    denoise: 0.8,
+      'showa retro style, vintage poster style, faded colors, halftone, muted palette, nostalgic',
+    negative: `text, letters, logo, watermark, poster on a wall, ${DEFAULT_NEGATIVE_PROMPT}`,
+    denoise: 0.65,
   },
   {
     id: 'photoreal',
