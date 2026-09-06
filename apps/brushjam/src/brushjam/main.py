@@ -18,6 +18,26 @@ from .config import Config, ConfigError, env_origin, load_config, resolve_backen
 from .room import RoomLimits
 
 
+#: The allocator setting torch reads once, when it first talks to the driver.
+#:
+#: Set here rather than in .env because it has to be in the environment before
+#: `import torch`, and this module runs before anything imports it. Expandable
+#: segments let the allocator grow a segment instead of reserving a new one, so
+#: a long-lived process fragments less - which is what an 8 GB card runs out
+#: of first. An operator who has set it keeps their value.
+CUDA_ALLOC_CONF = "expandable_segments:True"
+
+
+def _set_allocator_conf(environ: Optional[dict] = None) -> str:
+    """Returns the value in force, whoever set it."""
+    env = os.environ if environ is None else environ
+    existing = env.get("PYTORCH_CUDA_ALLOC_CONF")
+    if existing:
+        return existing
+    env["PYTORCH_CUDA_ALLOC_CONF"] = CUDA_ALLOC_CONF
+    return CUDA_ALLOC_CONF
+
+
 def _repo_root() -> Path:
     # src/brushjam/main.py -> src -> apps/brushjam -> apps -> repo root
     return Path(__file__).resolve().parents[4]
@@ -69,6 +89,7 @@ async def _build():
     from .ai.backends import create_backend
 
     backend_origin = _load_dotenv()
+    _set_allocator_conf()
     config = load_config()
     log = logging.getLogger("brushjam")
     backend = await create_backend(config, lambda m: log.info("%s", m.replace("[ai] ", "")))

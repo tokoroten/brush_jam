@@ -123,7 +123,26 @@ class PipelineSettings:
     lora: str = field(default_factory=lambda: _env("LORA", "dmd2").lower())
     hf_token: Optional[str] = field(default_factory=lambda: os.environ.get("HF_TOKEN") or None)
     vae: str = field(default_factory=lambda: _env("VAE", "fp16fix").lower())
+    #: How the UNet's weights are *stored*: fp16, or fp8 with diffusers'
+    #: layerwise casting (fp8 on the card, upcast to fp16 layer by layer as it
+    #: runs). `auto` picks fp8 on a card too small to hold the fp16 UNet and
+    #: still leave the VAE room to decode - see FP8_BELOW_BYTES.
+    unet_storage: str = field(default_factory=lambda: _env("UNET_STORAGE", "auto").lower())
     vae_tiling: bool = field(default_factory=lambda: _env_bool("VAE_TILING", True))
+    #: Tile edge, in pixels, for the tiled VAE decode; `auto`, or a number, or
+    #: 0 for the library's own default.
+    #:
+    #: diffusers only tiles an image *larger* than this and its default is the
+    #: VAE's own sample size (1024 for SDXL), so out of the box nothing at 768
+    #: or 1024 is tiled at all: `enable_tiling()` is on and does nothing. On a
+    #: card with no headroom that is where the time goes - see
+    #: SMALL_CARD_VAE_TILE.
+    vae_tile_size: str = field(default_factory=lambda: _env("VAE_TILE_SIZE", "auto").lower())
+    #: Hand fragmented blocks back immediately before the decode, which is the
+    #: single largest allocation in a run.
+    empty_cache_before_decode: bool = field(
+        default_factory=lambda: _env_bool("EMPTY_CACHE_BEFORE_DECODE", False)
+    )
     max_size: int = field(default_factory=lambda: _env_int("MAX_SIZE", 1024))
     max_denoise: float = field(default_factory=lambda: _env_float("MAX_DENOISE", 0.9))
     warmup_size: int = field(default_factory=lambda: _env_int("WARMUP_SIZE", 768))
@@ -179,6 +198,94 @@ class PipelineSettings:
             "fast": self.fast_guidance() > 1.0,
             "quality": self.quality_guidance > 1.0,
         }
+
+
+#: Below this much VRAM, `INPROC_UNET_STORAGE=auto` means fp8.
+#:
+#: Deliberately *below* the 8 GB cards rather than at them. fp8 storage frees
+#: 2.4 GB on a 3070 - 5.42 GB resident becomes 2.98, and 0.1 GB free becomes
+#: 3.0 - but it costs UNet time twice over: the weights are cast layer by layer
+#: as they run, and the LoRA can no longer be fused (see `_store_unet_as_fp8`).
+#: Measured at 768: 0.68 s of UNet in fp16, 1.9-2.1 s in fp8.
+#:
+#: What actually starved the decode on 8 GB was not the UNet but the VAE
+#: decoding a whole 768 image in one piece; tiling it (SMALL_CARD_VAE_TILE)
+#: fixes that without giving up the fused fp16 UNet, and is 2.2 s an edit
+#: against fp8's 3.4. So 8 GB stays in fp16, and fp8 is what a card that
+#: genuinely cannot hold the fp16 UNet gets - or what an operator asks for by
+#: name when something else needs the room.
+FP8_BELOW_BYTES = 7 * 1024**3
+
+#: What the operator may write in INPROC_UNET_STORAGE.
+UNET_STORAGE_CHOICES = ("auto", "fp16", "fp8")
+
+
+def choose_unet_storage(setting: str, total_memory_bytes: Optional[int]) -> str:
+    """`fp16` or `fp8`, from what the operator asked for and what card this is.
+
+    Separate from everything that touches CUDA so the rule itself is an
+    ordinary test: `auto` on a card whose size is unknown is fp16, because the
+    fp16 path is the one that has always worked.
+    """
+    choice = (setting or "auto").strip().lower()
+    if choice in ("fp16", "fp8"):
+        return choice
+    if choice not in ("", "auto"):
+        raise ValueError(
+            "INPROC_UNET_STORAGE must be one of %s, got %r"
+            % (", ".join(UNET_STORAGE_CHOICES), setting)
+        )
+    if not total_memory_bytes:
+        return "fp16"
+    return "fp8" if total_memory_bytes < FP8_BELOW_BYTES else "fp16"
+
+
+#: Below this much VRAM, the VAE decodes in tiles. A 12 GB card has room to
+#: decode a 1024 in one piece; an 8 GB one does not, and pays for it in
+#: page-outs rather than in an error.
+TILE_BELOW_BYTES = 12 * 1024**3
+
+#: Tile edge for a card below TILE_BELOW_BYTES. Measured on a 3070 at 768:
+#: decoding in 256 px tiles takes 0.6 s where decoding the whole image takes
+#: 2.2-3.6 s, because each tile's activations fit in what is left of the card.
+SMALL_CARD_VAE_TILE = 256
+
+
+def choose_vae_tile(setting: str, total_memory_bytes: Optional[int]) -> int:
+    """Tile edge in pixels; 0 means "leave the library's default alone"."""
+    choice = (setting or "auto").strip().lower()
+    if choice not in ("", "auto"):
+        try:
+            return max(0, int(choice))
+        except ValueError:
+            raise ValueError(
+                "INPROC_VAE_TILE_SIZE must be a number of pixels or 'auto', got %r" % setting
+            ) from None
+    if not total_memory_bytes:
+        return 0
+    return SMALL_CARD_VAE_TILE if total_memory_bytes < TILE_BELOW_BYTES else 0
+
+
+def vae_latent_tile(sample_tile: int, block_out_channels: int = 4) -> int:
+    """The latent-space edge that matches a sample-space tile.
+
+    The VAE downsamples by 2 per block after the first, which is 8 for every
+    SDXL VAE; diffusers computes its own default the same way.
+    """
+    return max(1, int(sample_tile) // (2 ** max(0, block_out_channels - 1)))
+
+
+def set_vae_tile_size(vae: Any, sample_tile: int) -> bool:
+    """Make the VAE tile at `sample_tile` pixels. False when it will not."""
+    if not sample_tile or sample_tile <= 0:
+        return False
+    if not hasattr(vae, "tile_sample_min_size") or not hasattr(vae, "tile_latent_min_size"):
+        return False
+    blocks = len(getattr(getattr(vae, "config", None), "block_out_channels", []) or [0, 0, 0, 0])
+    vae.tile_sample_min_size = int(sample_tile)
+    vae.tile_latent_min_size = vae_latent_tile(sample_tile, blocks)
+    log.info("VAE tiles: %d px (%d latent)", vae.tile_sample_min_size, vae.tile_latent_min_size)
+    return True
 
 
 def round_size(value: int, max_size: int) -> int:
@@ -316,6 +423,11 @@ class InprocPipeline:
         self._fuse_unavailable = False
         #: Cost of the last profile switch, surfaced in the run's timings.
         self._last_switch_ms = 0.0
+        #: How the UNet's weights are stored once loaded ("fp16" or "fp8").
+        #: Decided at load, because it depends on the card.
+        self.unet_storage = "fp16"
+        #: VAE tile edge actually in force (0 = the library's default).
+        self.vae_tile = 0
 
     # ---------------------------------------------------------------- loading
     def load(self) -> None:
@@ -366,12 +478,18 @@ class InprocPipeline:
 
         self._install_vae(pipe)
         pipe.to(self.device)
+        vram = torch.cuda.get_device_properties(0).total_memory
+        self.unet_storage = choose_unet_storage(s.unet_storage, vram)
+        if self.unet_storage == "fp8":
+            self._store_unet_as_fp8(pipe)
         if s.vae_tiling:
             # AutoencoderTiny gained tiling later than AutoencoderKL.
             if hasattr(pipe.vae, "enable_tiling"):
                 pipe.vae.enable_tiling()
             if hasattr(pipe.vae, "enable_slicing"):
                 pipe.vae.enable_slicing()
+            self.vae_tile = choose_vae_tile(s.vae_tile_size, vram)
+            set_vae_tile_size(pipe.vae, self.vae_tile)
         self._instrument_vae(pipe)
         self.pipe = pipe
         self._select_profile("fast")
@@ -401,6 +519,44 @@ class InprocPipeline:
         pipe.vae = vae
         log.info("VAE: %s (%s) loaded in %.1fs", repo, cls_name, time.perf_counter() - t0)
 
+    def _store_unet_as_fp8(self, pipe: Any) -> None:
+        """Keep the UNet's weights in fp8 and upcast each layer as it runs.
+
+        This is diffusers' layerwise casting: the weights sit on the card as
+        float8_e4m3fn and every module is cast up to fp16 just before its
+        forward and back down after, so the arithmetic is unchanged and only
+        the *storage* halves. On an 8 GB card that is the difference between a
+        VAE decode with room to work and one the driver has to page.
+
+        The LoRA cannot be fused into fp8 weights: `fuse_lora` writes the
+        merged result back into the parameter, which would quantise it, and
+        `unfuse_lora` then has nothing exact to subtract - so under fp8 the
+        adapter stays attached and is enabled and disabled per profile. That
+        costs a few per cent of UNet time and is the price of the headroom.
+        """
+        torch = self._torch
+        unet = getattr(pipe, "unet", None)
+        cast = getattr(unet, "enable_layerwise_casting", None)
+        storage = getattr(torch, "float8_e4m3fn", None)
+        if unet is None or cast is None or storage is None:
+            log.warning(
+                "fp8 UNet storage is not available in this diffusers/torch build; "
+                "staying in fp16"
+            )
+            self.unet_storage = "fp16"
+            return
+        try:
+            cast(storage_dtype=storage, compute_dtype=torch.float16)
+        except Exception:  # noqa: BLE001
+            log.warning("enable_layerwise_casting failed; staying in fp16", exc_info=True)
+            self.unet_storage = "fp16"
+            return
+        # Fusing is off for the life of this process, not just for this switch.
+        self.unet_storage = "fp8"
+        self._fuse_unavailable = True
+        self._fused = False
+        log.info("UNet storage: fp8 (layerwise casting), LoRA attached rather than fused")
+
     def _instrument_vae(self, pipe: Any) -> None:
         """Time VAE encode/decode separately from the UNet."""
         torch = self._torch
@@ -422,8 +578,16 @@ class InprocPipeline:
 
             return timed
 
+        def decode(*args: Any, **kwargs: Any) -> Any:
+            if self.settings.empty_cache_before_decode:
+                t = time.perf_counter()
+                torch.cuda.empty_cache()
+                self._vae_timings["decode_cache_ms"] = (time.perf_counter() - t) * 1000.0
+            return inner_decode(*args, **kwargs)
+
         vae.encode = wrap("vae_encode_ms", vae.encode)
-        vae.decode = wrap("vae_decode_ms", vae.decode)
+        inner_decode = wrap("vae_decode_ms", vae.decode)
+        vae.decode = decode
         vae._brushjam_timed = True
 
     # ---------------------------------------------------------------- profile
@@ -740,6 +904,14 @@ class InprocPipeline:
 
     def model_name(self) -> str:
         return f"{self.settings.checkpoint.name}+{self.settings.lora_spec()[2]}"
+
+    def describe_storage(self) -> str:
+        tiles = "%d px" % self.vae_tile if self.vae_tile else "library default"
+        return "unet %s, lora %s, vae tiles %s" % (
+            self.unet_storage,
+            self._lora_state(),
+            tiles,
+        )
 
 
 class DryRunPipeline:

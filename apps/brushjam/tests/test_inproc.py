@@ -18,10 +18,15 @@ from PIL import Image
 from brushjam.ai.backends.base import BackendHttpError, GenerateRequest
 from brushjam.ai.backends.inproc import InprocBackend
 from brushjam.ai.pipeline import (
+    FP8_BELOW_BYTES,
+    TILE_BELOW_BYTES,
     DryRunPipeline,
     GenerationCancelled,
     InprocPipeline,
     PipelineSettings,
+    SMALL_CARD_VAE_TILE,
+    choose_unet_storage,
+    choose_vae_tile,
     composite_through_mask,
     lcm_timesteps_for_strength,
     round_size,
@@ -495,3 +500,165 @@ def test_cleanup_failure_does_not_mask_the_real_error():
     p._torch.cuda.empty_cache = explode  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="the real problem"):
         run_generate(p)
+
+
+# ------------------------------------------------------- how the UNet is kept
+
+
+GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    "setting, memory, expected",
+    [
+        # `auto` is about the card. An 8 GB 3070 stays in fp16: with a tiled
+        # decode the fp16 UNet fits and is quicker than fp8 by more than a
+        # second an edit. Below that, fp8 is what makes the model fit at all.
+        ("auto", 6 * GIB, "fp8"),
+        ("auto", 8 * GIB, "fp16"),
+        ("auto", 24 * GIB, "fp16"),
+        ("", 6 * GIB, "fp8"),
+        # A card whose size we could not read is the case that has always
+        # worked: fp16.
+        ("auto", None, "fp16"),
+        ("auto", 0, "fp16"),
+        # An explicit choice is an instruction, on any card.
+        ("fp16", 6 * GIB, "fp16"),
+        ("fp8", 24 * GIB, "fp8"),
+        ("FP8", 24 * GIB, "fp8"),
+    ],
+)
+def test_unet_storage_follows_the_card_unless_told(setting, memory, expected) -> None:
+    assert choose_unet_storage(setting, memory) == expected
+
+
+def test_the_thresholds_sit_where_the_measurements_put_them() -> None:
+    # fp8 is for a card that cannot hold the fp16 UNet at all, which an 8 GB
+    # one can - so the line is below 8 GB, not at it.
+    assert 6 * GIB < FP8_BELOW_BYTES <= 8 * GIB
+    # Tiling is for anything without room to decode a 1024 in one piece, which
+    # includes the 8 GB card.
+    assert 8 * GIB < TILE_BELOW_BYTES
+
+
+def test_an_unknown_storage_is_refused_rather_than_guessed() -> None:
+    with pytest.raises(ValueError) as err:
+        choose_unet_storage("int4", 8 * GIB)
+    assert "INPROC_UNET_STORAGE" in str(err.value)
+
+
+def test_the_setting_is_read_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("INPROC_UNET_STORAGE", "fp8")
+    assert PipelineSettings().unet_storage == "fp8"
+    monkeypatch.delenv("INPROC_UNET_STORAGE")
+    monkeypatch.setenv("STREAM_UNET_STORAGE", "fp16")  # the worker's spelling
+    assert PipelineSettings().unet_storage == "fp16"
+    monkeypatch.delenv("STREAM_UNET_STORAGE")
+    assert PipelineSettings().unet_storage == "auto"
+
+
+class FakeUnet:
+    def __init__(self, works: bool = True) -> None:
+        self.works = works
+        self.casting = None
+
+    def enable_layerwise_casting(self, storage_dtype=None, compute_dtype=None):
+        if not self.works:
+            raise RuntimeError("this build cannot cast layerwise")
+        self.casting = (storage_dtype, compute_dtype)
+
+
+class DtypesOnlyTorch:
+    """Just the two dtype objects `_store_unet_as_fp8` reaches for."""
+
+    float16 = "fp16"
+    float8_e4m3fn = "fp8"
+
+
+def test_fp8_storage_attaches_the_lora_instead_of_fusing_it() -> None:
+    """Fusing writes the merged weights back into the parameter, which fp8
+    storage would quantise, and unfuse would then have nothing exact to take
+    back out. So under fp8 the adapter stays attached."""
+    pipeline = a_pipeline()
+    pipeline._torch = DtypesOnlyTorch()
+    pipeline.pipe.unet = FakeUnet()
+    pipeline._store_unet_as_fp8(pipeline.pipe)
+
+    assert pipeline.unet_storage == "fp8"
+    assert pipeline.pipe.unet.casting == ("fp8", "fp16")
+    assert pipeline._fuse_unavailable is True
+
+    pipeline._select_profile("fast")
+    assert pipeline._fused is False
+    assert "fuse_lora:unet:1.0" not in pipeline.pipe.calls
+    assert pipeline.pipe.calls[-1] == "set_adapters:fast"
+    pipeline._select_profile("quality")
+    assert pipeline.pipe.calls[-1] == "disable_lora"
+    assert pipeline.describe_storage() == "unet fp8, lora off, vae tiles library default"
+
+
+def test_a_build_without_layerwise_casting_stays_in_fp16() -> None:
+    pipeline = a_pipeline()
+    pipeline._torch = DtypesOnlyTorch()
+    pipeline.pipe.unet = FakeUnet(works=False)
+    pipeline._store_unet_as_fp8(pipeline.pipe)
+    assert pipeline.unet_storage == "fp16"
+    assert pipeline._fuse_unavailable is False  # fusing is still on the table
+
+    class NoCasting:
+        pass
+
+    pipeline = a_pipeline()
+    pipeline._torch = DtypesOnlyTorch()
+    pipeline.pipe.unet = NoCasting()
+    pipeline._store_unet_as_fp8(pipeline.pipe)
+    assert pipeline.unet_storage == "fp16"
+
+
+@pytest.mark.parametrize(
+    "setting, memory, expected",
+    [
+        ("auto", 8 * GIB, SMALL_CARD_VAE_TILE),
+        ("auto", 24 * GIB, 0),  # a card with headroom decodes in one piece
+        ("auto", None, 0),
+        ("512", 8 * GIB, 512),
+        ("0", 8 * GIB, 0),  # the library's own default, explicitly
+    ],
+)
+def test_the_vae_tile_follows_the_card_unless_told(setting, memory, expected) -> None:
+    assert choose_vae_tile(setting, memory) == expected
+
+
+def test_a_tile_size_that_is_not_a_number_is_refused() -> None:
+    with pytest.raises(ValueError) as err:
+        choose_vae_tile("small", 8 * GIB)
+    assert "INPROC_VAE_TILE_SIZE" in str(err.value)
+
+
+def test_the_tile_is_pushed_into_the_vae_in_both_spaces() -> None:
+    """diffusers keeps the sample-space tile and its latent-space twin as two
+    separate attributes and uses the latent one to lay out the grid, so setting
+    only the first would tile at the wrong size."""
+    from brushjam.ai.pipeline import set_vae_tile_size, vae_latent_tile
+
+    class Config:
+        block_out_channels = [128, 256, 512, 512]
+
+    class FakeVae:
+        config = Config()
+        tile_sample_min_size = 1024
+        tile_latent_min_size = 128
+
+    vae = FakeVae()
+    assert set_vae_tile_size(vae, 256) is True
+    assert vae.tile_sample_min_size == 256
+    assert vae.tile_latent_min_size == 32  # 256 / 8, the SDXL VAE's ratio
+    assert vae_latent_tile(768, 4) == 96
+
+    assert set_vae_tile_size(vae, 0) is False  # nothing asked for, nothing done
+    assert vae.tile_sample_min_size == 256
+
+    class NoTiling:
+        pass
+
+    assert set_vae_tile_size(NoTiling(), 256) is False

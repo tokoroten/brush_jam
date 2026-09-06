@@ -141,6 +141,11 @@ class InprocBackend:
             # now, which is the difference between ~2 s and ~4 s at 768.
             "lora_fused": bool(getattr(self.pipeline, "_fused", False)),
             "vae": s.vae,
+            # How the weights are actually being kept, which is decided at load
+            # from the card's size and is the first thing to check when an 8 GB
+            # machine is slow (docs/PYTHON_SERVER.md, "8 GB cards").
+            "unet_storage": getattr(self.pipeline, "unet_storage", "fp16"),
+            "vae_tile": getattr(self.pipeline, "vae_tile", 0),
             "profile": profile,
             "negative_prompt_active": s.negative_prompt_active(),
             "warm": bool(self._loaded and getattr(self.pipeline, "warm", False)),

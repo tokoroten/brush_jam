@@ -232,8 +232,11 @@ which is how the tests and most of the client work get done.
 
 ## Limits and known issues
 
-- **8 GB is the design point**, and it is tight: tiled VAE decode, text encoders
-  offloaded to the CPU. `quality` at 1024 peaks around 7 GB of the 8.
+- **8 GB is the design point**, and it is tight: the VAE decodes in 256 px
+  tiles and the text encoders are offloaded to the CPU. `quality` at 1024 peaks
+  around 7 GB of the 8. Both of those are automatic, from the card's size;
+  `INPROC_UNET_STORAGE=fp8` frees another 2.4 GB when something else needs the
+  card, at about a second an edit (docs/PYTHON_SERVER.md, "8 GB cards").
 - **One model on one GPU.** Running ComfyUI and this server at once on an 8 GB
   card will OOM one of them. The `stream` backend exists so the model can live
   on a second machine.

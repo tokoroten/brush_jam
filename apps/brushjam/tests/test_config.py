@@ -132,3 +132,17 @@ def test_r18_presets_are_off_unless_asked_for() -> None:
     assert load_config({"PRESETS_R18": "0"}).presets_r18 is False
     assert load_config({"PRESETS_R18": "1"}).presets_r18 is True
     assert load_config({"PRESETS_R18": "true"}).presets_r18 is True
+
+
+def test_the_allocator_conf_is_set_before_torch_but_never_overridden() -> None:
+    """Expandable segments have to be in the environment before `import torch`,
+    and an operator who has chosen a value keeps it."""
+    from brushjam.main import CUDA_ALLOC_CONF, _set_allocator_conf
+
+    env: dict = {}
+    assert _set_allocator_conf(env) == CUDA_ALLOC_CONF
+    assert env["PYTORCH_CUDA_ALLOC_CONF"] == CUDA_ALLOC_CONF
+
+    theirs = {"PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128"}
+    assert _set_allocator_conf(theirs) == "max_split_size_mb:128"
+    assert theirs["PYTORCH_CUDA_ALLOC_CONF"] == "max_split_size_mb:128"

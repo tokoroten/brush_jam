@@ -105,6 +105,9 @@ Everything in the README's table still applies. In addition:
 | `INPROC_LORA` | `dmd2` | `dmd2` or `lcm`; decides the fast profile's cfg |
 | `INPROC_LORA_DIR` | ComfyUI's `loras` | shared on purpose: one file, two consumers |
 | `INPROC_VAE` | `fp16fix` | `fp16fix`, `taesd` or `checkpoint` |
+| `INPROC_VAE_TILE_SIZE` | `auto` | VAE tile edge in px; `auto` = 256 under 12 GB |
+| `INPROC_UNET_STORAGE` | `auto` | `fp16`, `fp8`, or `auto` (fp8 under 7 GB) |
+| `INPROC_EMPTY_CACHE_BEFORE_DECODE` | `0` | free fragmented VRAM just before the decode |
 | `INPROC_MAX_SIZE` | `1024` | largest square the model will generate |
 | `INPROC_MAX_DENOISE` | `0.9` | ceiling for the room slider |
 | `INPROC_WARMUP_SIZE` | `768` | one throwaway generation at startup |
@@ -178,6 +181,74 @@ Each falls back to the `STREAM_*` name of the same setting, so an existing
 backend, the fields the tooling used to fetch from the worker's own `/healthz`
 (`model`, `steps`, `guidance`, `vae`, `lora`, `max_size`, `max_denoise`,
 `warm`, `busy`, `memory`), so there is one place to look.
+
+## 8 GB cards
+
+An 8 GB card holds this model with nothing to spare: 5.42 GB of weights
+resident, 7.05 GB peak, and the desktop already holding ~0.6 GB. What ran out
+first was not the UNet but the **VAE decode**, which allocates one buffer for
+the whole image - and when it does not fit, Windows pages it rather than
+failing, so a 0.28 s decode on a 4090 became 2.3-3.6 s on a 3070.
+
+Two settings address it, and only one of them is the answer.
+
+**Tile the decode** (`INPROC_VAE_TILE_SIZE`, `auto` = 256 px below 12 GB).
+`enable_tiling()` was already on and was doing nothing: diffusers only tiles an
+image *larger* than `tile_sample_min_size`, whose default is the VAE's own
+sample size - 1024 for SDXL - so neither 768 nor 1024 was ever tiled. Decoding
+in 256 px pieces gives every tile activations that fit.
+
+**Store the UNet in fp8** (`INPROC_UNET_STORAGE`, `auto` = fp8 below 7 GB).
+diffusers' layerwise casting keeps the weights as `float8_e4m3fn` and casts
+each module up to fp16 as it runs: 5.42 GB resident becomes 2.98, and 0.1 GB
+free becomes 3.0. It is not free - the casting costs UNet time, and the LoRA
+can no longer be *fused* (fusing writes the merged weights back into the
+parameter, which fp8 would quantise, and `unfuse_lora` would then have nothing
+exact to take back out), so the adapter stays attached and pays its per-step
+tax as well: 0.68 s of UNet at 768 becomes 1.9-2.1 s.
+
+Measured on a 3070 (8 GB), through the server with `pnpm latency`, stroke_end
+to pixels on screen, median of 4 edits at `fast`/768 and 2 at `quality`/1024:
+
+| configuration | fast 768 | quality 1024 | resident | free |
+| --- | --- | --- | --- | --- |
+| fp16, untiled (what this used to do) | 6.66 s | 34.8 s | 5.42 GB | 0.10 GB |
+| **fp16 + 256 px tiles (the default now)** | **2.17 s** | **9.44 s** | 5.42 GB | 0.10 GB |
+| fp8 + 256 px tiles | 3.41 s | 9.77 s | 2.98 GB | 3.02 GB |
+| fp8, untiled | 4.39 s* | 16.0 s* | 2.98 GB | 2.94 GB |
+
+\* the fp8-untiled row is from `scripts/`-style direct measurement rather than
+through the server; the others are `pnpm latency` medians. The untiled fp16
+row is also the least stable of them: the same server gave 6.7 s cold and
+anything from 1.9 s to 4.5 s afterwards, which is what paging looks like.
+
+Stage breakdown at 768 (`/healthz` `last_timings`, ms):
+
+| configuration | unet | vae_encode | vae_decode | total |
+| --- | --- | --- | --- | --- |
+| fp16, untiled | 669 | 211 | 372-3558 | 1299-6025 |
+| fp16 + tiles | 694 | 237 | 569 | 1535 |
+| fp8 + tiles | 1842 | 229 | 640 | 2744 |
+
+So **the tile is the fix and fp8 is the fallback**: an 8 GB card keeps the
+fused fp16 UNet and is quicker on both profiles, and fp8 exists for a card that
+cannot hold the fp16 UNet at all, or for one that has to share. `auto` puts the
+line at 7 GB for that reason rather than at the 12 GB the headroom argument
+alone would suggest.
+
+Quality, fp8 against fp16 with everything else held equal, same seed, prompt
+and input: **30.7 dB PSNR at 768 and 34.5 dB at 1024** - above the 30 dB this
+app needs. Tiling changes the picture more than fp8 does (25.7 dB / 28.4 dB
+against an untiled decode) because the tiles are blended rather than exact, but
+side by side there are no visible seams: the differences are in fine detail, in
+an image the model is about to reinterpret again anyway.
+
+Two other things were tried and are not defaults. `torch.cuda.empty_cache()`
+immediately before the decode (`INPROC_EMPTY_CACHE_BEFORE_DECODE`) is worth
+nothing once the decode is tiled (2.72 s against 2.66 s at 768, inside the
+noise). `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is set by `main.py`
+before torch is imported, and torch reports it as unsupported on Windows - it
+is there for the Linux pods, where it costs nothing and helps fragmentation.
 
 ## Where an edit's time goes
 
