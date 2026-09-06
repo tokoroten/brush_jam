@@ -266,3 +266,39 @@ def test_healthz_reports_a_resident_backends_sampling_fields() -> None:
     assert body["ok"] is True and body["backend"] == "inproc" and body["rooms"] == 0
     for key in ("model", "steps", "guidance", "vae", "lora", "max_size", "max_denoise", "warm"):
         assert key in body, key
+
+
+def test_a_superseded_socket_really_closes_with_4001() -> None:
+    """Review 2 finding 1: through a real ASGI socket, not a fake one.
+
+    The runtime asked for 4001 and the connection recorded it, but the close
+    that actually reached the wire came from the cancelled writer's cleanup and
+    carried 1000 - an ordinary close, which the client reads as a dropped
+    connection and answers by reconnecting. Two tabs then evicted each other
+    forever.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    from brushjam.constants import CLOSE_SUPERSEDED
+
+    with make_client() as client:
+        room_id = client.post("/api/rooms").json()["roomId"]
+        token = "tok-alice-0001"
+        with client.websocket_connect(f"/ws/rooms/{room_id}?name=Alice&token={token}") as first:
+            drain(first, "snapshot")
+            with client.websocket_connect(f"/ws/rooms/{room_id}?name=Alice&token={token}") as second:
+                drain(second, "snapshot")
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    for _ in range(50):
+                        first.receive_text()
+                assert closed.value.code == CLOSE_SUPERSEDED
+
+
+def test_an_ordinary_close_is_still_1000() -> None:
+    with make_client() as client:
+        room_id = client.post("/api/rooms").json()["roomId"]
+        with client.websocket_connect(f"/ws/rooms/{room_id}?name=Alice") as socket:
+            drain(socket, "snapshot")
+        # Nothing above raised, and the server did not invent a close code for
+        # a socket that simply went away.
+        assert client.get("/healthz").json()["active_sockets"] == 0

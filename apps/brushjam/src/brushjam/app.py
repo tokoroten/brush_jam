@@ -68,6 +68,10 @@ class SocketConnection:
         self._buffered = 0
         self._open = True
         self._revoked = False
+        #: The close code the transport is to go away with. One owner closes
+        #: the socket - the writer's cleanup - so this is how the reason
+        #: travels to it. None means an ordinary close (1000).
+        self._close_code: Optional[int] = None
         #: While held, frames are kept aside rather than queued. A join needs
         #: this: its snapshot is serialised off the loop, and anything
         #: broadcast during that await has to arrive *after* the snapshot, not
@@ -150,16 +154,23 @@ class SocketConnection:
                 self._queue.get_nowait()
             except asyncio.QueueEmpty:  # pragma: no cover - drained concurrently
                 break
-        if self._writer is not None:
+        # The code is published BEFORE the writer is cancelled, because the
+        # writer's cleanup is what closes the transport. Racing it with a
+        # second close from here is how a superseded socket used to go away
+        # with 1000: the cancelled writer's `finally` got there first, the
+        # client saw an ordinary close, reconnected, and evicted the tab that
+        # had just evicted it.
+        self._close_code = code
+        if self._writer is not None and not self._writer.done():
             self._writer.cancel()
-        # The transport close cannot be awaited from here; it is the last thing
-        # the cancelled writer does, and this covers the case where it is
-        # already finished.
+            return
+        # The writer has already finished (or there never was one), so nobody
+        # else is going to close the transport.
         asyncio.ensure_future(self._close_transport(code))
 
-    async def _close_transport(self, code: int = 1012) -> None:
+    async def _close_transport(self, code: Optional[int] = None) -> None:
         try:
-            await self.socket.close(code=code)
+            await self.socket.close(code=1000 if code is None else code)
         except Exception:
             pass
 
@@ -183,10 +194,9 @@ class SocketConnection:
             pass
         finally:
             self._open = False
-            try:
-                await self.socket.close()
-            except Exception:
-                pass
+            # The one place the transport is closed, with whatever reason
+            # `revoke` left behind (1000 for an ordinary close).
+            await self._close_transport(self._close_code)
 
     async def aclose(self) -> None:
         self.close_now()
