@@ -53,8 +53,6 @@ import {
   galleryLoaded,
   galleryLoading,
   galleryRetryDue,
-  historyExportFileName,
-  historyExportUrl,
   initialGallery,
   selectEntry,
   selectedEntry,
@@ -73,6 +71,7 @@ import {
   pinAsOverlay,
   saveOverlay,
 } from './overlay.js';
+import { ExportDialog } from './ExportDialog.js';
 import { browserDownloadDeps, historyFileName, saveAiImage, saveDrawing } from './save.js';
 
 /**
@@ -326,6 +325,9 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
   }, [gallery, roomId]);
 
   const shown = selectedEntry(gallery);
+  // Everything that leaves the room leaves through one button now: two PNGs
+  // made in this browser and two files the server builds (exportDialog.ts).
+  const [exportOpen, setExportOpen] = useState(false);
   const downloads = useMemo(() => browserDownloadDeps(), []);
   const saveAi = async (): Promise<void> => {
     if (!(await saveAiImage(roomId, client.aiRevision, downloads))) {
@@ -773,11 +775,12 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
         <button className="dice" title="random preset" onClick={() => applyRandomPreset(presetTarget)}>
           ⚀
         </button>
-        <button title="download the AI result as a PNG" onClick={() => void saveAi()}>
-          save AI
-        </button>
-        <button title="download the drawing as a PNG, exactly as it looks here" onClick={() => void saveHuman()}>
-          save drawing
+        <button
+          className={exportOpen ? 'active' : ''}
+          title="take the drawing, the AI result or the whole history home"
+          onClick={() => setExportOpen(true)}
+        >
+          export
         </button>
         <button
           className={gallery.open ? 'active' : ''}
@@ -945,7 +948,16 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
             {t}
           </button>
         ))}
-        <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
+        {/* Only the pen paints in a colour: noise brings its own, the eraser
+            removes, move draws nothing. Disabled rather than hidden so the
+            strip does not reflow every time the tool changes. */}
+        <input
+          type="color"
+          value={color}
+          disabled={tool !== 'pen'}
+          title={tool === 'pen' ? undefined : 'colour applies to the pen only'}
+          onChange={(e) => setColor(e.target.value)}
+        />
         <label>
           size {width}
           <input
@@ -998,24 +1010,6 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
               ))}
             </div>
           )}
-          {gallery.enabled && !gallery.error && gallery.entries.length > 0 ? (
-            <div className="gallery-exports">
-              <a
-                href={historyExportUrl(roomId, 'zip')}
-                download={historyExportFileName(roomId, 'zip')}
-                title="every frame this room made, plus a manifest of the settings"
-              >
-                download zip
-              </a>
-              <a
-                href={historyExportUrl(roomId, 'avi')}
-                download={historyExportFileName(roomId, 'avi')}
-                title="one frame per generation: the drawing on the left, the result on the right"
-              >
-                download video (MJPEG AVI)
-              </a>
-            </div>
-          ) : null}
           {shown ? (
             <div className="shot">
               <img src={shown.url} alt={`result ${shown.n}`} />
@@ -1053,6 +1047,15 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
           ) : null}
         </div>
       ) : null}
+
+      <ExportDialog
+        roomId={roomId}
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        history={{ enabled: gallery.enabled, entries: gallery.entries.length, latestN: gallery.latestN }}
+        onDownloadDrawing={() => void saveHuman()}
+        onDownloadAi={() => void saveAi()}
+      />
 
       {actionError ? (
         <div className="toast" role="status" onClick={() => client.clearActionError()}>

@@ -103,3 +103,6 @@ select.preset { max-width: 14rem; }
 .shot-actions a { color: #9db4ee; }
 .gallery-exports { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .gallery-exports a { color: #9db4ee; }
+
+/* The colour swatch belongs to the pen; greyed out under every other tool. */
+.tools input[type="color"]:disabled { opacity: 0.35; filter: grayscale(1); cursor: not-allowed; }
