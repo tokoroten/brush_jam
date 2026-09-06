@@ -102,7 +102,16 @@ HOST=0.0.0.0 pnpm start          # then http://<your-ip>:8787/r/<id>
 pnpm dev:lan                     # the same, with the Vite dev server alongside
 ```
 
-**Over the internet**, put the server on a rented GPU. `deploy/runpod/` creates
+**Over the internet from your own machine**, put a tunnel in front of it -
+`ngrok http 8787`, `cloudflared tunnel --url http://127.0.0.1:8787`, or
+Tailscale for a closed group. The server serves everything, WebSocket
+included, on that one port, and the client picks `wss://` by itself when the
+page is https. Raise `ROOM_CREATE_PER_MIN` first: the server rate-limits by the
+socket's own address and does not read `X-Forwarded-For`, so behind a tunnel
+every player shares one bucket. Step by step, in Japanese, in
+[`docs/SETUP.md`](docs/SETUP.md).
+
+**Over the internet on a rented GPU**, put the server on a RunPod pod. `deploy/runpod/` creates
 a RunPod pod, ships this repository into it as a tarball and starts it, with no
 SSH, no registry and no git remote involved:
 
@@ -312,6 +321,9 @@ model at a time. `preset_sheet.py` needs no card of its own: it drives a
 
 ## Documents
 
+- [`docs/SETUP.md`](docs/SETUP.md) - セットアップマニュアル(日本語): install,
+  models, `.env`, LAN play, and exposing a local server with ngrok, Cloudflare
+  Tunnel, Tailscale or RunPod.
 - [`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md) - the server: backends,
   scheduling, limits, measurements, review history.
 - [`docs/RUNPOD_POD.md`](docs/RUNPOD_POD.md) - deploying to a rented GPU.
