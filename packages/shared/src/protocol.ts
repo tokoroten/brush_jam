@@ -223,6 +223,12 @@ export interface HistoryEntry {
   n: number;
   /** Path of the JPEG, relative to the server. */
   url: string;
+  /**
+   * Path of the human canvas this result was generated from - the raster the
+   * pipeline was handed - when the server saved one. Absent for entries
+   * written before inputs were stored, or when the encode failed.
+   */
+  inputUrl?: string;
   /** Unix ms when it was saved. */
   time: number;
   aiRevision: number;

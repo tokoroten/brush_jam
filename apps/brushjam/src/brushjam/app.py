@@ -33,9 +33,10 @@ log = logging.getLogger("brushjam.http")
 
 ROOM_ID = re.compile(r"^[a-z0-9]{4,16}$")
 SESSION_TOKEN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
-#: A saved result is `<n>.jpg` and nothing else; `n` is what the store numbered
-#: it. Matched rather than sanitised: the name becomes a path.
-HISTORY_IMAGE = re.compile(r"^(\d{1,9})\.jpg$")
+#: A saved result is `<n>.jpg`, and the human canvas it was generated from is
+#: `<n>.in.jpg`; `n` is what the store numbered it. Matched rather than
+#: sanitised: the name becomes a path.
+HISTORY_IMAGE = re.compile(r"^(\d{1,9})(\.in)?\.jpg$")
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 #: One frame is never legitimately larger than this.
 MAX_WS_PAYLOAD = 1024 * 1024
@@ -354,10 +355,14 @@ def create_app(
 
     @app.get("/rooms/{room_id}/history/{name}")
     async def room_history_image(room_id: str, name: str) -> Response:
-        if not ROOM_ID.match(room_id) or not HISTORY_IMAGE.match(name):
+        matched = HISTORY_IMAGE.match(name)
+        if not ROOM_ID.match(room_id) or matched is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         body = await asyncio.to_thread(
-            registry.history.read, room_id, int(name.split(".")[0])
+            registry.history.read,
+            room_id,
+            int(matched.group(1)),
+            "in" if matched.group(2) else "jpg",
         )
         if body is None:
             return JSONResponse({"error": "not found"}, status_code=404)

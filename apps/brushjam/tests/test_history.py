@@ -26,6 +26,7 @@ import brushjam.history as _history
 from brushjam.history import HistoryStore
 
 JPEG = b"\xff\xd8\xff" + b"x" * 4000
+INPUT_JPEG = b"\xff\xd8\xff" + b"i" * 1500
 
 
 def store(tmp_path: Path, **kw) -> HistoryStore:
@@ -106,6 +107,70 @@ def test_a_write_failure_is_survivable(tmp_path: Path, monkeypatch) -> None:
     # The store is still usable once the disk comes back.
     monkeypatch.undo()
     assert s.record("abcd", JPEG, entry()) is not None
+
+
+# ------------------------------------------------------- the input canvas
+
+
+def test_the_input_canvas_is_stored_beside_the_result(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    assert s.record("abcd", JPEG, entry(), INPUT_JPEG) == 0
+    room = tmp_path / "history" / "abcd"
+    assert (room / "0.in.jpg").read_bytes() == INPUT_JPEG
+    assert s.read("abcd", 0, "in") == INPUT_JPEG
+    assert s.read("abcd", 0) == JPEG
+    assert s.read("abcd", 0, "json") is None and s.read("abcd", 0, "nope") is None
+    listed = s.list("abcd")[0]
+    assert listed["inputUrl"] == "/rooms/abcd/history/0.in.jpg"
+    # All three files are charged to the entry.
+    assert s.room_bytes_used("abcd") == (
+        len(JPEG) + len(INPUT_JPEG) + (room / "0.json").stat().st_size
+    )
+
+
+def test_an_entry_without_an_input_is_still_an_entry(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    s.record("abcd", JPEG, entry())
+    listed = s.list("abcd")[0]
+    assert "inputUrl" not in listed
+    assert s.read("abcd", 0, "in") is None
+    assert s.count("abcd") == 1
+
+
+def test_eviction_removes_the_input_too(tmp_path: Path) -> None:
+    s = store(tmp_path, room_bytes=12_000, total_bytes=10_000_000)
+    for _ in range(4):
+        s.record("abcd", JPEG, entry(), INPUT_JPEG)
+    room = tmp_path / "history" / "abcd"
+    assert [e["n"] for e in s.list("abcd")] == [3, 2]
+    for gone in (0, 1):
+        for name in (f"{gone}.jpg", f"{gone}.json", f"{gone}.in.jpg"):
+            assert not (room / name).exists(), name
+    assert s.room_bytes_used("abcd") <= 12_000
+
+
+def test_a_reloaded_store_counts_and_serves_the_input(tmp_path: Path) -> None:
+    first = store(tmp_path)
+    first.record("abcd", JPEG, entry(), INPUT_JPEG)
+    first.record("abcd", JPEG, entry())  # an old-style entry, no input
+    used = first.total_bytes_used
+
+    second = store(tmp_path)
+    assert [e["n"] for e in second.list("abcd")] == [1, 0]
+    assert second.total_bytes_used == used
+    assert second.read("abcd", 0, "in") == INPUT_JPEG
+    assert "inputUrl" not in second.list("abcd")[0]
+
+
+def test_an_input_with_no_pair_is_cleaned_up_at_load(tmp_path: Path) -> None:
+    room = tmp_path / "history" / "abcd"
+    room.mkdir(parents=True)
+    (room / "7.in.jpg").write_bytes(INPUT_JPEG)
+    s = store(tmp_path)
+    assert s.count("abcd") == 0
+    assert not (room / "7.in.jpg").exists()
+    # 7 was still handed out once, so it is never handed out again.
+    assert s.record("abcd", JPEG, entry()) == 8
 
 
 # ------------------------------------------------------------------- budgets
@@ -240,6 +305,30 @@ def test_a_generation_is_saved_and_served(tmp_path: Path) -> None:
         assert image.headers["content-type"] == "image/jpeg"
         with Image.open(io.BytesIO(image.content)) as decoded:
             assert decoded.format == "JPEG" and decoded.size == (512, 512)
+
+
+def test_a_generation_saves_the_canvas_it_was_generated_from(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        room_id = client.post("/api/rooms").json()["roomId"]
+        with client.websocket_connect(f"/ws/rooms/{room_id}?name=a") as socket:
+            wait_for(socket, "snapshot")
+            socket.send_text(json.dumps({"t": "set_prompt", "prompt": "a hill"}))
+            wait_for(socket, "ai_result")
+
+        saved = client.get(f"/rooms/{room_id}/history").json()["entries"][0]
+        assert saved["inputUrl"] == f"/rooms/{room_id}/history/0.in.jpg"
+        image = client.get(saved["inputUrl"])
+        assert image.status_code == 200
+        assert image.headers["content-type"] == "image/jpeg"
+        assert image.headers["cache-control"] == "public, max-age=86400, immutable"
+        with Image.open(io.BytesIO(image.content)) as decoded:
+            # The pixels the pipeline was handed: the generation size, not the
+            # canvas size, because that is what it actually saw.
+            assert decoded.format == "JPEG" and decoded.size == (512, 512)
+        # An empty room draws nothing, so the input is the white background the
+        # AI input is composited on rather than a black frame.
+        with Image.open(io.BytesIO(image.content)) as decoded:
+            assert decoded.convert("RGB").getpixel((5, 5)) > (240, 240, 240)
 
 
 def test_history_outlives_the_room(tmp_path: Path) -> None:

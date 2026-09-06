@@ -93,6 +93,13 @@ class SchedulerHost(Protocol):
     def on_error(self, message: str, repeated: int) -> None:
         ...
 
+    def note_ai_input(self, image_png: bytes) -> None:
+        """The PNG the backend was handed for the run about to be applied.
+
+        Optional, and called only on the accepted path, so the host may hold
+        it until `record_history` and store it beside the result.
+        """
+
     async def record_history(self, entry: Dict[str, Any]) -> Optional[int]:
         """Save the result that was just applied; returns its number, or None.
 
@@ -408,6 +415,13 @@ class AIScheduler:
                 self._set_state("idle")
             else:
                 backend_ms = _now_ms() - t_backend
+                # The input this result came from, handed to the host before
+                # the result is applied so the two are saved as a pair. A run
+                # discarded as stale never reaches here, so nothing stashed is
+                # ever attributed to a different generation.
+                noter = getattr(self.host, "note_ai_input", None)
+                if callable(noter):
+                    noter(image_png)
                 t_apply = _now_ms()
                 applied = await _settled(
                     self.host.apply_result(patch, rect, rect, mask.alpha, for_revision)

@@ -14,6 +14,13 @@ Three things on disk make one room: `<n>.jpg`, `<n>.json`, and a `counter` file
 holding the next number to hand out. An entry exists when *both* of its files
 do - the JSON is installed last and is the commit point - and a number is never
 handed out twice, because the counter outlives the entries it numbered.
+
+A fourth file, `<n>.in.jpg`, is the human canvas that was the *input* of that
+generation - the raster the pipeline was handed. It is optional: entries
+written before it existed have none, and an encode that failed leaves none, so
+its absence is never an incomplete entry. It is written first, before the pair,
+because the pair is what defines the entry and the extra must never be the
+thing that is half installed.
 """
 
 from __future__ import annotations
@@ -49,6 +56,11 @@ JPEG_QUALITY = 90
 #: is declared immutable, so the old picture would be shown under the new
 #: entry's settings.
 COUNTER_NAME = "counter"
+
+
+#: The three files one entry can own, and the suffix each is stored under.
+#: `jpg` and `json` make the entry; `in` is the optional input canvas.
+ENTRY_SUFFIX = {"jpg": "jpg", "json": "json", "in": "in.jpg"}
 
 
 def is_room_id(room_id: str) -> bool:
@@ -124,7 +136,7 @@ class HistoryStore:
                 files = list(os.scandir(room.path))
             except OSError:  # pragma: no cover - vanished between calls
                 continue
-            found: Dict[str, Dict[int, int]] = {"jpg": {}, "json": {}}
+            found: Dict[str, Dict[int, int]] = {kind: {} for kind in ENTRY_SUFFIX}
             stamps: Dict[int, float] = {}
             high_water = 0
             counter = 0
@@ -159,9 +171,11 @@ class HistoryStore:
                 self._next[room.name],
             )
             sizes: Dict[int, int] = {}
-            for n in sorted(set(found["jpg"]) | set(found["json"])):
+            for n in sorted(set().union(*(set(v) for v in found.values()))):
                 if n in found["jpg"] and n in found["json"]:
-                    sizes[n] = found["jpg"][n] + found["json"][n]
+                    # The input canvas is optional, but its bytes are on the
+                    # disk, so the entry is charged for all three files.
+                    sizes[n] = found["jpg"][n] + found["json"][n] + found["in"].get(n, 0)
                     continue
                 if not written:
                     # The counter did not go down. These filenames are the only
@@ -176,7 +190,8 @@ class HistoryStore:
                     )
                     for kind, found_sizes in found.items():
                         if n in found_sizes:
-                            self._stray[self.root / room.name / f"{n}.{kind}"] = found_sizes[n]
+                            path = self.root / room.name / f"{n}.{ENTRY_SUFFIX[kind]}"
+                            self._stray[path] = found_sizes[n]
                             self._total += found_sizes[n]
                     continue
                 # Half a pair: the write was interrupted between installing the
@@ -184,7 +199,7 @@ class HistoryStore:
                 # Either way it is not an entry, and leaving it would be bytes
                 # on the disk that no budget knows about.
                 log.info("history: room %s entry %d is incomplete; removing it", room.name, n)
-                for suffix in ("jpg", "json"):
+                for suffix in ENTRY_SUFFIX.values():
                     self._discard_file(self.root / room.name / f"{n}.{suffix}")
             if not sizes:
                 continue
@@ -225,8 +240,18 @@ class HistoryStore:
 
     # -- writing ----------------------------------------------------------
 
-    def record(self, room_id: str, jpeg: bytes, entry: Dict[str, Any]) -> Optional[int]:
+    def record(
+        self,
+        room_id: str,
+        jpeg: bytes,
+        entry: Dict[str, Any],
+        input_jpeg: Optional[bytes] = None,
+    ) -> Optional[int]:
         """Store one result. Returns its number, or None if nothing was stored.
+
+        `input_jpeg` is the human canvas that produced it, and is optional: it
+        is stored beside the pair when it is there and skipped when it is not.
+        A generation whose input could not be encoded is still a generation.
 
         Never raises: a history that cannot be written is a log line, not a
         failed generation.
@@ -245,13 +270,21 @@ class HistoryStore:
                 blob = json.dumps(record, separators=(",", ":")).encode("utf-8")
                 jpg_path = directory / f"{n}.jpg"
                 json_path = directory / f"{n}.json"
+                in_path = directory / f"{n}.in.jpg"
                 # The number is spent the moment it is written down, whether or
                 # not the files that follow land: reusing it after a failure
                 # would put two different pictures behind one immutable URL.
                 if not self._persist_counter(room_id, n + 1):
                     return None
                 self._next[room_id] = n + 1
+                in_size = 0
                 try:
+                    # First, because it is the one file that is allowed to be
+                    # missing: writing it after the commit point would put an
+                    # entry on the disk whose input arrives a moment later.
+                    if input_jpeg:
+                        _write_atomic(in_path, input_jpeg)
+                        in_size = len(input_jpeg)
                     _write_atomic(jpg_path, jpeg)
                     # The JSON is the commit point: an entry exists when both
                     # files do, and `_load` cleans up anything that is half a
@@ -259,14 +292,14 @@ class HistoryStore:
                     # it does not land.
                     _write_atomic(json_path, blob)
                 except Exception:
-                    # Both names and both temporaries: a failed `os.replace`
+                    # Every name and every temporary: a failed `os.replace`
                     # leaves the `.part` file behind, and it is as much a stray
                     # byte as a half-installed entry.
-                    for path in (jpg_path, json_path):
+                    for path in (jpg_path, json_path, in_path):
                         self._discard_file(path)
                         self._discard_file(path.with_name(path.name + ".part"))
                     raise
-                size = len(jpeg) + len(blob)
+                size = len(jpeg) + len(blob) + in_size
                 self._sizes.setdefault(room_id, {})[n] = size
                 self._order.append((room_id, n))
                 self._total += size
@@ -325,8 +358,8 @@ class HistoryStore:
     def _delete_files(self, room_id: str, n: int) -> bool:
         """True when neither file is on the disk any more."""
         gone = True
-        for suffix in (".jpg", ".json"):
-            path = self.root / room_id / f"{n}{suffix}"
+        for suffix in ENTRY_SUFFIX.values():
+            path = self.root / room_id / f"{n}.{suffix}"
             if not _unlink(path):
                 gone = False
         return gone
@@ -389,16 +422,61 @@ class HistoryStore:
                 continue
             entry["n"] = n
             entry["url"] = f"/rooms/{room_id}/history/{n}.jpg"
+            # Absent rather than null when there is no input: entries written
+            # before inputs were stored are still perfectly good entries.
+            if (self.root / room_id / f"{n}.in.jpg").exists():
+                entry["inputUrl"] = f"/rooms/{room_id}/history/{n}.in.jpg"
             out.append(entry)
         return out
 
-    def read(self, room_id: str, n: int) -> Optional[bytes]:
+    def read(self, room_id: str, n: int, kind: str = "jpg") -> Optional[bytes]:
+        """One stored file: the AI result (`jpg`) or its input (`in`)."""
+        suffix = ENTRY_SUFFIX.get(kind)
+        if suffix is None or suffix == "json":
+            return None
         if not self.enabled or not is_room_id(room_id):
             return None
         try:
-            return (self.root / room_id / f"{int(n)}.jpg").read_bytes()
+            return (self.root / room_id / f"{int(n)}.{suffix}").read_bytes()
         except (OSError, ValueError):
             return None
+
+    def entries(self, room_id: str) -> List[Dict[str, Any]]:
+        """Every entry of a room, oldest first, for an export.
+
+        Unlike `list` this is not capped and each entry carries the paths of
+        its files rather than their URLs, because the caller is about to read
+        them off the disk.
+        """
+        if not self.enabled or not is_room_id(room_id):
+            return []
+        try:
+            with self._lock:
+                self._load()
+                numbers = sorted((self._sizes.get(room_id) or {}).keys())
+        except Exception as err:  # pragma: no cover - defensive
+            log.warning("history: cannot enumerate room %s (%s)", room_id, err)
+            return []
+        out: List[Dict[str, Any]] = []
+        for n in numbers:
+            directory = self.root / room_id
+            try:
+                entry = json.loads((directory / f"{n}.json").read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            entry["n"] = n
+            in_path = directory / f"{n}.in.jpg"
+            out.append(
+                {
+                    "n": n,
+                    "entry": entry,
+                    "gen": directory / f"{n}.jpg",
+                    "input": in_path if in_path.exists() else None,
+                }
+            )
+        return out
 
     # -- introspection, for the tests and /healthz ------------------------
 
@@ -436,8 +514,13 @@ class HistoryStore:
 
 
 def _entry_file(name: str) -> Optional[Tuple[int, str]]:
+    """`12.jpg` -> (12, "jpg"), `12.json` -> (12, "json"), `12.in.jpg` -> (12, "in")."""
     stem, dot, suffix = name.rpartition(".")
-    if not dot or suffix not in ("jpg", "json") or not stem.isdigit():
+    if not dot:
+        return None
+    if suffix == "jpg" and stem.endswith(".in"):
+        stem, suffix = stem[:-3], "in"
+    if suffix not in ENTRY_SUFFIX or not stem.isdigit():
         return None
     return int(stem), suffix
 

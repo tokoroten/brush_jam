@@ -27,6 +27,7 @@ from .raster import (
     decode_upload,
     forget_images,
     forget_layer_rasters,
+    jpeg_on_white,
     render_crop_input,
 )
 from .room import (
@@ -184,6 +185,14 @@ class RoomRuntime:
         #: The JPEG of the result being applied, encoded in the same worker
         #: thread as the composite and held until `record_history` writes it.
         self._pending_jpeg: Optional[bytes] = None
+        #: The PNG the pipeline was handed for the run being applied - the
+        #: human canvas as the AI saw it - stashed by the scheduler just before
+        #: the result is composited and turned into `<n>.in.jpg` in the same
+        #: worker thread. Held rather than re-rendered: re-rendering would
+        #: capture whatever has been drawn since.
+        self._pending_input_png: Optional[bytes] = None
+        #: The JPEG of that input, encoded beside the composite.
+        self._pending_input_jpeg: Optional[bytes] = None
 
         runtime = self
 
@@ -220,10 +229,11 @@ class RoomRuntime:
                     # not something to do on the event loop. The history JPEG is
                     # encoded in the same thread and under the same lock, so it
                     # is this result rather than whatever the next one leaves.
-                    png, jpeg = await asyncio.to_thread(
+                    png, jpeg, input_jpeg = await asyncio.to_thread(
                         runtime._composite_and_save, patch, crop, mask
                     )
                 runtime._pending_jpeg = jpeg
+                runtime._pending_input_jpeg = input_jpeg
                 patch_id = short_id(10)
                 runtime._patches[patch_id] = png
                 keep = MAX_PATCHES_FULL if config.ai_mode == "full" else MAX_PATCHES
@@ -242,6 +252,13 @@ class RoomRuntime:
                     "url": f"/rooms/{room_id}/patches/{patch_id}.png",
                     "aiGeneration": runtime.state.ai_generation,
                 }
+
+            def note_ai_input(self, image_png: bytes) -> None:
+                # Called on the event loop, from the run that is about to be
+                # applied. A run discarded as stale never gets here, so this is
+                # always the input of the result the next `record_history`
+                # writes.
+                runtime._pending_input_png = image_png
 
             async def record_history(self, entry: Dict[str, Any]) -> Optional[int]:
                 return await runtime.record_history(entry)
@@ -296,28 +313,46 @@ class RoomRuntime:
 
     def _composite_and_save(
         self, patch: bytes, crop: Rect, mask: Any
-    ) -> Tuple[bytes, Optional[bytes]]:
-        """The composite, plus the whole canvas as a JPEG when history is on.
+    ) -> Tuple[bytes, Optional[bytes], Optional[bytes]]:
+        """The composite, plus the AI canvas and its input as JPEGs.
 
-        Both on a worker thread: a 1024 JPEG is ~15 ms, which is a visible
+        All of it on a worker thread: a 1024 JPEG is ~15 ms, which is a visible
         stall for every other room's sockets if it happens on the event loop.
+        The input is re-encoded from the PNG the backend was given rather than
+        rendered again, so the pair is exactly what that generation saw.
         """
         png = self._composite(patch, crop, mask)
         if self.history is None or not self.history.enabled:
-            return png, None
+            self._pending_input_png = None
+            return png, None, None
+        jpeg: Optional[bytes] = None
         try:
-            return png, self._ai_canvas().to_jpeg(JPEG_QUALITY)
+            jpeg = self._ai_canvas().to_jpeg(JPEG_QUALITY)
         except Exception:
             log.warning("[room %s] could not encode the history JPEG", self.state.id, exc_info=True)
-            return png, None
+        raw, self._pending_input_png = self._pending_input_png, None
+        input_jpeg: Optional[bytes] = None
+        if raw:
+            try:
+                input_jpeg = jpeg_on_white(raw, JPEG_QUALITY)
+            except Exception:
+                log.warning(
+                    "[room %s] could not encode the history input JPEG",
+                    self.state.id,
+                    exc_info=True,
+                )
+        return png, jpeg, input_jpeg
 
     async def record_history(self, entry: Dict[str, Any]) -> Optional[int]:
         """Write the result that was just applied. Never raises."""
         jpeg, self._pending_jpeg = self._pending_jpeg, None
+        input_jpeg, self._pending_input_jpeg = self._pending_input_jpeg, None
         if self.history is None or jpeg is None:
             return None
         try:
-            return await asyncio.to_thread(self.history.record, self.state.id, jpeg, entry)
+            return await asyncio.to_thread(
+                self.history.record, self.state.id, jpeg, entry, input_jpeg
+            )
         except Exception:
             log.warning("[room %s] could not save to history", self.state.id, exc_info=True)
             return None

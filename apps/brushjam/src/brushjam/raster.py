@@ -867,6 +867,26 @@ def render_crop_input(
 AI_INPUT_COMPRESS_LEVEL = 1
 
 
+def jpeg_on_white(png: bytes, quality: int = 90) -> bytes:
+    """Re-encode an already-rendered PNG as a JPEG, flattened onto white.
+
+    Used for the saved *input* of a generation: the pipeline was handed those
+    exact pixels, so the history stores them rather than rendering the human
+    canvas a second time and hoping the two agree.
+    """
+    with Image.open(io.BytesIO(png)) as img:
+        img.load()
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGBA")
+            flat = Image.new("RGB", img.size, (255, 255, 255))
+            flat.paste(img, (0, 0), img)
+        else:
+            flat = img.convert("RGB")
+        out = io.BytesIO()
+        flat.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+
+
 def to_png(image: Image.Image, compress_level: int = 6) -> bytes:
     out = io.BytesIO()
     image.save(out, format="PNG", compress_level=compress_level)
