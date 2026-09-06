@@ -215,9 +215,16 @@ Four things keep the plumbing off the critical path:
   after random sequences of pen, noise and eraser strokes with alpha, undo,
   clear and layer moves, and requires them to be byte-identical.
 
-  A cached prefix is validated by the stroke ids it consumed: the layer's
-  current list must *start with* them, so an undo inside the prefix, a cleared
-  layer or an expired stroke rebuilds that layer and nothing else. Layer
+  A cached prefix is validated by the committed stroke *records* it consumed -
+  the objects themselves, not their ids: the layer's current list must start
+  with the same objects, so an undo inside the prefix, a cleared layer or an
+  expired stroke rebuilds that layer and nothing else. Ids were the first
+  version of this check and were wrong, because `clear_layer` frees the ids it
+  removes and the same id could come back carrying a different drawing
+  (review 3, finding 2). A committed stroke is appended once and never
+  mutated, so identity is content. `clear_layer` also bumps a per-layer
+  generation counter, which a render started before the clear fails on when it
+  tries to install its result. Layer
   opacity and visibility are applied on the way into the canvas and cost
   nothing; a layer *move* does rebuild, because at a fractional offset every
   stroke is rasterised at a different sub-pixel phase and shifting finished

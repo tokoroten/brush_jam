@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import brushjam.raster as raster_module
 from brushjam.raster import (
     LAYER_CACHE,
     LayerCacheStore,
@@ -333,3 +334,74 @@ def test_two_rooms_do_not_share_a_layer() -> None:
     forget_layer_rasters("incr01")
     assert LAYER_CACHE.stats()["layers"] == 1
     assert b == render_crop_input(capture_render_snapshot(second), CROP, CANVAS, room_id="incr02")
+
+
+# ------------------------------------------------- review 3: stroke identity
+
+
+def test_a_reused_stroke_id_does_not_return_the_old_drawing() -> None:
+    """`clear_layer` takes a layer's strokes out of the log, which frees their
+    ids for reuse. The cache keyed on those ids, so the same id carrying a
+    different drawing looked like the same prefix, and the render came back as
+    the picture that had just been cleared."""
+    state, user = room()
+    layer_id = sorted_layers(state)[0]["id"]
+    rng = random.Random(11)
+    for i in range(4):
+        commit(state, user, stroke(rng, layer_id, i))
+    before = rendered(state, ROOM_ID)  # the cache now holds s0000..s0003
+
+    send(state, user, {"t": "clear_layer", "layerId": layer_id})
+    # Nothing is rendered in between: the next render is the first one that
+    # sees the same four ids again, drawn differently.
+    other = random.Random(77)
+    for i in range(4):
+        commit(state, user, stroke(other, layer_id, i))
+
+    incremental = rendered(state, ROOM_ID)
+    assert incremental != before, "the test drew the same picture twice"
+    assert_same(state)
+
+
+def test_a_clear_while_a_render_is_running_is_not_undone_by_it(monkeypatch) -> None:
+    """A render reads the strokes, then spends 100 ms drawing them. A clear
+    that lands in that window must not be reverted by the render installing
+    the raster it started before the clear."""
+    state, user = room()
+    layer_id = sorted_layers(state)[0]["id"]
+    rng = random.Random(5)
+    for i in range(3):
+        commit(state, user, stroke(rng, layer_id, i))
+    strokes = list(capture_render_snapshot(state).strokes)
+
+    store = LayerCacheStore()
+    real = raster_module.render_strokes
+
+    def clear_midway(target, drawn, *, offset_x=0.0, offset_y=0.0):
+        real(target, drawn, offset_x=offset_x, offset_y=offset_y)
+        store.forget_layer(ROOM_ID, layer_id)  # the clear arrives here
+
+    monkeypatch.setattr(raster_module, "render_strokes", clear_midway)
+    out = store.render_layer(ROOM_ID, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
+    assert out is not None  # the caller still gets its pixels
+    assert store.stats()["layers"] == 0, "a stale raster was installed over a clear"
+    assert store.stats()["bytes"] == 0
+
+
+def test_dropping_a_layer_leaves_no_accounting_behind() -> None:
+    state, user = room()
+    layer_id = sorted_layers(state)[0]["id"]
+    rng = random.Random(6)
+    for i in range(3):
+        commit(state, user, stroke(rng, layer_id, i))
+    strokes = list(capture_render_snapshot(state).strokes)
+
+    store = LayerCacheStore()
+    store.render_layer(ROOM_ID, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
+    assert store.stats()["bytes"] > 0
+    store.forget_room(ROOM_ID)
+    assert store.stats() == {"layers": 0, "bytes": 0}
+    # ...and a render after the drop starts a fresh entry rather than doubling
+    # the accounting.
+    store.render_layer(ROOM_ID, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
+    assert store.stats()["layers"] == 1

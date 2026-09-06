@@ -560,20 +560,41 @@ LAYER_CACHE_BUDGET_BYTES = 16 * _layer_raster_bytes(CANVAS_SIZE, CANVAS_SIZE)
 class _CachedLayer:
     """One draw layer's committed strokes, and which ones they were."""
 
-    __slots__ = ("raster", "ids", "offset", "nbytes")
+    __slots__ = ("raster", "strokes", "offset", "nbytes")
 
-    def __init__(self, raster: "LayerRaster", ids: List[str], offset: Tuple[float, float]) -> None:
+    def __init__(
+        self, raster: "LayerRaster", strokes: List[Stroke], offset: Tuple[float, float]
+    ) -> None:
         self.raster = raster
-        #: The strokes composited into `raster`, in order. They are the same
-        #: str objects the log holds, so comparing a 3,600-long prefix is a
-        #: pointer walk.
-        self.ids = ids
+        #: The stroke records composited into `raster`, in order - the very
+        #: objects the room's log holds, not their ids. A committed stroke is
+        #: appended once and never mutated, so identity IS its content, and
+        #: comparing a 3,600-long prefix is a pointer walk.
+        #:
+        #: Ids were the obvious key and were wrong: `clear_layer` drops a
+        #: layer's strokes from the log, which frees their ids for reuse, so
+        #: the same id could come back carrying a different drawing and the
+        #: cache would hand back the old pixels.
+        self.strokes = strokes
         #: The layer translation this raster was drawn with. A moved layer is
         #: re-rendered rather than shifted: at a fractional offset the strokes
         #: are rasterised at a different sub-pixel phase, so shifting finished
         #: pixels would not produce the image a full render produces.
         self.offset = offset
         self.nbytes = raster.rgb.nbytes + raster.alpha.nbytes
+
+
+def _is_prefix(cached: Sequence[Stroke], current: Sequence[Stroke]) -> bool:
+    """Is every cached stroke still there, in the same place, still itself?"""
+    n = len(cached)
+    if n > len(current):
+        return False
+    if n and cached[n - 1] is not current[n - 1]:
+        return False  # the common case of a changed prefix, in one comparison
+    for a, b in zip(cached, current):
+        if a is not b:
+            return False
+    return True
 
 
 class LayerCacheStore:
@@ -588,6 +609,11 @@ class LayerCacheStore:
         self.budget_bytes = budget_bytes
         self._entries: "OrderedDict[Tuple[str, str], _CachedLayer]" = OrderedDict()
         self._bytes = 0
+        #: How many times each key has been invalidated. A render reads it when
+        #: it starts and again when it installs its result: a `clear_layer`
+        #: that arrives while a render is running must not be undone by that
+        #: render storing the raster it began before the clear.
+        self._generation: "Dict[Tuple[str, str], int]" = {}
         #: Renders run on worker threads - one per room at a time, but several
         #: rooms at once - and eviction touches every room's entries.
         self._lock = threading.Lock()
@@ -601,27 +627,36 @@ class LayerCacheStore:
     def _evict_until_under_budget(self) -> None:
         """Caller holds the lock."""
         while self._bytes > self.budget_bytes and self._entries:
-            _, entry = self._entries.popitem(last=False)
+            key, entry = self._entries.popitem(last=False)
             self._bytes -= entry.nbytes
+            self._generation[key] = self._generation.get(key, 0) + 1
+
+    def _drop(self, key: Tuple[str, str]) -> bool:
+        """Caller holds the lock. Bumps the generation whether or not anything
+        is cached: what is being invalidated may be mid-render instead."""
+        entry = self._entries.pop(key, None)
+        if entry is not None:
+            self._bytes -= entry.nbytes
+        self._generation[key] = self._generation.get(key, 0) + 1
+        return entry is not None
 
     def forget_layer(self, room_id: str, layer_id: str) -> None:
         with self._lock:
-            entry = self._entries.pop((room_id, layer_id), None)
-            if entry is not None:
-                self._bytes -= entry.nbytes
+            self._drop((room_id, layer_id))
 
     def forget_room(self, room_id: str) -> int:
         """Drop every layer of one room: it was evicted, or has gone quiet."""
         dropped = 0
         with self._lock:
             for key in [k for k in self._entries if k[0] == room_id]:
-                entry = self._entries.pop(key)
-                self._bytes -= entry.nbytes
+                self._drop(key)
                 dropped += 1
         return dropped
 
     def clear(self) -> None:
         with self._lock:
+            for key in list(self._entries):
+                self._drop(key)
             self._entries.clear()
             self._bytes = 0
 
@@ -644,19 +679,20 @@ class LayerCacheStore:
         do not modify it.
         """
         key = None if room_id is None else (room_id, layer_id)
-        ids = [s["id"] for s in strokes]
         offset = (float(offset_x), float(offset_y))
+        kept = list(strokes)
 
+        generation = 0
         if key is not None:
             reusable = None
             with self._lock:
+                generation = self._generation.get(key, 0)
                 entry = self._entries.get(key)
                 if entry is not None and (
                     entry.offset == offset
                     and entry.raster.width == width
                     and entry.raster.height == height
-                    and len(entry.ids) <= len(ids)
-                    and entry.ids == ids[: len(entry.ids)]
+                    and _is_prefix(entry.strokes, kept)
                 ):
                     self._entries.move_to_end(key)
                     # Claimed here, drawn below: the lock covers the table, not
@@ -664,27 +700,34 @@ class LayerCacheStore:
                     # every room in the process wait for one room's strokes.
                     # Two renders of the SAME layer at once would race, and
                     # cannot happen: a room has one generation in flight.
-                    reusable = (entry.raster, len(entry.ids))
-                    entry.ids = ids
+                    reusable = (entry.raster, len(entry.strokes))
+                    entry.strokes = kept
                 elif entry is not None:
                     # The prefix is gone: an undo inside it, a cleared layer, a
                     # moved one, or strokes that expired. Rebuild this layer,
                     # and only this layer.
-                    self._entries.pop(key, None)
-                    self._bytes -= entry.nbytes
+                    self._drop(key)
+                    generation = self._generation[key]
             if reusable is not None:
                 raster, start = reusable
-                render_strokes(raster, strokes[start:], offset_x=offset_x, offset_y=offset_y)
+                render_strokes(raster, kept[start:], offset_x=offset_x, offset_y=offset_y)
                 return raster
 
         raster = LayerRaster(width, height)
-        render_strokes(raster, strokes, offset_x=offset_x, offset_y=offset_y)
+        render_strokes(raster, kept, offset_x=offset_x, offset_y=offset_y)
         if key is not None:
-            fresh = _CachedLayer(raster, ids, offset)
+            fresh = _CachedLayer(raster, kept, offset)
             with self._lock:
-                self._entries[key] = fresh
-                self._bytes += fresh.nbytes
-                self._evict_until_under_budget()
+                # Anything that invalidated this layer while it was being drawn
+                # invalidates this raster too: it was rendered from strokes read
+                # before that happened. Hand it back, do not keep it.
+                if self._generation.get(key, 0) == generation:
+                    previous = self._entries.pop(key, None)
+                    if previous is not None:
+                        self._bytes -= previous.nbytes
+                    self._entries[key] = fresh
+                    self._bytes += fresh.nbytes
+                    self._evict_until_under_budget()
         return raster
 
 

@@ -548,6 +548,13 @@ class RoomRuntime:
             # Correctness does not depend on this - a deleted layer is simply
             # never rendered again - but 16 MB is worth handing back promptly.
             forget_layer_rasters(self.state.id, validated.msg.get("id"))
+        if validated.msg["t"] == "clear_layer":
+            # This one IS correctness. Clearing a layer takes its strokes out
+            # of the log, which frees their ids, and a render that started
+            # before the clear must not install its raster afterwards: the
+            # cache bumps that layer's generation here and refuses the stale
+            # result when it arrives.
+            forget_layer_rasters(self.state.id, validated.msg.get("layerId"))
         if result.dirty:
             self.scheduler.mark_dirty(self._within_canvas(result.dirty))
         if result.prompt_changed:
