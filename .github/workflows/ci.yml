@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push supersedes the first: nobody needs the results for a commit
+# that has already been replaced.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- the TypeScript half: the client, the shared protocol, the tools
+      - uses: pnpm/action-setup@v4 # version comes from packageManager in package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm -r test
+
+      # --- the Python half: the server. No torch here - `inproc` needs a GPU,
+      # and every test that would touch one skips itself without it.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/brushjam/uv.lock
+
+      - run: uv sync --extra dev
+        working-directory: apps/brushjam
+      - run: uv run pytest -q
+        working-directory: apps/brushjam
+
+      # --- the deploy tooling, which is checkable without a pod. It packs the
+      # tarball, which contains the built client, so the build has to have run.
+      - run: pnpm build
+      - run: uv run --project apps/brushjam python deploy/runpod/test_deploy.py
