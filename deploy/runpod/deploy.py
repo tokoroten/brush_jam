@@ -136,13 +136,13 @@ def get(url: str, timeout: float = 20) -> str:
 def build_tarball(dest: Path = TARBALL) -> Path:
     """apps/brushjam plus bootstrap.sh, and nothing else.
 
-    The static web build has to be in the tree already (`pnpm build:py`); the
+    The static web build has to be in the tree already (`pnpm build`); the
     pod has no Node, so a missing one would only surface as a 404 in a
     friend's browser.
     """
     app = REPO / "apps" / "brushjam"
     if not (app / "src" / "brushjam" / "static" / "index.html").exists():
-        sys.exit("apps/brushjam/src/brushjam/static/index.html is missing; run `pnpm build:py` first")
+        sys.exit("apps/brushjam/src/brushjam/static/index.html is missing; run `pnpm build` first")
 
     skip_dirs = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", "node_modules", ".git"}
 

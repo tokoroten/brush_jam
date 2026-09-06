@@ -44,7 +44,7 @@ reused. Two changes need one even so, because they are written into the pod by
 - Repo-root `.env` with `RUNPOD_API_KEY`, `HF_TOKEN`, `CIVITAI_TOKEN`. They are
   read with python-dotenv, passed to the pod as env vars, and never printed or
   logged.
-- The web client built into the package: `pnpm build:py`. The pod has no Node,
+- The web client built into the package: `pnpm build`. The pod has no Node,
   so an unbuilt client is a 404 in a friend's browser. `deploy.py` refuses to
   build a tarball without `src/brushjam/static/index.html`.
 
