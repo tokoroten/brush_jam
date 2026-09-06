@@ -518,9 +518,209 @@ def _reference_patch(
     return arr, left + px0, top + py0
 
 
-def render_crop_input(snapshot: RenderSnapshot, crop: Rect, size: int) -> bytes:
+# --------------------------------------------------------------------------
+# incremental layer rasters
+# --------------------------------------------------------------------------
+#
+# The AI input is rendered from the whole stroke log, every time. At a few
+# hundred strokes that is nothing; at 3,600 it is most of a second, and a soak
+# measured throughput falling from 41 generations a minute to 11 against a
+# backend that returns instantly.
+#
+# Strokes are composited one at a time onto a layer's raster, in log order, so
+# the state after stroke k is a prefix of the state after stroke n > k: keeping
+# that buffer and drawing only what arrived since is the same sequence of
+# operations on the same float32 buffer, and therefore the same bytes. That
+# equality is what tests/test_incremental.py checks, against random sequences
+# of pen, noise and eraser strokes with undo, clear and layer moves.
+#
+# What invalidates a cached prefix is any change to the strokes it consumed -
+# an undo inside it, a cleared layer, an evicted stroke - and that is detected
+# by keeping their ids: the layer's new list has to *start with* the cached
+# one, or the layer is rebuilt from scratch, which costs exactly what every
+# render cost before this existed.
+
+
+def _layer_raster_bytes(width: int, height: int) -> int:
+    """rgb float32 (3 channels) + alpha float32. 16.8 MB at 1024.
+
+    Kept in float32 rather than packed to 8-bit RGBA because the point is to
+    continue the *exact* buffer: rounding it to bytes would make an incremental
+    render differ from a from-scratch one, which is the one thing it must not.
+    """
+    return width * height * 4 * 4
+
+
+#: Total the layer caches may hold across every room - sixteen layers at 1024.
+#: Beyond it the least recently used layer is dropped and rendered from scratch
+#: next time: slower, never wrong.
+LAYER_CACHE_BUDGET_BYTES = 16 * _layer_raster_bytes(CANVAS_SIZE, CANVAS_SIZE)
+
+
+class _CachedLayer:
+    """One draw layer's committed strokes, and which ones they were."""
+
+    __slots__ = ("raster", "ids", "offset", "nbytes")
+
+    def __init__(self, raster: "LayerRaster", ids: List[str], offset: Tuple[float, float]) -> None:
+        self.raster = raster
+        #: The strokes composited into `raster`, in order. They are the same
+        #: str objects the log holds, so comparing a 3,600-long prefix is a
+        #: pointer walk.
+        self.ids = ids
+        #: The layer translation this raster was drawn with. A moved layer is
+        #: re-rendered rather than shifted: at a fractional offset the strokes
+        #: are rasterised at a different sub-pixel phase, so shifting finished
+        #: pixels would not produce the image a full render produces.
+        self.offset = offset
+        self.nbytes = raster.rgb.nbytes + raster.alpha.nbytes
+
+
+class LayerCacheStore:
+    """Cached layer rasters for every room, under one memory budget.
+
+    Keyed by (room, layer). Rooms come and go and a room can hold eight layers,
+    so the bound that matters is the total: an LRU over entries, evicted to fit
+    `budget_bytes`.
+    """
+
+    def __init__(self, budget_bytes: int = LAYER_CACHE_BUDGET_BYTES) -> None:
+        self.budget_bytes = budget_bytes
+        self._entries: "OrderedDict[Tuple[str, str], _CachedLayer]" = OrderedDict()
+        self._bytes = 0
+        #: Renders run on worker threads - one per room at a time, but several
+        #: rooms at once - and eviction touches every room's entries.
+        self._lock = threading.Lock()
+
+    # -- accounting -------------------------------------------------------
+
+    def stats(self) -> Dict[str, int]:
+        with self._lock:
+            return {"layers": len(self._entries), "bytes": self._bytes}
+
+    def _evict_until_under_budget(self) -> None:
+        """Caller holds the lock."""
+        while self._bytes > self.budget_bytes and self._entries:
+            _, entry = self._entries.popitem(last=False)
+            self._bytes -= entry.nbytes
+
+    def forget_layer(self, room_id: str, layer_id: str) -> None:
+        with self._lock:
+            entry = self._entries.pop((room_id, layer_id), None)
+            if entry is not None:
+                self._bytes -= entry.nbytes
+
+    def forget_room(self, room_id: str) -> int:
+        """Drop every layer of one room: it was evicted, or has gone quiet."""
+        dropped = 0
+        with self._lock:
+            for key in [k for k in self._entries if k[0] == room_id]:
+                entry = self._entries.pop(key)
+                self._bytes -= entry.nbytes
+                dropped += 1
+        return dropped
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+    # -- rendering --------------------------------------------------------
+
+    def render_layer(
+        self,
+        room_id: Optional[str],
+        layer_id: str,
+        strokes: Sequence[Stroke],
+        width: int,
+        height: int,
+        offset_x: float,
+        offset_y: float,
+    ) -> "LayerRaster":
+        """This layer's committed strokes, drawn on from wherever we left off.
+
+        `strokes` is the layer's log in order, already filtered - undone
+        strokes are not in it. The result belongs to the cache: composite it,
+        do not modify it.
+        """
+        key = None if room_id is None else (room_id, layer_id)
+        ids = [s["id"] for s in strokes]
+        offset = (float(offset_x), float(offset_y))
+
+        if key is not None:
+            reusable = None
+            with self._lock:
+                entry = self._entries.get(key)
+                if entry is not None and (
+                    entry.offset == offset
+                    and entry.raster.width == width
+                    and entry.raster.height == height
+                    and len(entry.ids) <= len(ids)
+                    and entry.ids == ids[: len(entry.ids)]
+                ):
+                    self._entries.move_to_end(key)
+                    # Claimed here, drawn below: the lock covers the table, not
+                    # the drawing. Holding it across a 100 ms render would make
+                    # every room in the process wait for one room's strokes.
+                    # Two renders of the SAME layer at once would race, and
+                    # cannot happen: a room has one generation in flight.
+                    reusable = (entry.raster, len(entry.ids))
+                    entry.ids = ids
+                elif entry is not None:
+                    # The prefix is gone: an undo inside it, a cleared layer, a
+                    # moved one, or strokes that expired. Rebuild this layer,
+                    # and only this layer.
+                    self._entries.pop(key, None)
+                    self._bytes -= entry.nbytes
+            if reusable is not None:
+                raster, start = reusable
+                render_strokes(raster, strokes[start:], offset_x=offset_x, offset_y=offset_y)
+                return raster
+
+        raster = LayerRaster(width, height)
+        render_strokes(raster, strokes, offset_x=offset_x, offset_y=offset_y)
+        if key is not None:
+            fresh = _CachedLayer(raster, ids, offset)
+            with self._lock:
+                self._entries[key] = fresh
+                self._bytes += fresh.nbytes
+                self._evict_until_under_budget()
+        return raster
+
+
+#: The store every room shares. One budget, one place to look.
+LAYER_CACHE = LayerCacheStore()
+
+
+def layer_cache_stats() -> Dict[str, int]:
+    return LAYER_CACHE.stats()
+
+
+def forget_layer_rasters(room_id: str, layer_id: Optional[str] = None) -> int:
+    """Drop one layer's cached raster, or the whole room's.
+
+    Called when a layer is deleted, when a room is evicted, and when a room has
+    been empty long enough that holding 16 MB a layer for it stops being worth
+    the render it saves.
+    """
+    if layer_id is not None:
+        LAYER_CACHE.forget_layer(room_id, layer_id)
+        return 1
+    return LAYER_CACHE.forget_room(room_id)
+
+
+def render_crop_input(
+    snapshot: RenderSnapshot, crop: Rect, size: int, room_id: Optional[str] = None
+) -> bytes:
     """The AI input for a crop: white background, then every visible AI-input
-    layer in order, resampled once at the end."""
+    layer in order, resampled once at the end.
+
+    With a `room_id`, each draw layer's committed strokes come from that
+    room's cached raster and only what arrived since is drawn (see
+    LayerCacheStore).
+    Without one - a crop that is not the whole canvas, a caller that has no
+    room - every stroke is drawn, which is what this always did.
+    """
     width = int(round(crop["width"]))
     height = int(round(crop["height"]))
     canvas = np.ones((height, width, 3), dtype=np.float32) * 255.0
@@ -530,8 +730,8 @@ def render_crop_input(snapshot: RenderSnapshot, crop: Rect, size: int) -> bytes:
             continue
         if not layer.get("includeInAI"):
             continue
-        raster = LayerRaster(width, height)
         if layer["kind"] == "reference" and layer.get("imageId"):
+            raster = LayerRaster(width, height)
             stored = snapshot.images.get(layer["imageId"])
             if stored is None:
                 continue
@@ -549,13 +749,20 @@ def render_crop_input(snapshot: RenderSnapshot, crop: Rect, size: int) -> bytes:
         else:
             dx = layer.get("offsetX") or 0
             dy = layer.get("offsetY") or 0
-            render_strokes(
-                raster,
+            # `strokes_for_crop` already drops undone strokes, so what it
+            # returns IS what the layer shows - which is what makes it a
+            # prefix the cache can be checked against.
+            raster = LAYER_CACHE.render_layer(
+                room_id,
+                layer["id"],
                 strokes_for_crop(snapshot, crop, layer["id"], {"x": dx, "y": dy}),
-                undone=snapshot.undone,
+                width,
+                height,
                 offset_x=crop["x"] - dx,
                 offset_y=crop["y"] - dy,
             )
+        # Opacity and visibility are applied here, on the way into the canvas,
+        # so changing either costs nothing and invalidates nothing.
         opacity = float(layer.get("opacity") or 0)
         a = (raster.alpha * opacity)[:, :, None]
         canvas = raster.rgb * opacity + canvas * (1.0 - a)

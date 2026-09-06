@@ -24,7 +24,7 @@ the built client into the package) is what makes it serve the page too.
 | `src/brushjam/room.py` | the authoritative reducer: strokes, per-user undo, layers, settings, sessions |
 | `src/brushjam/runtime.py` | rooms, sockets, presence, image store, eviction, capability refresh |
 | `src/brushjam/scheduler.py` | full-canvas AI scheduler: debounce, one in flight, stale discard, error policy |
-| `src/brushjam/raster.py` | Pillow + numpy rendering of the AI input and the AI canvas |
+| `src/brushjam/raster.py` | Pillow + numpy rendering of the AI input and the AI canvas, and the per-layer raster cache |
 | `src/brushjam/ai/pipeline.py` | the resident SDXL img2img model (moved from `apps/stream-worker`) |
 | `src/brushjam/ai/backends/` | `inproc`, `stream`, `comfyui`, `runpod`, `mock` |
 | `src/brushjam/app.py`, `main.py` | routes, WebSocket, static client, uvicorn entry |
@@ -199,7 +199,36 @@ photographic result adds at most ~40 ms of PNG encoding on top (measured: a
 `fast`/768 here (~3.7 s of server pipeline) and the dedicated worker process
 (~1.4 s of generation) is therefore inside the GPU call, not in the plumbing.
 
-Three things keep the plumbing off the critical path:
+Four things keep the plumbing off the critical path:
+
+- **Layer rasters are kept between generations.** The AI input used to be
+  rendered from the whole stroke log every time, which is free at a few hundred
+  strokes and most of a second at a few thousand: a 30-minute soak (3 users,
+  mock backend) watched throughput fall from 41 generations a minute to 11, and
+  the reported `latencyMs` median reach 2.5 s with a backend that returns
+  instantly. Strokes are composited one at a time onto a layer's buffer in log
+  order, so the state after stroke *k* is a prefix of the state after stroke
+  *n>k*: `LayerCacheStore` keeps that float32 buffer per (room, layer) and draws
+  only what arrived since. Continuing the buffer is the same sequence of
+  operations on the same bytes, so it is not an approximation -
+  `tests/test_incremental.py` compares incremental against from-scratch renders
+  after random sequences of pen, noise and eraser strokes with alpha, undo,
+  clear and layer moves, and requires them to be byte-identical.
+
+  A cached prefix is validated by the stroke ids it consumed: the layer's
+  current list must *start with* them, so an undo inside the prefix, a cleared
+  layer or an expired stroke rebuilds that layer and nothing else. Layer
+  opacity and visibility are applied on the way into the canvas and cost
+  nothing; a layer *move* does rebuild, because at a fractional offset every
+  stroke is rasterised at a different sub-pixel phase and shifting finished
+  pixels would not produce the same image.
+
+  Measured with `scripts/bench_render.py` at 4,000 strokes on a 1024 canvas:
+  **2,541 ms from scratch, 97 ms incrementally** (20 new strokes per render),
+  and the incremental figure does not grow with the log. The price is 16.8 MB
+  per cached draw layer, bounded by an LRU across all rooms
+  (`LAYER_CACHE_BUDGET_BYTES`, 16 layers) and dropped when a room is evicted or
+  has been empty for three minutes.
 
 - **No PNG codec on the event loop.** The input render and the composite were
   already in threads; the backend's input decode and output encode are too.

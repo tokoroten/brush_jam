@@ -165,7 +165,9 @@ and inference. It is the only server.
   renders the whole canvas server-side - with the same renderer the browser uses
   - and hands it to the backend. One generation is in flight per room; activity
   during one queues exactly one more; a result older than the last accepted one
-  is discarded.
+  is discarded. Each draw layer's raster is kept between generations and only
+  new strokes are drawn onto it, so a room that has been going for an hour
+  renders as fast as one that just started.
 - **Drawing never waits.** Strokes are drawn locally on pointer input and
   relayed as chunks every ~40 ms. Nothing in that path touches the model.
 - **The protocol is the contract.** `packages/shared/src/protocol.ts` defines

@@ -237,3 +237,50 @@ def test_a_socket_dropped_for_being_slow_is_not_called_superseded() -> None:
     socket.buffered_bytes = MAX_BUFFERED_BYTES + 1
     room.join(socket, "Alice")
     assert socket.revoked_with and socket.revoked_with != [CLOSE_SUPERSEDED]
+
+
+def test_a_quiet_room_hands_back_its_layer_rasters() -> None:
+    """Each cached draw layer is ~17 MB at 1024, held against the next
+    generation. A room nobody is in is not about to generate anything, so the
+    sweeper drops them; the stroke log stays, and the next render rebuilds."""
+    from brushjam.raster import LAYER_CACHE
+
+    registry = RoomRegistry(MockBackend(0), config())
+    room = registry.create("1.2.3.4")
+    assert room is not None
+    LAYER_CACHE.clear()
+    try:
+        # Pretend a render happened: the store is what holds the memory.
+        LAYER_CACHE.render_layer(room.state.id, "layer-1", [], 64, 64, 0, 0)
+        assert LAYER_CACHE.stats()["layers"] == 1
+
+        # Somebody is in the room: nothing is dropped.
+        socket = FakeSocket()
+        room.join(socket, "Alice")
+        registry.sweep(now=room.state.last_active_at + 10 * 60_000)
+        assert LAYER_CACHE.stats()["layers"] == 1
+
+        # Empty and quiet for long enough: dropped, but the room survives.
+        room.leave(next(iter(room.state.members)), socket)
+        registry.sweep(now=room.state.last_active_at + 4 * 60_000)
+        assert LAYER_CACHE.stats()["layers"] == 0
+        assert registry.get(room.state.id) is not None
+    finally:
+        LAYER_CACHE.clear()
+        registry.dispose()
+
+
+def test_disposing_a_room_drops_its_layer_rasters() -> None:
+    from brushjam.raster import LAYER_CACHE
+
+    registry = RoomRegistry(MockBackend(0), config())
+    room = registry.create("1.2.3.4")
+    assert room is not None
+    LAYER_CACHE.clear()
+    try:
+        LAYER_CACHE.render_layer(room.state.id, "layer-1", [], 64, 64, 0, 0)
+        room.dispose()
+        assert LAYER_CACHE.stats() == {"layers": 0, "bytes": 0}
+    finally:
+        LAYER_CACHE.clear()
+        registry.dispose()

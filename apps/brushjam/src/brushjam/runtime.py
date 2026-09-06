@@ -21,7 +21,14 @@ from .history import HistoryStore, JPEG_QUALITY
 from .ids import short_id
 from .imageinfo import check_image
 from .protocol import Message
-from .raster import AICanvas, build_full_mask, decode_upload, forget_images, render_crop_input
+from .raster import (
+    AICanvas,
+    build_full_mask,
+    decode_upload,
+    forget_images,
+    forget_layer_rasters,
+    render_crop_input,
+)
 from .room import (
     ApplyResult,
     RoomImage,
@@ -66,6 +73,10 @@ IMAGE_GRACE_MS = 2 * 60_000
 MAX_IMAGE_BYTES_PER_ROOM = 64 * 1024 * 1024
 #: How often idle capabilities are re-checked; a restarted worker is silent.
 CAPABILITY_POLL_MS = 60_000
+#: How long an empty room keeps its cached layer rasters. Long enough that
+#: stepping away does not cost a rebuild, short enough that a table of quiet
+#: rooms is not holding hundreds of megabytes.
+RENDER_CACHE_IDLE_MS = 3 * 60_000
 
 
 
@@ -191,7 +202,12 @@ class RoomRuntime:
                     resolution=snap.ai_resolution,
                     profile=snap.ai_profile,
                     seed=snap.seed,
-                    render=lambda crop, size: render_crop_input(snap, crop, size),
+                    # The room id is what lets the render reuse this room's
+                    # cached layer rasters instead of redrawing every stroke
+                    # (raster.py, LayerCacheStore).
+                    render=lambda crop, size: render_crop_input(
+                        snap, crop, size, room_id=room_id
+                    ),
                 )
 
             def build_full_mask(self, size: int):
@@ -528,6 +544,10 @@ class RoomRuntime:
             self.send(user_id, msg)
         if validated.msg["t"] in ("layer_delete", "layer_create"):
             self.prune_images()
+        if validated.msg["t"] == "layer_delete":
+            # Correctness does not depend on this - a deleted layer is simply
+            # never rendered again - but 16 MB is worth handing back promptly.
+            forget_layer_rasters(self.state.id, validated.msg.get("id"))
         if result.dirty:
             self.scheduler.mark_dirty(self._within_canvas(result.dirty))
         if result.prompt_changed:
@@ -628,9 +648,19 @@ class RoomRuntime:
     def dispose(self) -> None:
         self.scheduler.stop()
         forget_images(list(self.state.images.keys()))
+        forget_layer_rasters(self.state.id)
         self.state.images.clear()
         self._patches.clear()
         self._ai = None
+
+    def drop_render_caches(self) -> int:
+        """Hand back this room's cached layer rasters.
+
+        A room nobody is in is not about to render, and each of its draw layers
+        is holding 16 MB against the moment somebody comes back. Rebuilding
+        costs one full render, once.
+        """
+        return forget_layer_rasters(self.state.id)
 
     def retry_now(self) -> None:
         self.scheduler.retry_now()
@@ -1141,6 +1171,11 @@ class RoomRegistry:
             if not reservation and not room.is_idle(now, self.config.room_idle_ms):
                 room.expire_strokes(now)
                 room.prune_images(now)
+                # A room that has gone quiet keeps its stroke log but not its
+                # cached layer rasters: 16 MB a layer is worth more than the
+                # one render it costs to rebuild when somebody comes back.
+                if room.member_count == 0 and now - room.state.last_active_at > RENDER_CACHE_IDLE_MS:
+                    room.drop_render_caches()
                 continue
             room.dispose()
             del self._rooms[room_id]
