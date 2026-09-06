@@ -561,10 +561,18 @@ class FakeUnet:
     def __init__(self, works: bool = True) -> None:
         self.works = works
         self.casting = None
+        self.moved_to: list = []
+
+    def to(self, device):
+        self.moved_to.append(device)
+        return self
 
     def enable_layerwise_casting(self, storage_dtype=None, compute_dtype=None):
         if not self.works:
-            raise RuntimeError("this build cannot cast layerwise")
+            # Diffusers converts module by module with no rollback, so a
+            # failure here has already changed some of the weights.
+            self.casting = "half-converted"
+            raise RuntimeError("out of memory converting block 14")
         self.casting = (storage_dtype, compute_dtype)
 
 
@@ -598,12 +606,7 @@ def test_fp8_storage_attaches_the_lora_instead_of_fusing_it() -> None:
 
 
 def test_a_build_without_layerwise_casting_stays_in_fp16() -> None:
-    pipeline = a_pipeline()
-    pipeline._torch = DtypesOnlyTorch()
-    pipeline.pipe.unet = FakeUnet(works=False)
-    pipeline._store_unet_as_fp8(pipeline.pipe)
-    assert pipeline.unet_storage == "fp16"
-    assert pipeline._fuse_unavailable is False  # fusing is still on the table
+    """Nothing has been touched in this case, so fp16 is the truth."""
 
     class NoCasting:
         pass
@@ -613,6 +616,64 @@ def test_a_build_without_layerwise_casting_stays_in_fp16() -> None:
     pipeline.pipe.unet = NoCasting()
     pipeline._store_unet_as_fp8(pipeline.pipe)
     assert pipeline.unet_storage == "fp16"
+    assert pipeline._fuse_unavailable is False  # fusing is still on the table
+
+
+def test_casting_that_fails_part_way_refuses_to_load() -> None:
+    """A failure mid-conversion leaves some blocks in fp8 and some in fp16.
+    Calling that fp16 would let the LoRA be fused into quantised weights, and
+    there is no rollback short of reloading the checkpoint - so it is fatal."""
+    pipeline = a_pipeline()
+    pipeline._torch = DtypesOnlyTorch()
+    pipeline.pipe.unet = FakeUnet(works=False)
+    with pytest.raises(RuntimeError) as err:
+        pipeline._store_unet_as_fp8(pipeline.pipe)
+    assert "INPROC_UNET_STORAGE=fp16" in str(err.value)
+    assert "out of memory converting block 14" in str(err.value)
+
+
+def test_the_unet_is_converted_before_it_is_moved_to_the_card() -> None:
+    """A card small enough to want fp8 cannot hold the fp16 UNet on the way to
+    it, so the conversion happens in system RAM."""
+    pipeline = a_pipeline()
+    pipeline._torch = DtypesOnlyTorch()
+    unet = FakeUnet()
+    pipeline.pipe.unet = unet
+    pipeline._store_unet_as_fp8(pipeline.pipe)
+    assert unet.casting == ("fp8", "fp16")
+    assert unet.moved_to == [], "the fp16 UNet was sent to the card first"
+    pipeline._to_device(pipeline.pipe)
+    assert unet.moved_to == ["cuda"]
+
+
+def test_parked_text_encoders_never_go_to_the_card() -> None:
+    import dataclasses as dc
+
+    class Part:
+        def __init__(self) -> None:
+            self.moved_to: list = []
+
+        def to(self, device):
+            self.moved_to.append(device)
+            return self
+
+    pipeline = a_pipeline()
+    pipe = pipeline.pipe
+    pipe.unet, pipe.vae = Part(), Part()
+    pipe.text_encoder, pipe.text_encoder_2 = Part(), Part()
+    pipeline._to_device(pipe)
+    assert pipe.unet.moved_to == ["cuda"] and pipe.vae.moved_to == ["cuda"]
+    assert pipe.text_encoder.moved_to == [], "1.8 GB across the bus and straight back"
+    assert pipe.text_encoder_2.moved_to == []
+
+    # ...and when they are not being offloaded, they go with everything else.
+    pipeline = InprocPipeline(dc.replace(settings(), offload_text_encoders=False))
+    pipeline.pipe = pipe = FakePipe()
+    pipe.unet, pipe.vae = Part(), Part()
+    pipe.text_encoder, pipe.text_encoder_2 = Part(), Part()
+    pipeline._to_device(pipe)
+    assert pipe.text_encoder.moved_to == ["cuda"]
+    assert pipe.text_encoder_2.moved_to == ["cuda"]
 
 
 @pytest.mark.parametrize(
@@ -633,6 +694,21 @@ def test_a_tile_size_that_is_not_a_number_is_refused() -> None:
     with pytest.raises(ValueError) as err:
         choose_vae_tile("small", 8 * GIB)
     assert "INPROC_VAE_TILE_SIZE" in str(err.value)
+
+
+@pytest.mark.parametrize("tile", [1, 8, 100, 200, 64, 1088, 2048, -0 + 63])
+def test_a_tile_the_decoder_cannot_use_is_refused_at_configuration_time(tile) -> None:
+    """The decoder strides by the latent tile less a quarter of it, so a tile
+    that is not a multiple of 64 lays out a grid that does not line up - and at
+    64 or less the stride reaches 0 and the decode never terminates."""
+    with pytest.raises(ValueError) as err:
+        choose_vae_tile(str(tile), 8 * GIB)
+    assert "multiple of 64" in str(err.value)
+
+
+@pytest.mark.parametrize("tile", [128, 256, 512, 768, 1024])
+def test_the_tiles_that_do_work_are_accepted(tile) -> None:
+    assert choose_vae_tile(str(tile), 8 * GIB) == tile
 
 
 def test_the_tile_is_pushed_into_the_vae_in_both_spaces() -> None:

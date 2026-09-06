@@ -251,16 +251,36 @@ TILE_BELOW_BYTES = 12 * 1024**3
 SMALL_CARD_VAE_TILE = 256
 
 
+#: What a tile edge may be. The VAE downsamples by 8, and `tiled_decode`
+#: strides by `tile_latent_min_size * (1 - overlap)` with a 0.25 overlap, so a
+#: tile has to be a multiple of 64 for that stride to be a whole number of
+#: latent cells - and at least 128, below which the stride collapses and the
+#: decoder walks off the end of the image. Above 1024 nothing this server
+#: generates would be tiled at all.
+VAE_TILE_STEP = 64
+MIN_VAE_TILE = 128
+MAX_VAE_TILE = 1024
+
+
 def choose_vae_tile(setting: str, total_memory_bytes: Optional[int]) -> int:
     """Tile edge in pixels; 0 means "leave the library's default alone"."""
     choice = (setting or "auto").strip().lower()
     if choice not in ("", "auto"):
         try:
-            return max(0, int(choice))
+            tile = int(choice)
         except ValueError:
             raise ValueError(
                 "INPROC_VAE_TILE_SIZE must be a number of pixels or 'auto', got %r" % setting
             ) from None
+        if tile <= 0:
+            return 0
+        if tile % VAE_TILE_STEP or not (MIN_VAE_TILE <= tile <= MAX_VAE_TILE):
+            raise ValueError(
+                "INPROC_VAE_TILE_SIZE must be a multiple of %d between %d and %d "
+                "(or 0 for the library's default, or 'auto'), got %r"
+                % (VAE_TILE_STEP, MIN_VAE_TILE, MAX_VAE_TILE, setting)
+            )
+        return tile
     if not total_memory_bytes:
         return 0
     return SMALL_CARD_VAE_TILE if total_memory_bytes < TILE_BELOW_BYTES else 0
@@ -477,11 +497,15 @@ class InprocPipeline:
         self._has_lora = True
 
         self._install_vae(pipe)
-        pipe.to(self.device)
+        # Everything that decides how big the model is happens while it is
+        # still in system RAM. Converting the UNet after the transfer meant a
+        # card asked for fp8 - because it is small - had to hold the fp16 UNet
+        # first, which is exactly what it could not do.
         vram = torch.cuda.get_device_properties(0).total_memory
         self.unet_storage = choose_unet_storage(s.unet_storage, vram)
         if self.unet_storage == "fp8":
             self._store_unet_as_fp8(pipe)
+        self._to_device(pipe)
         if s.vae_tiling:
             # AutoencoderTiny gained tiling later than AutoencoderKL.
             if hasattr(pipe.vae, "enable_tiling"):
@@ -493,12 +517,39 @@ class InprocPipeline:
         self._instrument_vae(pipe)
         self.pipe = pipe
         self._select_profile("fast")
+        # Belt and braces: `_to_device` never sends them, and this says so
+        # again for a pipeline that arrived with them somewhere else.
         self._park_text_encoders()
         log.info("loaded %s + %s in %.1fs", s.checkpoint.name, lora.name, time.perf_counter() - t0)
 
         if s.warmup_size:
             self.warmup(s.warmup_size)
         self.warm = True
+
+    #: The parts of the pipeline that have to be on the GPU to generate.
+    GPU_COMPONENTS = ("unet", "vae")
+    #: ...and the ones that are parked in system RAM when the card is small.
+    TEXT_COMPONENTS = ("text_encoder", "text_encoder_2")
+
+    def _to_device(self, pipe: Any) -> None:
+        """Move what has to be resident, and only that.
+
+        `pipe.to(cuda)` takes the text encoders with it, and this then moved
+        them straight back - 1.8 GB across the bus and, worse, 1.8 GB of peak
+        on a card that was offloading them precisely because it has none to
+        spare.
+        """
+        for name in self.GPU_COMPONENTS:
+            part = getattr(pipe, name, None)
+            if part is not None and hasattr(part, "to"):
+                part.to(self.device)
+        if self.settings.offload_text_encoders:
+            log.info("text encoders stay in system RAM (INPROC_OFFLOAD_TEXT_ENCODERS)")
+            return
+        for name in self.TEXT_COMPONENTS:
+            part = getattr(pipe, name, None)
+            if part is not None and hasattr(part, "to"):
+                part.to(self.device)
 
     def _install_vae(self, pipe: Any) -> None:
         """Swap in a VAE that does not need the fp32 upcast."""
@@ -539,6 +590,7 @@ class InprocPipeline:
         cast = getattr(unet, "enable_layerwise_casting", None)
         storage = getattr(torch, "float8_e4m3fn", None)
         if unet is None or cast is None or storage is None:
+            # Nothing has been touched, so fp16 is still exactly what is loaded.
             log.warning(
                 "fp8 UNet storage is not available in this diffusers/torch build; "
                 "staying in fp16"
@@ -547,10 +599,18 @@ class InprocPipeline:
             return
         try:
             cast(storage_dtype=storage, compute_dtype=torch.float16)
-        except Exception:  # noqa: BLE001
-            log.warning("enable_layerwise_casting failed; staying in fp16", exc_info=True)
-            self.unet_storage = "fp16"
-            return
+        except Exception as err:  # noqa: BLE001
+            # Casting walks the modules and converts them one at a time, with
+            # no rollback: a failure part-way leaves some of the UNet in fp8
+            # and some in fp16, and calling that "fp16" would let the LoRA be
+            # fused into quantised weights. There is no honest fallback from
+            # here that does not reload the checkpoint, so this is fatal and
+            # says which setting turns it off.
+            raise RuntimeError(
+                "fp8 UNet storage failed part-way through (%s). The model is now "
+                "half converted and cannot be used; set INPROC_UNET_STORAGE=fp16 "
+                "to load without it." % err
+            ) from err
         # Fusing is off for the life of this process, not just for this switch.
         self.unet_storage = "fp8"
         self._fuse_unavailable = True

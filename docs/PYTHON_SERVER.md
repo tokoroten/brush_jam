@@ -105,7 +105,7 @@ Everything in the README's table still applies. In addition:
 | `INPROC_LORA` | `dmd2` | `dmd2` or `lcm`; decides the fast profile's cfg |
 | `INPROC_LORA_DIR` | ComfyUI's `loras` | shared on purpose: one file, two consumers |
 | `INPROC_VAE` | `fp16fix` | `fp16fix`, `taesd` or `checkpoint` |
-| `INPROC_VAE_TILE_SIZE` | `auto` | VAE tile edge in px; `auto` = 256 under 12 GB |
+| `INPROC_VAE_TILE_SIZE` | `auto` | VAE tile edge in px (multiple of 64, 128-1024); `auto` = 256 under 12 GB |
 | `INPROC_UNET_STORAGE` | `auto` | `fp16`, `fp8`, or `auto` (fp8 under 7 GB) |
 | `INPROC_EMPTY_CACHE_BEFORE_DECODE` | `0` | free fragmented VRAM just before the decode |
 | `INPROC_MAX_SIZE` | `1024` | largest square the model will generate |
@@ -199,8 +199,14 @@ sample size - 1024 for SDXL - so neither 768 nor 1024 was ever tiled. Decoding
 in 256 px pieces gives every tile activations that fit.
 
 **Store the UNet in fp8** (`INPROC_UNET_STORAGE`, `auto` = fp8 below 7 GB).
-diffusers' layerwise casting keeps the weights as `float8_e4m3fn` and casts
-each module up to fp16 as it runs: 5.42 GB resident becomes 2.98, and 0.1 GB
+The conversion happens while the model is still in system RAM, before anything
+is moved to the card, and the text encoders are never sent there at all when
+they are being offloaded - a card small enough to want fp8 cannot hold the fp16
+UNet on the way to fp8. A conversion that fails part-way is fatal rather than a
+fallback: diffusers converts module by module with no rollback, so half the
+UNet would be fp8 while the loader called it fp16 and let the LoRA fuse into
+quantised weights. diffusers' layerwise casting keeps the weights as
+`float8_e4m3fn` and casts each module up to fp16 as it runs: 5.42 GB resident becomes 2.98, and 0.1 GB
 free becomes 3.0. It is not free - the casting costs UNet time, and the LoRA
 can no longer be *fused* (fusing writes the merged weights back into the
 parameter, which fp8 would quantise, and `unfuse_lora` would then have nothing
