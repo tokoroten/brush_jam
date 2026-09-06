@@ -66,6 +66,7 @@ uv run --project apps/brushjam python deploy/runpod/deploy.py deploy      # crea
 uv run --project apps/brushjam python deploy/runpod/deploy.py status      # pod, boot phase, /healthz
 uv run --project apps/brushjam python deploy/runpod/deploy.py log -f      # follow /workspace/boot.log
 uv run --project apps/brushjam python deploy/runpod/deploy.py upload      # ship new code, restart
+uv run --project apps/brushjam python deploy/runpod/deploy.py watch       # stop it once nobody is using it
 uv run --project apps/brushjam python deploy/runpod/deploy.py stop        # keep the volume, stop paying for the GPU
 uv run --project apps/brushjam python deploy/runpod/deploy.py start       # bring it back (models still there)
 uv run --project apps/brushjam python deploy/runpod/deploy.py terminate --yes   # destroy pod AND volume
@@ -76,6 +77,36 @@ server answers `/healthz`, so `log -f` is only needed for detail. It writes
 `deploy/runpod/.pod` (pod id + upload token, gitignored); every
 other command reads it. Local checks, no pod needed:
 `python deploy/runpod/test_deploy.py`.
+
+## Leaving it running by accident
+
+A 4090 bills by the hour whether or not anybody is drawing, and the way this
+costs money is not a session that runs long - it is the pod nobody remembered
+to stop after everyone went to bed.
+
+```bash
+uv run --project apps/brushjam python deploy/runpod/deploy.py watch --idle-minutes 30
+```
+
+It polls `/healthz` every 60 seconds and stops the pod - `stop`, not
+`terminate`, so the volume and the models survive - once nothing has happened
+for that long, printing why. "Something happening" is either of the two numbers
+the server reports:
+
+| field | means |
+|---|---|
+| `active_sockets` | people in rooms. A room left open with nobody drawing still counts: somebody is sitting there. |
+| `last_generation_at` | when the model last produced anything, so a room driven by `tools/` over HTTP counts too. |
+
+A pod that stops answering `/healthz` for the whole window is stopped as well:
+that is the GPU burning money with nothing to show for it. A server too old to
+report either field is `unknown` and is never stopped - a watcher that cannot
+see the players must not turn the lights off.
+
+It prints only when the state changes, `--terminate` destroys the pod instead
+of stopping it, and **Ctrl+C leaves the pod exactly as it found it**. Run it in
+a second terminal beside `log -f`; it needs nothing but the `.pod` file and the
+API key.
 
 ## The pod
 

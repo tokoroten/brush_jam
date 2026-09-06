@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import deploy as D  # noqa: E402
+from deploy import IdleTracker, watch_loop  # noqa: E402
 
 failures: list = []
 CRLF = chr(13) + chr(10)
@@ -404,6 +405,183 @@ def test_watch_boot() -> None:
     check("watch_boot gives up on the timeout", timed_out is False)
 
 
+def test_idle_watch() -> None:
+    """`watch` decides on two numbers from /healthz, on a fake clock.
+
+    Nothing here talks to a pod: the poller and both clocks are injected, so
+    thirty idle minutes take no time and the awkward cases - a socket that
+    connects at minute 29, a server too old to report anything - are ordinary
+    assertions.
+    """
+    clock = {"t": 1_000_000.0}
+    slept: list = []
+
+    def now() -> float:
+        return clock["t"]
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock["t"] += seconds
+
+    def health(sockets=0, generation=None, generations=0):
+        return {
+            "ok": True,
+            "backend": "inproc",
+            "rooms": 1,
+            "active_sockets": sockets,
+            "last_generation_at": generation,
+            "generations": generations,
+        }
+
+    def run(replies, idle_seconds=1800, interval=60):
+        """Answer with each reply in turn, then repeat the last one forever."""
+        printed: list = []
+        queue = list(replies)
+        last = {"value": queue[-1] if queue else None}
+
+        def poll():
+            if queue:
+                last["value"] = queue.pop(0)
+            return last["value"]
+
+        reason = watch_loop(
+            poll,
+            idle_seconds=idle_seconds,
+            interval=interval,
+            now=now,
+            sleep=sleep,
+            log=printed.append,
+        )
+        return reason, printed
+
+    # An empty pod: thirty minutes of nothing, then a stop.
+    clock["t"] = 1_000_000.0
+    reason, printed = run([health()])
+    check("watch stops an idle pod", "for 30 minutes" in reason, reason)
+    check("watch waited the full window", clock["t"] - 1_000_000.0 >= 1800, str(clock["t"]))
+    check("watch polls once a minute", slept and set(slept) == {60}, str(set(slept)))
+    check("watch prints the state once, not every poll", len(printed) <= 3, str(printed))
+
+    # Somebody is in the room the whole time: the loop never returns, so it is
+    # driven by hand rather than by watch_loop.
+    tracker = IdleTracker(1800)
+    at = 2_000_000.0
+    for _ in range(60):
+        tracker.observe(health(sockets=2), at)
+        check_once("a connected socket keeps the pod alive", tracker.stop_reason(at) is None)
+        at += 60
+    check("a busy pod is never stopped", tracker.stop_reason(at) is None)
+
+    # A socket at minute 29 resets the clock.
+    tracker = IdleTracker(1800)
+    at = 3_000_000.0
+    tracker.observe(health(), at)
+    at += 29 * 60
+    tracker.observe(health(), at)
+    check("still not stopped at 29 minutes", tracker.stop_reason(at) is None)
+    tracker.observe(health(sockets=1), at)
+    at += 29 * 60
+    tracker.observe(health(), at)
+    check("a visitor resets the idle clock", tracker.stop_reason(at) is None, tracker.describe(at))
+    at += 31 * 60
+    tracker.observe(health(), at)
+    check("and it stops 30 minutes after they leave", tracker.stop_reason(at) is not None)
+
+    # A generation between two polls is activity even with nobody connected -
+    # a tool driving the room over HTTP, or a settings change mid-generation.
+    tracker = IdleTracker(1800)
+    at = 4_000_000.0
+    tracker.observe(health(generation=None), at)
+    at += 31 * 60
+    tracker.observe(health(generation=int(at * 1000) - 10_000, generations=1), at)
+    check("a generation counts as activity", tracker.stop_reason(at) is None, tracker.describe(at))
+
+    # A generation older than the whole window does not.
+    tracker = IdleTracker(1800)
+    at = 5_000_000.0
+    stale = int((at - 3600) * 1000)
+    tracker.observe(health(generation=stale, generations=4), at)
+    at += 31 * 60
+    tracker.observe(health(generation=stale, generations=4), at)
+    check("an old generation does not keep it alive", tracker.stop_reason(at) is not None)
+
+    # A server that does not report activity is never stopped.
+    tracker = IdleTracker(1800)
+    at = 6_000_000.0
+    for _ in range(40):
+        tracker.observe({"ok": True, "backend": "inproc", "rooms": 0}, at)
+        at += 60
+    check("an old server is left running", tracker.stop_reason(at) is None, tracker.describe(at))
+    check("...and says why", "does not report activity" in tracker.detail, tracker.detail)
+
+    # A pod that never answers is stopped too - that is money burning with
+    # nothing to show for it - and the reason says so.
+    clock["t"] = 7_000_000.0
+    reason, _ = run([None])
+    check("an unreachable pod is stopped", "has not answered" in reason, reason)
+
+    # Only state changes are printed.
+    clock["t"] = 8_000_000.0
+    reason, printed = run([health(sockets=1)] + [health()] * 40, idle_seconds=600)
+    check("the change from busy to idle is printed", len(printed) == 2, str(printed))
+    check("busy is described with its sockets", "1 socket connected" in printed[0], str(printed))
+
+
+_once: set = set()
+
+
+def check_once(name: str, condition: bool) -> None:
+    """A check inside a loop: report it once, unless it fails."""
+    if not condition or name not in _once:
+        _once.add(name)
+        check(name, condition)
+
+
+def test_watch_ctrl_c_leaves_the_pod_alone() -> None:
+    """Ctrl+C is not "stop the pod": it is "stop watching"."""
+    import argparse
+    import builtins
+
+    calls: list = []
+    printed: list = []
+    real = (D.read_pod, D.api, D.watch_loop, D.load_env, builtins.print)
+    D.read_pod = lambda: {"id": "pod", "token": "t"}
+    D.load_env = lambda: {}
+    D.api = lambda *a, **k: calls.append(a)
+    D.watch_loop = lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())
+    builtins.print = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+    try:
+        D.cmd_watch(argparse.Namespace(idle_minutes=30, interval=60, terminate=False))
+    finally:
+        D.read_pod, D.api, D.watch_loop, D.load_env, builtins.print = real
+    check("Ctrl+C stops nothing", calls == [], str(calls))
+    check("...and says so", any("untouched" in line for line in printed), str(printed))
+
+
+def test_watch_stops_rather_than_terminates() -> None:
+    import argparse
+    import builtins
+
+    for terminate, expect in ((False, "POST"), (True, "DELETE")):
+        calls: list = []
+        real = (D.read_pod, D.api, D.watch_loop, D.load_env, D.POD_FILE, builtins.print)
+        D.read_pod = lambda: {"id": "pod", "token": "t"}
+        D.load_env = lambda: {}
+        D.api = lambda env, method, path, body=None: calls.append((method, path))
+        D.watch_loop = lambda *a, **k: "nobody has been connected"
+        D.POD_FILE = Path(tempfile.gettempdir()) / "brushjam-test-nonexistent.pod"
+        builtins.print = lambda *a, **k: None
+        try:
+            D.cmd_watch(argparse.Namespace(idle_minutes=30, interval=60, terminate=terminate))
+        finally:
+            D.read_pod, D.api, D.watch_loop, D.load_env, D.POD_FILE, builtins.print = real
+        check(
+            "watch %s the pod" % ("terminates" if terminate else "stops"),
+            calls == [(expect, "/pods/pod" + ("" if terminate else "/stop"))],
+            str(calls),
+        )
+
+
 def test_supervisor_swaps_a_running_server() -> None:
     """Review 2 finding 7: an upload that arrives while the server is running.
 
@@ -577,6 +755,9 @@ if __name__ == "__main__":
     test_phase_contract()
     test_install_pending()
     test_watch_boot()
+    test_idle_watch()
+    test_watch_ctrl_c_leaves_the_pod_alone()
+    test_watch_stops_rather_than_terminates()
     test_supervisor_swaps_a_running_server()
     print()
     if failures:

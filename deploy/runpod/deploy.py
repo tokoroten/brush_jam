@@ -6,6 +6,7 @@
     ...                                                          log
     ...                                                          upload
     ...                                                          stop | start | terminate
+    ...                                                          watch --idle-minutes 30
 
 How it works: the pod runs a stock PyTorch image whose dockerStartCmd is
 `deploy/runpod/start.sh` with `receiver.py` inlined. The receiver listens on
@@ -358,6 +359,162 @@ def cmd_start(_args: argparse.Namespace) -> None:
     print(f"pod {pod['id']} starting; the tarball and models are still on /workspace")
 
 
+# --------------------------------------------------------------------------
+# the idle watcher
+
+
+#: How often `watch` asks the pod how it is doing.
+WATCH_INTERVAL_SECONDS = 60
+
+
+class IdleTracker:
+    """Is anybody using the pod?
+
+    Two signals, both from the server's own /healthz: `active_sockets` (rooms
+    with somebody in them) and `last_generation_at` (when the model last
+    produced anything). A room sitting open with nobody drawing is still
+    somebody's room, so sockets alone keep the pod alive.
+
+    A server too old to report either is `unknown`, and the pod is never
+    stopped on it: a watcher that cannot see the players must not turn the
+    lights off.
+    """
+
+    def __init__(self, idle_seconds: float) -> None:
+        self.idle_seconds = float(idle_seconds)
+        self.state: Optional[str] = None
+        self.detail = ""
+        #: When the pod was first seen not busy, on the caller's clock.
+        self.idle_since: Optional[float] = None
+        self._generation_marker: Any = None
+
+    def observe(self, health: Optional[Dict[str, Any]], at: float) -> bool:
+        """Take one poll. True if the situation changed and is worth printing."""
+        state, detail = self._classify(health, at)
+        if state == "busy" or state == "unknown":
+            self.idle_since = None
+        elif self.idle_since is None:
+            self.idle_since = at
+        changed = (state, detail) != (self.state, self.detail)
+        self.state, self.detail = state, detail
+        return changed
+
+    def _classify(self, health: Optional[Dict[str, Any]], at: float):
+        if not isinstance(health, dict):
+            return "unreachable", ""
+        sockets = health.get("active_sockets")
+        generation = health.get("last_generation_at")
+        marker = (generation, health.get("generations"))
+        moved = self._generation_marker is not None and marker != self._generation_marker
+        self._generation_marker = marker
+        if sockets is None and generation is None:
+            return "unknown", "this server does not report activity; it will not be stopped"
+        if isinstance(sockets, int) and sockets > 0:
+            return "busy", "%d socket%s connected" % (sockets, "" if sockets == 1 else "s")
+        if moved:
+            return "busy", "a generation since the last poll"
+        if isinstance(generation, (int, float)):
+            # Epoch milliseconds from the pod, against our own clock: a
+            # generation inside the idle window still counts as activity, which
+            # is what makes a `watch` started next to a busy pod behave.
+            since = at - generation / 1000.0
+            if 0 <= since < self.idle_seconds:
+                return "busy", "a generation %d s ago" % round(since)
+        return "idle", "nobody connected"
+
+    def idle_for(self, at: float) -> float:
+        return 0.0 if self.idle_since is None else max(0.0, at - self.idle_since)
+
+    def describe(self, at: float) -> str:
+        if self.state == "busy":
+            return "busy: %s" % self.detail
+        if self.state == "unknown":
+            return "unknown: %s" % self.detail
+        waited = int(self.idle_for(at) // 60)
+        what = "unreachable" if self.state == "unreachable" else "idle"
+        return "%s (%d/%d min)" % (what, waited, int(self.idle_seconds // 60))
+
+    def stop_reason(self, at: float) -> Optional[str]:
+        """Why the pod should be stopped now, or None to keep watching."""
+        if self.state not in ("idle", "unreachable"):
+            return None
+        if self.idle_since is None or self.idle_for(at) < self.idle_seconds:
+            return None
+        minutes = int(self.idle_seconds // 60)
+        if self.state == "unreachable":
+            return "the server has not answered /healthz for %d minutes" % minutes
+        return "nobody has been connected and nothing has been generated for %d minutes" % minutes
+
+
+def watch_loop(
+    poll,
+    *,
+    idle_seconds: float,
+    interval: float,
+    now,
+    sleep,
+    log=print,
+) -> str:
+    """Poll until the pod has been idle long enough. Returns why it stopped.
+
+    Everything it touches is injected, so the whole decision - including the
+    clock - is exercised by test_deploy.py without a pod or a minute of
+    waiting.
+    """
+    tracker = IdleTracker(idle_seconds)
+    while True:
+        at = now()
+        if tracker.observe(poll(), at):
+            log("  %s" % tracker.describe(at))
+        reason = tracker.stop_reason(at)
+        if reason:
+            return reason
+        sleep(interval)
+
+
+def health_poller(pod_id: str):
+    """/healthz as a dict, or None when the pod does not answer."""
+
+    def poll() -> Optional[Dict[str, Any]]:
+        try:
+            return json.loads(get(proxy(pod_id, 8787) + "/healthz", timeout=20))
+        except Exception:
+            return None
+
+    return poll
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    pod = read_pod()
+    what = "terminate" if args.terminate else "stop"
+    print(
+        "watching %s every %ds; will %s it after %g idle minutes (Ctrl+C leaves it alone)"
+        % (pod["id"], int(args.interval), what, args.idle_minutes),
+        flush=True,
+    )
+    try:
+        reason = watch_loop(
+            health_poller(pod["id"]),
+            idle_seconds=args.idle_minutes * 60,
+            interval=args.interval,
+            now=time.time,
+            sleep=time.sleep,
+        )
+    except KeyboardInterrupt:
+        # Deliberately not a stop: the pod is left exactly as it was found.
+        print("\nwatch ended; the pod is untouched")
+        return
+    print("%s: %s" % (what.replace("stop", "stopping").replace("terminate", "terminating"), reason))
+    env = load_env()
+    if args.terminate:
+        api(env, "DELETE", "/pods/%s" % pod["id"])
+        POD_FILE.unlink(missing_ok=True)
+        print("pod %s terminated; .pod removed" % pod["id"])
+        return
+    api(env, "POST", "/pods/%s/stop" % pod["id"])
+    print("pod %s stopping; /workspace survives, `start` brings it back" % pod["id"])
+
+
 def cmd_terminate(args: argparse.Namespace) -> None:
     pod = read_pod()
     if not args.yes:
@@ -396,6 +553,26 @@ def main(argv: Optional[list] = None) -> int:
 
     sub.add_parser("stop", help="stop the pod (keeps the volume)").set_defaults(func=cmd_stop)
     sub.add_parser("start", help="start a stopped pod").set_defaults(func=cmd_start)
+
+    p = sub.add_parser("watch", help="stop the pod once nobody is using it")
+    p.add_argument(
+        "--idle-minutes",
+        type=float,
+        default=30,
+        help="stop after this long with no sockets and no generations (default 30)",
+    )
+    p.add_argument(
+        "--interval",
+        type=float,
+        default=WATCH_INTERVAL_SECONDS,
+        help="seconds between /healthz polls (default 60)",
+    )
+    p.add_argument(
+        "--terminate",
+        action="store_true",
+        help="destroy the pod and its volume instead of stopping it",
+    )
+    p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("terminate", help="destroy the pod and its volume")
     p.add_argument("--yes", action="store_true")
