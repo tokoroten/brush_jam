@@ -168,6 +168,7 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     client.prompt,
     (value) => client.send({ t: 'set_prompt', prompt: value }),
     client.sessionEpoch,
+    client.connectionEpoch,
   );
   const [copied, setCopied] = useState(false);
   // Read once per render rather than at module scope: jsdom and SSR have no
@@ -179,16 +180,19 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     client.denoise,
     (value) => client.send({ t: 'set_ai_settings', denoise: value }),
     client.sessionEpoch,
+    client.connectionEpoch,
   );
   const negativeField = useSharedDraft(
     client.negativePrompt,
     (value) => client.send({ t: 'set_ai_settings', negativePrompt: value }),
     client.sessionEpoch,
+    client.connectionEpoch,
   );
   const seedField = useSharedDraft(
     client.seed,
     (value) => client.send({ t: 'set_ai_settings', seed: value }),
     client.sessionEpoch,
+    client.connectionEpoch,
   );
   /** See presetPicker.ts: a one-shot fill of the prompt fields (and, for the
    * presets that carry them, the denoise and profile they want). */

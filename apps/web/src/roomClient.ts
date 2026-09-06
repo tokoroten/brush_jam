@@ -136,6 +136,13 @@ export class RoomClient {
    * closed, so `onopen` is not evidence of anything.
    */
   sessionEpoch = 0;
+  /**
+   * Bumped by every socket this client opens, which is not the same event as
+   * being admitted: a socket is open, and accepts writes, for a moment before
+   * its snapshot arrives. A write tagged with the connection it went out on
+   * can be told apart from one the previous socket swallowed (sharedDraft.ts).
+   */
+  connectionEpoch = 0;
   lastCrop: Rect | null = null;
   /** Exact area the server said was authoritative (never hard-coded here). */
   lastApply: Rect | null = null;
@@ -204,6 +211,7 @@ export class RoomClient {
     const query = `name=${encodeURIComponent(this.name)}&token=${encodeURIComponent(token)}`;
     const socket = this.deps.openSocket(`${protocol}://${host}/ws/rooms/${this.roomId}?${query}`);
     this.socket = socket;
+    this.connectionEpoch += 1;
     socket.onopen = () => {
       this.connected = true;
       // The backoff is NOT reset here. A server with no room for another

@@ -28,6 +28,14 @@ export interface DraftState<T> {
   dirty: boolean;
   /** The last value sent, still waiting for its echo. */
   pending: T | null;
+  /**
+   * The connection `pending` went out on (`RoomClient.connectionEpoch`).
+   *
+   * A socket is open, and accepts writes, before its snapshot arrives, so
+   * "there is a write in flight" and "that write died with the old socket" are
+   * different questions. This answers the second one.
+   */
+  pendingConnection: number;
   /** Another player's value, arrived while this field was being edited. */
   foreign: T | null;
   focused: boolean;
@@ -37,6 +45,7 @@ export const initialDraft = <T,>(value: T): DraftState<T> => ({
   draft: value,
   dirty: false,
   pending: null,
+  pendingConnection: 0,
   foreign: null,
   focused: false,
 });
@@ -59,11 +68,20 @@ export const editDraft = <T,>(state: DraftState<T>, value: T): DraftState<T> => 
  * holds: if they are equal there is nothing to echo, so the draft is released
  * now rather than waiting for a message that will never come.
  */
-export function sentDraft<T>(state: DraftState<T>, value: T, server: T): DraftState<T> {
-  if (Object.is(value, server)) {
+export function sentDraft<T>(
+  state: DraftState<T>,
+  value: T,
+  server: T,
+  connection = 0,
+): DraftState<T> {
+  // "The server already holds this, so nothing will be echoed" only holds when
+  // nothing of ours is on its way: an older write of ours lands AFTER this
+  // snapshot value, so the room will move away from it and back again, and
+  // both echoes are still coming.
+  if (state.pending === null && Object.is(value, server)) {
     return { ...state, pending: null, dirty: !Object.is(state.draft, value) };
   }
-  return { ...state, pending: value };
+  return { ...state, pending: value, pendingConnection: connection };
 }
 
 /** The server says the shared value is now `value`. */
@@ -131,7 +149,18 @@ export function blurDraft<T>(state: DraftState<T>): DraftState<T> {
  * field "resent" those defaults over whatever the room had actually agreed on.
  * A clean reconnect did the same with values from before the drop.
  */
-export function reconnectedDraft<T>(state: DraftState<T>, server: T): DraftState<T> {
+export function reconnectedDraft<T>(
+  state: DraftState<T>,
+  server: T,
+  connection = 0,
+): DraftState<T> {
+  if (state.pending !== null && state.pendingConnection === connection) {
+    // This write went out on the socket that has just been admitted, not on
+    // the one that died: its echo is still coming, and the snapshot was taken
+    // before the server saw it. Dropping it here let the echo arrive later as
+    // "somebody else's value" and overwrite what had been typed since.
+    return { ...state, dirty: state.dirty || !Object.is(state.draft, state.pending) };
+  }
   const owed = state.dirty || state.pending !== null;
   if (!owed) {
     if (Object.is(state.draft, server)) {
@@ -179,12 +208,17 @@ export function useSharedDraft<T>(
    * admitted connection, and the cue to resend what the previous one lost.
    */
   epoch = 0,
+  /**
+   * The socket counter (`RoomClient.connectionEpoch`), which changes earlier
+   * than the epoch does: at the socket, not at the snapshot.
+   */
+  connection = 0,
 ): SharedDraft<T> {
   const [state, setState] = useState<DraftState<T>>(() => initialDraft(server));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Read inside callbacks that must not be re-created on every keystroke.
-  const latest = useRef({ state, server, send });
-  latest.current = { state, server, send };
+  const latest = useRef({ state, server, send, connection });
+  latest.current = { state, server, send, connection };
 
   const cancel = useCallback(() => {
     if (timer.current !== null) clearTimeout(timer.current);
@@ -199,7 +233,7 @@ export function useSharedDraft<T>(
     // A message that never left is not pending: the field stays dirty and owes
     // the room its text, which it will pay on the next flush or reconnect.
     if (post(current.draft) === false) return;
-    setState((s) => sentDraft(s, current.draft, known));
+    setState((s) => sentDraft(s, current.draft, known, latest.current.connection));
   }, [cancel]);
 
   const set = useCallback(
@@ -227,7 +261,11 @@ export function useSharedDraft<T>(
   // A new session: reconcile with the snapshot and resend anything it lacks.
   useEffect(() => {
     if (!epoch) return;
-    const next = reconnectedDraft(latest.current.state, latest.current.server);
+    const next = reconnectedDraft(
+      latest.current.state,
+      latest.current.server,
+      latest.current.connection,
+    );
     latest.current.state = next;
     setState(next);
     flush();

@@ -48,8 +48,9 @@ class Field {
     // and the field still owes the room its text.
     if (!this.online) return;
     this.sent.push(value);
-    this.state = sentDraft(this.state, value, this.server);
-    if (value !== this.server) this.inFlight.push(value);
+    this.state = sentDraft(this.state, value, this.server, this.connection);
+    // Whatever the field considers pending, the server will echo.
+    if (this.state.pending === value) this.inFlight.push(value);
   }
 
   /** The server processed the oldest send and broadcast prompt_changed. */
@@ -69,20 +70,36 @@ class Field {
   /** The socket is down: `RoomClient.send` reports false and nothing goes. */
   online = true;
 
-  /** A snapshot arrived, carrying whatever the room actually holds.
+  /** Which socket is on the wire (`RoomClient.connectionEpoch`). */
+  connection = 1;
+
+  /** The socket came back. It accepts writes; its snapshot has not arrived. */
+  newSocket(): void {
+    this.online = true;
+    this.connection += 1;
+    this.inFlight.length = 0; // nothing from the dead socket will be echoed
+  }
+
+  /**
+   * A snapshot arrived on the current socket, carrying whatever the room
+   * actually holds.
    *
    * The order is the hook's: the server-value effect reconciles with the new
    * snapshot first, then the epoch effect decides what is still owed, then the
    * flush pays it.
    */
-  reconnect(server: string): void {
-    this.online = true;
-    this.inFlight.length = 0; // nothing from the dead socket will be echoed
+  snapshot(server: string): void {
     const changed = server !== this.server;
     this.server = server;
     if (changed) this.state = changedDraft(this.state, server);
-    this.state = reconnectedDraft(this.state, server);
+    this.state = reconnectedDraft(this.state, server, this.connection);
     this.flush();
+  }
+
+  /** The usual case: a new socket, then its snapshot. */
+  reconnect(server: string): void {
+    this.newSocket();
+    this.snapshot(server);
   }
 }
 
@@ -476,9 +493,9 @@ describe('editing while the connection is down', () => {
   });
 
   it('forgets a pending value from a connection that is gone', () => {
-    const state = sentDraft(editDraft(initialDraft('x'), 'B'), 'B', 'x');
+    const state = sentDraft(editDraft(initialDraft('x'), 'B'), 'B', 'x', 1);
     expect(state.pending).toBe('B');
-    const after = reconnectedDraft(state, 'x');
+    const after = reconnectedDraft(state, 'x', 2); // a different socket
     expect(after.pending).toBeNull();
     expect(after.dirty).toBe(true); // the room does not have it: send it again
   });
@@ -548,5 +565,72 @@ describe('joining and reconnecting without an edit', () => {
     const after = reconnectedDraft(initialDraft('a hill'), 'a hill');
     expect(after.dirty).toBe(false);
     expect(after.pending).toBeNull();
+  });
+});
+
+
+/**
+ * Review 4 finding 1: a socket is open, and `RoomClient.send` succeeds, for a
+ * moment before its snapshot arrives. Reconciliation assumed every write in
+ * flight had died with the previous socket, so a write made on the *new* one
+ * was dropped - and its echo then arrived as "somebody else's value" and
+ * overwrote what had been typed since.
+ */
+describe('a write made on the new socket before its snapshot', () => {
+  it('is still owed its echo, and does not overwrite later typing', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.online = false;
+      field.newSocket(); // the socket is up; the snapshot is not here yet
+      field.type('a hill at dawn');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      expect(field.sent).toEqual(['a hill at dawn']); // A went out
+      field.type('a hill at dusk'); // B, typed before the snapshot
+
+      // The snapshot was taken before the server saw A, and happens to carry B
+      // (another player typed it, or this is a slow route home).
+      field.snapshot('a hill at dusk');
+      // B is re-sent, because A is still on its way and will land after this
+      // snapshot: the room will show A before it shows B again.
+      expect(field.sent).toEqual(['a hill at dawn', 'a hill at dusk']);
+      expect(field.state.pending).toBe('a hill at dusk');
+      expect(field.state.dirty).toBe(true);
+
+      field.deliverEcho(); // A comes back at last
+      expect(field.state.draft).toBe('a hill at dusk'); // NOT overwritten by A
+      expect(field.state.foreign).toBe('a hill at dawn'); // offered, not taken
+      field.deliverEcho(); // and then B's own echo settles it
+      expect(field.state.draft).toBe('a hill at dusk');
+      expect(field.state.dirty).toBe(false);
+      expect(field.state.pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('settles on the room value when nothing was typed after it', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.newSocket();
+      field.type('a castle');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      field.snapshot('a hill'); // the snapshot predates our write
+      expect(field.sent).toEqual(['a castle']); // not sent twice
+      field.deliverEcho();
+      expect(field.state.draft).toBe('a castle');
+      expect(field.state.dirty).toBe(false);
+      expect(field.state.pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still drops a write the previous socket swallowed', () => {
+    const sent = sentDraft(editDraft(initialDraft('x'), 'B'), 'B', 'x', 3);
+    const after = reconnectedDraft(sent, 'x', 4);
+    expect(after.pending).toBeNull();
+    expect(after.dirty).toBe(true);
   });
 });
