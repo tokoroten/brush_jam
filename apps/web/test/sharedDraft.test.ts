@@ -69,14 +69,20 @@ class Field {
   /** The socket is down: `RoomClient.send` reports false and nothing goes. */
   online = true;
 
-  /** A snapshot arrived, carrying whatever the room actually holds. */
+  /** A snapshot arrived, carrying whatever the room actually holds.
+   *
+   * The order is the hook's: the server-value effect reconciles with the new
+   * snapshot first, then the epoch effect decides what is still owed, then the
+   * flush pays it.
+   */
   reconnect(server: string): void {
     this.online = true;
+    this.inFlight.length = 0; // nothing from the dead socket will be echoed
+    const changed = server !== this.server;
     this.server = server;
+    if (changed) this.state = changedDraft(this.state, server);
     this.state = reconnectedDraft(this.state, server);
-    // ...and the hook flushes straight away, which is what pays the debt.
     this.flush();
-    this.state = changedDraft(this.state, server);
   }
 }
 
@@ -475,5 +481,72 @@ describe('editing while the connection is down', () => {
     const after = reconnectedDraft(state, 'x');
     expect(after.pending).toBeNull();
     expect(after.dirty).toBe(true); // the room does not have it: send it again
+  });
+});
+
+/**
+ * Review 3 finding 1: the reconnect effect used to mark the field dirty
+ * whenever the draft differed from the snapshot, and send. A client mounts
+ * with its own defaults, so the first snapshot always differed - and joining a
+ * room wrote the joiner's empty prompt over the room's.
+ */
+describe('joining and reconnecting without an edit', () => {
+  it('never sends anything on a fresh join', () => {
+    vi.useFakeTimers();
+    try {
+      // Mounted before the snapshot: the client's own defaults.
+      const field = new Field('');
+      field.reconnect('a hill in the rain');
+      expect(field.sent).toEqual([]);
+      expect(field.state.draft).toBe('a hill in the rain');
+      expect(field.state.dirty).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('adopts the room silently when the socket dropped with nothing typed', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      // Somebody else changed the prompt while this client was away.
+      field.reconnect('a castle');
+      expect(field.sent).toEqual([]);
+      expect(field.state.draft).toBe('a castle');
+      expect(field.state.dirty).toBe(false);
+      expect(field.state.foreign).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends exactly the one edit that never made it out', () => {
+    vi.useFakeTimers();
+    try {
+      const field = new Field('a hill');
+      field.online = false;
+      field.type('a hill with a house');
+      vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+      // Meanwhile the room moved on without us.
+      field.reconnect('a castle');
+      expect(field.sent).toEqual(['a hill with a house']);
+      expect(field.state.draft).toBe('a hill with a house');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not rewrite a focused field from under the cursor', () => {
+    const state = focusDraft(initialDraft('a hill'));
+    const after = reconnectedDraft(state, 'a castle');
+    expect(after.draft).toBe('a hill');
+    expect(after.foreign).toBe('a castle');
+    expect(after.dirty).toBe(false); // and therefore nothing is sent
+  });
+
+  it('leaves a settled field alone', () => {
+    const after = reconnectedDraft(initialDraft('a hill'), 'a hill');
+    expect(after.dirty).toBe(false);
+    expect(after.pending).toBeNull();
   });
 });

@@ -120,14 +120,31 @@ export function blurDraft<T>(state: DraftState<T>): DraftState<T> {
  * The connection this field was talking to is gone and a new session has
  * started (a snapshot arrived).
  *
- * Whatever was in flight will never be echoed, so the pending value is
- * dropped; and if the snapshot does not carry what this field shows, the send
- * never happened - the socket was closed when the debounce fired - so the
- * field owes the room its text again. Typing during a disconnect used to leave
- * a draft that was marked sent, waited for an echo forever, and was then
- * quietly overwritten by the room.
+ * Only an edit that was still outstanding when the socket died is owed to the
+ * room: one the player had typed and not had confirmed (`dirty`), or one that
+ * went out and will now never be echoed (`pending`). Everything else - a fresh
+ * join, a reconnect with nothing typed - adopts the snapshot silently.
+ *
+ * Deciding this by comparing the draft with the snapshot instead, as this used
+ * to, made every join a write: a client mounts with its own defaults (an empty
+ * prompt, denoise 0.55, seed 0), the first snapshot differs from them, and the
+ * field "resent" those defaults over whatever the room had actually agreed on.
+ * A clean reconnect did the same with values from before the drop.
  */
 export function reconnectedDraft<T>(state: DraftState<T>, server: T): DraftState<T> {
+  const owed = state.dirty || state.pending !== null;
+  if (!owed) {
+    if (Object.is(state.draft, server)) {
+      return { ...state, pending: null, dirty: false, foreign: null };
+    }
+    // Nothing of ours to save. A field under the cursor is still not something
+    // to rewrite from under it, so the snapshot is offered rather than taken.
+    if (state.focused) return { ...state, pending: null, dirty: false, foreign: server };
+    return { ...state, draft: server, pending: null, dirty: false, foreign: null };
+  }
+  // Whatever was in flight will never be echoed. If the snapshot does not
+  // carry what this field shows, the write never landed and the field owes the
+  // room its text again.
   const unsent = !Object.is(state.draft, server);
   return { ...state, pending: null, dirty: unsent, foreign: unsent ? state.foreign : null };
 }
@@ -198,9 +215,13 @@ export function useSharedDraft<T>(
     [cancel, flush],
   );
 
-  // The room's value changed - our echo, or somebody else's edit.
+  // The room's value changed - our echo, or somebody else's edit. The ref is
+  // updated here too: the epoch effect below runs in the same commit and has
+  // to see the reconciled state, not the one from before this snapshot.
   useEffect(() => {
-    setState((s) => changedDraft(s, server));
+    const next = changedDraft(latest.current.state, server);
+    latest.current.state = next;
+    setState(next);
   }, [server]);
 
   // A new session: reconcile with the snapshot and resend anything it lacks.
