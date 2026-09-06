@@ -613,7 +613,15 @@ class LayerCacheStore:
         #: it starts and again when it installs its result: a `clear_layer`
         #: that arrives while a render is running must not be undone by that
         #: render storing the raster it began before the clear.
+        #:
+        #: A record is retired once it protects nothing - no cached raster, no
+        #: render in flight - because rooms and layers come and go and this
+        #: would otherwise be the one thing here that only grows. A key with no
+        #: record starts at 0 again, which is what a key nobody remembers is.
         self._generation: "Dict[Tuple[str, str], int]" = {}
+        #: Renders currently drawing this key, which is what makes a retired
+        #: record safe: while one is in flight, the record stays.
+        self._rendering: "Dict[Tuple[str, str], int]" = {}
         #: Renders run on worker threads - one per room at a time, but several
         #: rooms at once - and eviction touches every room's entries.
         self._lock = threading.Lock()
@@ -622,7 +630,11 @@ class LayerCacheStore:
 
     def stats(self) -> Dict[str, int]:
         with self._lock:
-            return {"layers": len(self._entries), "bytes": self._bytes}
+            return {
+                "layers": len(self._entries),
+                "bytes": self._bytes,
+                "generations": len(self._generation),
+            }
 
     def _evict_until_under_budget(self) -> None:
         """Caller holds the lock."""
@@ -630,6 +642,7 @@ class LayerCacheStore:
             key, entry = self._entries.popitem(last=False)
             self._bytes -= entry.nbytes
             self._generation[key] = self._generation.get(key, 0) + 1
+            self._retire(key)
 
     def _drop(self, key: Tuple[str, str]) -> bool:
         """Caller holds the lock. Bumps the generation whether or not anything
@@ -638,7 +651,13 @@ class LayerCacheStore:
         if entry is not None:
             self._bytes -= entry.nbytes
         self._generation[key] = self._generation.get(key, 0) + 1
+        self._retire(key)
         return entry is not None
+
+    def _retire(self, key: Tuple[str, str]) -> None:
+        """Caller holds the lock. Forget a key that protects nothing."""
+        if key not in self._entries and key not in self._rendering:
+            self._generation.pop(key, None)
 
     def forget_layer(self, room_id: str, layer_id: str) -> None:
         with self._lock:
@@ -659,6 +678,10 @@ class LayerCacheStore:
                 self._drop(key)
             self._entries.clear()
             self._bytes = 0
+            # What is left protects a render that is still drawing; everything
+            # else goes with the entries it belonged to.
+            for key in list(self._generation):
+                self._retire(key)
 
     # -- rendering --------------------------------------------------------
 
@@ -687,6 +710,9 @@ class LayerCacheStore:
             reusable = None
             with self._lock:
                 generation = self._generation.get(key, 0)
+                # Held for as long as this render is drawing, so its
+                # invalidation record is not retired underneath it.
+                self._rendering[key] = self._rendering.get(key, 0) + 1
                 entry = self._entries.get(key)
                 if entry is not None and (
                     entry.offset == offset
@@ -709,26 +735,45 @@ class LayerCacheStore:
                     self._drop(key)
                     generation = self._generation[key]
             if reusable is not None:
-                raster, start = reusable
-                render_strokes(raster, kept[start:], offset_x=offset_x, offset_y=offset_y)
-                return raster
+                try:
+                    raster, start = reusable
+                    render_strokes(raster, kept[start:], offset_x=offset_x, offset_y=offset_y)
+                    return raster
+                finally:
+                    with self._lock:
+                        self._done_rendering(key)
 
-        raster = LayerRaster(width, height)
-        render_strokes(raster, kept, offset_x=offset_x, offset_y=offset_y)
-        if key is not None:
-            fresh = _CachedLayer(raster, kept, offset)
-            with self._lock:
-                # Anything that invalidated this layer while it was being drawn
-                # invalidates this raster too: it was rendered from strokes read
-                # before that happened. Hand it back, do not keep it.
-                if self._generation.get(key, 0) == generation:
-                    previous = self._entries.pop(key, None)
-                    if previous is not None:
-                        self._bytes -= previous.nbytes
-                    self._entries[key] = fresh
-                    self._bytes += fresh.nbytes
-                    self._evict_until_under_budget()
-        return raster
+        try:
+            raster = LayerRaster(width, height)
+            render_strokes(raster, kept, offset_x=offset_x, offset_y=offset_y)
+            if key is not None:
+                fresh = _CachedLayer(raster, kept, offset)
+                with self._lock:
+                    # Anything that invalidated this layer while it was being
+                    # drawn invalidates this raster too: it was rendered from
+                    # strokes read before that happened. Hand it back, do not
+                    # keep it.
+                    if self._generation.get(key, 0) == generation:
+                        previous = self._entries.pop(key, None)
+                        if previous is not None:
+                            self._bytes -= previous.nbytes
+                        self._entries[key] = fresh
+                        self._bytes += fresh.nbytes
+                        self._evict_until_under_budget()
+            return raster
+        finally:
+            if key is not None:
+                with self._lock:
+                    self._done_rendering(key)
+
+    def _done_rendering(self, key: Tuple[str, str]) -> None:
+        """Caller holds the lock."""
+        left = self._rendering.get(key, 0) - 1
+        if left > 0:
+            self._rendering[key] = left
+        else:
+            self._rendering.pop(key, None)
+        self._retire(key)
 
 
 #: The store every room shares. One budget, one place to look.

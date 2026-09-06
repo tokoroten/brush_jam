@@ -280,7 +280,8 @@ def test_disposing_a_room_drops_its_layer_rasters() -> None:
     try:
         LAYER_CACHE.render_layer(room.state.id, "layer-1", [], 64, 64, 0, 0)
         room.dispose()
-        assert LAYER_CACHE.stats() == {"layers": 0, "bytes": 0}
+        assert LAYER_CACHE.stats()["layers"] == 0
+        assert LAYER_CACHE.stats()["bytes"] == 0
     finally:
         LAYER_CACHE.clear()
         registry.dispose()

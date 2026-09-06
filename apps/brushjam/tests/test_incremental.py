@@ -300,7 +300,7 @@ def test_a_room_can_hand_its_rasters_back() -> None:
     assert LAYER_CACHE.stats()["layers"] == 1
 
     forget_layer_rasters(ROOM_ID)
-    assert LAYER_CACHE.stats() == {"layers": 0, "bytes": 0}
+    assert LAYER_CACHE.stats()["layers"] == 0 and LAYER_CACHE.stats()["bytes"] == 0
     # ... and the next render is correct, just slower.
     assert_same(state)
 
@@ -400,8 +400,67 @@ def test_dropping_a_layer_leaves_no_accounting_behind() -> None:
     store.render_layer(ROOM_ID, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
     assert store.stats()["bytes"] > 0
     store.forget_room(ROOM_ID)
-    assert store.stats() == {"layers": 0, "bytes": 0}
+    assert store.stats()["layers"] == 0 and store.stats()["bytes"] == 0
     # ...and a render after the drop starts a fresh entry rather than doubling
     # the accounting.
     store.render_layer(ROOM_ID, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
     assert store.stats()["layers"] == 1
+
+
+# --------------------------------------------- review 4: nothing grows for ever
+
+
+def test_generation_records_do_not_accumulate() -> None:
+    """The invalidation counters are the one thing here with no byte budget:
+    rooms and layers churn, and a record that protects nothing is retired."""
+    state, user = room()
+    layer_id = sorted_layers(state)[0]["id"]
+    rng = random.Random(21)
+    for i in range(2):
+        commit(state, user, stroke(rng, layer_id, i))
+    strokes = list(capture_render_snapshot(state).strokes)
+
+    store = LayerCacheStore()
+    for n in range(50):
+        key_room = "room%03d" % n
+        store.render_layer(key_room, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
+        store.forget_room(key_room)
+    assert store.stats()["layers"] == 0
+    assert store.stats()["generations"] == 0, "invalidation records outlived their layers"
+
+    # A cached layer keeps its record, because that is what a later clear
+    # compares against.
+    store.render_layer(ROOM_ID, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
+    store.forget_layer(ROOM_ID, layer_id)
+    assert store.stats()["generations"] == 0
+    store.clear()
+    assert store.stats()["generations"] == 0
+
+
+def test_a_running_render_keeps_its_invalidation_record(monkeypatch) -> None:
+    """Retiring must not lose the protection: a clear during a render still
+    stops that render from installing its raster afterwards."""
+    state, user = room()
+    layer_id = sorted_layers(state)[0]["id"]
+    rng = random.Random(22)
+    for i in range(2):
+        commit(state, user, stroke(rng, layer_id, i))
+    strokes = list(capture_render_snapshot(state).strokes)
+
+    store = LayerCacheStore()
+    real = raster_module.render_strokes
+    seen = {}
+
+    def clear_midway(target, drawn, *, offset_x=0.0, offset_y=0.0):
+        real(target, drawn, offset_x=offset_x, offset_y=offset_y)
+        # Nothing is cached yet, so this invalidation exists only to protect
+        # the render that is running - exactly the record that must not be
+        # retired while it runs.
+        store.forget_layer(ROOM_ID, layer_id)
+        seen["generations"] = store.stats()["generations"]
+
+    monkeypatch.setattr(raster_module, "render_strokes", clear_midway)
+    store.render_layer(ROOM_ID, layer_id, strokes, CANVAS, CANVAS, 0.0, 0.0)
+    assert seen["generations"] == 1, "the record was dropped while a render held it"
+    assert store.stats()["layers"] == 0, "a stale raster was installed over a clear"
+    assert store.stats()["generations"] == 0, "and the record was retired afterwards"

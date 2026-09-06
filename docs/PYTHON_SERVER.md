@@ -224,7 +224,9 @@ Four things keep the plumbing off the critical path:
   (review 3, finding 2). A committed stroke is appended once and never
   mutated, so identity is content. `clear_layer` also bumps a per-layer
   generation counter, which a render started before the clear fails on when it
-  tries to install its result. Layer
+  tries to install its result. Those counters are retired as soon as they
+  protect nothing - no cached raster, no render in flight - so room and layer
+  churn does not leave a dictionary growing behind the byte budget. Layer
   opacity and visibility are applied on the way into the canvas and cost
   nothing; a layer *move* does rebuild, because at a fractional offset every
   stroke is rasterised at a different sub-pixel phase and shifting finished
