@@ -208,25 +208,28 @@ export function Room({ roomId, name }: { roomId: string; name: string }): JSX.El
     setGallery((g) => galleryAnnounced(g, client.latestHistoryN ?? undefined));
   }, [client, client.latestHistoryN, version]);
 
+  // A sequence number rather than a cleanup flag. This effect depends on the
+  // gallery state and its own first act is to change it, so a cleanup that
+  // cancelled the request would cancel the one it had just started, and the
+  // strip would say "loading..." forever. Only a *newer* request cancels an
+  // older one.
+  const galleryFetch = useRef(0);
   useEffect(() => {
     if (!shouldFetch(gallery)) return;
-    let cancelled = false;
+    const seq = (galleryFetch.current += 1);
     setGallery(galleryLoading);
     void (async () => {
       try {
         const res = await fetch(`/rooms/${roomId}/history`);
         if (!res.ok) throw new Error(`server said ${res.status}`);
         const listing = (await res.json()) as HistoryListing;
-        if (!cancelled) setGallery((g) => galleryLoaded(g, listing));
+        if (galleryFetch.current === seq) setGallery((g) => galleryLoaded(g, listing));
       } catch (err) {
-        if (!cancelled) {
+        if (galleryFetch.current === seq) {
           setGallery((g) => galleryFailed(g, err instanceof Error ? err.message : String(err)));
         }
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [gallery, roomId]);
 
   const shown = selectedEntry(gallery);
