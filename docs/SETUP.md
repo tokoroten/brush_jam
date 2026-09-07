@@ -64,8 +64,12 @@ torch が入らないぶん軽くなります。
 
 ## 3. モデルの用意
 
-チェックポイントは 1 つで十分です。付属スクリプトが Civitai からダウンロードし、
-`.env` に貼る行を表示します。
+チェックポイントは 1 つで十分です。既定は
+[Nova Anime XL IL v19](https://civitai.com/models/376130)(Illustrious 系、
+アニメ寄り)で、付属スクリプトが Civitai からダウンロードし、`.env` に貼る行を
+表示します。このモデルにした理由は、Civitai のライセンスが他人向けの生成
+サービスとしての利用(Rent)を許しているからです。友人に部屋を公開するのは
+それに当たります。落とす前にモデルページのライセンスを一度読んでください。
 
 ```bash
 uv run --project apps/brushjam python apps/brushjam/scripts/download_models.py
@@ -78,6 +82,8 @@ uv run --project apps/brushjam python apps/brushjam/scripts/download_models.py
 - 別のモデルを使いたいときは `CIVITAI_VERSION` にバージョン ID を書くか、
   手持ちの SDXL 系 `.safetensors` を `models/checkpoints/` に置いてパスを指定します。
   Illustrious 系で計測しているので、そこから離れると画風と最適な denoise が変わります。
+  差し替えるときは、そのモデルのライセンスが生成サービスでの利用を許しているかも
+  確かめてください。以前の既定だった WAI 系はそれを許していません。
 
 4 ステップ用の DMD2 LoRA と fp16 版 VAE は初回起動時に Hugging Face から
 自動ダウンロードされます(`./models/loras/`)。通常はトークン不要ですが、

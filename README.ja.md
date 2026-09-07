@@ -24,9 +24,16 @@
   RunPod の pod に載せます(時間あたり数ドル)。GPU が無くても、即座に灰色の
   矩形を返す mock バックエンドで全体が動くので、描画側の作業には足ります。
 - **SDXL のチェックポイント**(6〜7 GB の `.safetensors`)。`.env` の
-  `INPROC_CHECKPOINT` で指定します。どれでも動きます。`scripts/download_models.py`
-  が取ってくるもの、そして `docs/` の計測に使ったものは Illustrious 系です。
-  4 ステップの DMD2 LoRA と fp16-fix VAE は初回に自動でダウンロードされます。
+  `INPROC_CHECKPOINT` で指定します。どれでも動きます。既定は
+  [Nova Anime XL IL v19](https://civitai.com/models/376130) で、
+  `scripts/download_models.py` が取ってくるのも、`docs/` の計測に使ったのも
+  これです。Illustrious 系のアニメ寄りモデルで、選んだ理由は Civitai のライセンスが
+  他人向けの生成サービスとしての利用を許しているからです。友人のために部屋を
+  開くのは、まさにそれに当たります。落とす前にそのライセンスを読み、別の
+  チェックポイントに差し替えるときも同じ点を確かめてください。有名なモデルの
+  中には、これを禁じているものがあります。写実系や絵画系のモデルでも動きますが、
+  プリセットと計測した denoise の値はこのモデルで合わせています。4 ステップの
+  DMD2 LoRA と fp16-fix VAE は初回に自動でダウンロードされます。
 
 **VRAM はどれだけ要るか。** 設計基準は 8 GB で、両プロファイルに足ります。
 `fast` は 768、`quality` は 1024 でピーク 7 GB 前後。VAE を 256 px タイルで

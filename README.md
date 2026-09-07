@@ -28,9 +28,16 @@ arguing about the prompt is half the game.
   everything still runs against a mock backend that returns instant grey
   rectangles, which is enough to work on the drawing side.
 - **An SDXL checkpoint** (a 6-7 GB `.safetensors`), named by `INPROC_CHECKPOINT`
-  in `.env`. Any of them works; the one `scripts/download_models.py` fetches,
-  and the one the measurements in `docs/` were taken with, is Illustrious-based.
-  The 4-step DMD2 LoRA and the fp16-fix VAE download themselves on first use.
+  in `.env`. Any of them works. The default, which `scripts/download_models.py`
+  fetches and every measurement in `docs/` was taken with, is
+  [Nova Anime XL IL v19](https://civitai.com/models/376130): Illustrious-based,
+  anime-leaning, and chosen because its Civitai licence permits running it as a
+  generation service for other people, which is what hosting a room for friends
+  is. Read that licence before you download it, and check the same thing about
+  any checkpoint you substitute - some popular ones forbid exactly this. A
+  photographic or painterly model works too; the presets and the measured
+  denoise values were tuned on this one. The 4-step DMD2 LoRA and the fp16-fix
+  VAE download themselves on first use.
 
 **How much VRAM.** 8 GB is the design point and it is enough for both profiles:
 `fast` at 768, and `quality` at 1024 peaking around 7 GB, because the VAE
