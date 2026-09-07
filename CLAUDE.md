@@ -54,7 +54,8 @@ Pod: `uv run --project apps/brushjam python deploy/runpod/deploy.py <cmd>` -
   documented shape - edit that when you add a setting.
 - **Never commit generated images.** `data/`, `models/`,
   `docs/experiments/**/*.png|jpg` are gitignored deliberately; the reports that
-  reference them stay, the pictures are regenerated.
+  reference them stay, the pictures are regenerated. The one exception is
+  `docs/media/`: the README's demo GIF and screenshot, chosen by hand.
 - **The local GPU is shared.** Do not start the `inproc` server, ComfyUI, a
   benchmark, or anything else that loads a model unless the user has said the
   GPU is free. Use `AI_BACKEND=mock` or `INPROC_DRY_RUN=1`. One model at a time:

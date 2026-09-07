@@ -4,6 +4,10 @@
 
 [![CI](https://github.com/tokoroten/brush_jam/actions/workflows/ci.yml/badge.svg)](https://github.com/tokoroten/brush_jam/actions/workflows/ci.yml)
 
+![A drawing on the left being reinterpreted, generation by generation, on the right](docs/media/drawtest.gif)
+
+![The room: human canvas on the left, AI canvas on the right, the history strip above](docs/media/screenshot.jpg)
+
 Several people draw on one shared canvas, and an AI continuously reinterprets
 what they have made. Not a prompt box with a picture under it: the canvas is the
 prompt. Every stroke anyone commits sends the *whole* drawing back through an

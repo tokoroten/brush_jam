@@ -4,6 +4,10 @@
 
 [![CI](https://github.com/tokoroten/brush_jam/actions/workflows/ci.yml/badge.svg)](https://github.com/tokoroten/brush_jam/actions/workflows/ci.yml)
 
+![左の落書きが、生成のたびに右で描き直されていく](docs/media/drawtest.gif)
+
+![部屋の画面。左が人間のキャンバス、右が AI のキャンバス、上に履歴の帯](docs/media/screenshot.jpg)
+
 何人かで一枚のキャンバスに描き、その全体を AI が絶えず描き直します。
 プロンプト欄の下に絵が出る道具ではなく、キャンバスそのものがプロンプトです。
 誰かが一筆置くたびに、絵の *全体* が img2img を通り、1〜2 秒後に隣に結果が出ます。
