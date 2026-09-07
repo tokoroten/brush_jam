@@ -7,9 +7,9 @@
 
 自分で追う代わりに、Claude Code や Codex CLI にこの手順書を渡して任せることも
 できます。リポジトリを clone してエージェントを開き、「`docs/SETUP.md` に従って
-自分の GPU で動かし、ngrok で友人に公開できる状態にして」と頼んでください。
-第 1 章の道具のうち、GPU、Civitai のアカウントとトークン、ngrok のアカウントと
-トークンだけは自分で用意する必要があります。
+自分の GPU で動かし、Cloudflare の quick tunnel で友人に公開できる状態にして」と
+頼んでください。第 1 章の道具のうち、GPU と、Civitai のアカウントとトークンだけは
+自分で用意する必要があります。
 
 1. [必要なもの](#1-必要なもの)
 2. [インストール](#2-インストール)
@@ -215,53 +215,33 @@ RunPod の pod が 60 に上げているのも同じ理由です。
 繋ぎに来るので、LAN からの直接アクセスは閉じたままトンネルだけが入口になります。
 LAN でも使うなら `0.0.0.0` に。
 
-### 8.2 ngrok(いちばん手軽)
+### 8.2 Cloudflare quick tunnel(これを使う)
 
-無料アカウントで足ります。<https://ngrok.com/> でサインアップし、
-authtoken を 1 回だけ登録します。
+アカウント不要、転送量の上限なし、警告ページなし。友人に公開するならこれです。
 
 ```bash
-# Windows: winget install ngrok.ngrok   /  macOS: brew install ngrok
-ngrok config add-authtoken <あなたのトークン>
+# Windows: winget install Cloudflare.cloudflared  /  macOS: brew install cloudflared
 ```
 
 サーバーを起動したまま、別ターミナルで:
 
 ```bash
-ngrok http 8787
+cloudflared tunnel --url http://127.0.0.1:8787
 ```
 
-表示される `https://xxxx-xx-xx.ngrok-free.app` の URL を相手に渡します。
-部屋の URL は `https://xxxx.ngrok-free.app/r/<id>` になります。
+数秒後に表示される `https://xxxx-xxxx-xxxx.trycloudflare.com` を相手に渡します。
+部屋の URL は `https://xxxx.trycloudflare.com/r/<id>` になります。
 WebSocket は追加設定なしで通ります。
 
 知っておくこと:
 
-- **無料枠の URL は起動のたびに変わります。** 固定したい場合は無料で 1 つ持てる
-  static domain を使い、`ngrok http --url=<あなたの>.ngrok-free.app 8787` で張ります。
-- 無料枠では初回アクセス時に ngrok の警告ページが 1 回挟まります。
-  「Visit Site」を押せば以後は通ります。
-- 無料枠には月間の転送量上限があります。生成結果は毎回 JPEG で全員に流れるので、
-  長時間の部屋では消費が早いことを覚えておいてください。
-- `ngrok http 8787 --basic-auth "user:password"` で簡易パスワードを掛けられます。
-  部屋の URL しか渡さない前提より一段安全です。
+- **URL は起動のたびに変わり、cloudflared を止めると失効します。** 部屋そのものは
+  サーバー側に残るので、トンネルを張り直したら新しい URL の `/r/<同じ id>` で
+  続きから遊べます。
+- アクセス制御は URL だけです。渡す相手を選んでください。
 
-### 8.3 Cloudflare Tunnel(固定 URL、無料)
-
-自分のドメインを Cloudflare に置いているなら、こちらの方が固定 URL になって
-警告ページも転送量上限もありません。ドメインが無くても、
-ログイン無しの quick tunnel で ngrok と同じ使い捨て URL が得られます。
-
-```bash
-# Windows: winget install Cloudflare.cloudflared  /  macOS: brew install cloudflared
-
-# 使い捨て URL(アカウント不要)
-cloudflared tunnel --url http://127.0.0.1:8787
-```
-
-表示される `https://xxxx.trycloudflare.com` を渡します。
-
-自分のドメインで固定するなら、1 回だけ:
+固定 URL が欲しい、認証を掛けたい、という場合は自分のドメインを Cloudflare に
+置いて named tunnel にします。1 回だけ:
 
 ```bash
 cloudflared tunnel login
@@ -280,9 +260,32 @@ ingress:
   - service: http_status:404
 ```
 
-を書いて `cloudflared tunnel run brushjam` で起動します。
-WebSocket は既定で通ります。Cloudflare Access を前に置けば
-メールアドレスや Google アカウントでの認証も無料枠で付けられます。
+を書いて `cloudflared tunnel run brushjam` で起動します。Cloudflare Access を
+前に置けば、メールアドレスや Google アカウントでの認証も無料枠で付けられます。
+
+### 8.3 ngrok(無料プランでは使わない)
+
+ngrok の無料プランには **月 1 GB の転送量上限**があり、Brush Jam はそれを
+一晩どころか一時間で使い切ります。生成結果は 1 枚 0.5〜1.4 MB の PNG で、
+部屋の全員が毎回取りに行くので、8 人の部屋なら 1 生成あたり 10 MB 近く出ます。
+実際に 2026-09-07 の公開テストでは、8 人で 40 分ほど、468 生成で上限に達しました。
+
+上限に達したときの症状は分かりにくいものです。張りっぱなしの WebSocket は
+生き残るので**描いたものは同期し続け、AI キャンバスだけが更新されなくなります**。
+新しい HTTP リクエストだけが ngrok に `ERR_NGROK_725`(Network bandwidth
+exceeded)で弾かれるためで、サーバーは裏で生成し続けています。復旧は翌月か
+有料プランへの切り替えのみです。
+
+有料プランを持っているなら問題なく使えます:
+
+```bash
+ngrok config add-authtoken <あなたのトークン>
+ngrok http 8787
+ngrok http 8787 --basic-auth "user:password"   # 簡易パスワード付き
+```
+
+無料プランで試すなら、短時間の動作確認だけにして、遊ぶときは 8.2 の
+Cloudflare quick tunnel にしてください。
 
 ### 8.4 Tailscale(身内だけ)
 
@@ -318,8 +321,9 @@ RunPod のプロキシが HTTPS と WebSocket の面倒を見るので、その�
 
 | 方法 | URL | 認証 | 向いている場面 |
 | --- | --- | --- | --- |
-| ngrok | 毎回変わる(固定も可) | basic auth | 今日この後 1 時間だけ遊ぶ |
-| Cloudflare Tunnel | 固定(自分のドメイン) | Access で本格的に | 常設したい |
+| Cloudflare quick tunnel | 毎回変わる | なし(URL のみ) | 友人と遊ぶ。まずこれ |
+| ngrok(有料) | 毎回変わる(固定も可) | basic auth | 既に有料プランがある |
+| Cloudflare named tunnel | 固定(自分のドメイン) | Access で本格的に | 常設したい |
 | Tailscale | tailnet 内 | メンバー限定 | 決まった仲間だけ |
 | RunPod | pod ごとに固定 | なし | 自宅回線・GPU を使いたくない |
 
@@ -366,7 +370,13 @@ GPU 無しで動かしたいだけなら `AI_BACKEND=mock`。
 **トンネル経由で部屋が作れない(429)**
 `ROOM_CREATE_PER_MIN` を上げてください(8.1 節)。全員が 1 アドレスに見えています。
 
-**ngrok 越しに繋がるが生成結果が出ない、描いたものが同期しない**
+**ngrok 越しで、描いたものは同期するのに AI キャンバスだけ止まった**
+無料プランの月 1 GB を使い切っています(8.3 節)。ブラウザで `/rooms/<id>/ai.png` を
+開くと `ERR_NGROK_725` が出ます。サーバーは無事なので、ngrok を止めて
+`cloudflared tunnel --url http://127.0.0.1:8787` を張り直し、新しい URL の
+`/r/<同じ id>` を配り直せば続きから遊べます。
+
+**トンネル越しに繋がるが生成結果が出ない、描いたものが同期しない**
 ブラウザの開発者ツールで `/ws/rooms/` への接続が `wss://` になっているか、
 101 で確立しているかを見る。`http://` の URL で開いていると混在コンテンツで
 弾かれることがあるので、必ず `https://` の方を配ってください。

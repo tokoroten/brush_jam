@@ -54,13 +54,15 @@
 そこで開いて、これを貼ってください。
 
 > このリポジトリを clone した。`docs/SETUP.md` に従って自分の GPU で動かし、
-> ngrok で友人が入れる状態にして。必要なものは、必要になる前に教えて。
+> Cloudflare の quick tunnel で友人が入れる状態にして。必要なものは、必要になる前に
+> 教えて。
 
-自分でしか用意できないものは三つです。先に揃えてから頼んでください。
+自分でしか用意できないものは二つです。先に揃えてから頼んでください。
 
 - VRAM 8 GB 以上の NVIDIA GPU(無ければ mock バックエンド)
 - [Civitai](https://civitai.com/) のアカウントと API トークン(チェックポイント用)
-- [ngrok](https://ngrok.com/) のアカウントと authtoken(トンネル用)
+
+トンネルにアカウントは要りません。`cloudflared` が使い捨ての URL を誰にでも出します。
 
 エージェントは Node、pnpm、uv を入れ、クライアントをビルドし、モデルを落とし、
 `.env` を書き、サーバーを起動して、部屋の URL を渡してきます。`CLAUDE.md` も
@@ -131,8 +133,18 @@ pnpm dev:lan                     # 同じものを Vite 開発サーバー付き
 ```
 
 **自分のマシンからインターネットへ**出すなら、前にトンネルを置きます。
-`ngrok http 8787`、`cloudflared tunnel --url http://127.0.0.1:8787`、
-身内だけなら Tailscale。サーバーは WebSocket 込みで全部を一つのポートで配り、
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8787    # trycloudflare.com の URL が出る
+```
+
+Cloudflare の quick tunnel はアカウント不要で、転送量の上限がありません。
+**ngrok の無料プランは使わないでください。** 月 1 GB の転送量上限があり、生成結果は
+1 枚 0.5〜1.4 MB の PNG を全員が毎回取りに行くので、8 人の部屋では 40 分ほどで
+ひと月分を使い切りました。上限に達しても張りっぱなしの WebSocket で描画は同期し
+続け、AI キャンバスだけが止まるので、サーバーの故障に見えますが違います
+(`ERR_NGROK_725`)。ngrok の有料プランなら問題なく、身内だけなら Tailscale が
+向いています。サーバーは WebSocket 込みで全部を一つのポートで配り、
 ページが https ならクライアントが自分で `wss://` を選びます。先に
 `ROOM_CREATE_PER_MIN` を上げてください。サーバーはソケットの接続元アドレスで
 レート制限し、`X-Forwarded-For` を読まないので、トンネルの裏では全員が一つの
@@ -341,7 +353,8 @@ CI は push ごとにテストコマンド三つを回し、次に `pnpm build` 
 ## ドキュメント
 
 - [`docs/SETUP.md`](docs/SETUP.md)。セットアップマニュアル(日本語)。インストール、
-  モデル、`.env`、LAN、ngrok / Cloudflare Tunnel / Tailscale / RunPod での公開。
+  モデル、`.env`、LAN、Cloudflare tunnel / Tailscale / RunPod での公開と、ngrok の
+  無料プランを使わない理由。
 - [`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md)。サーバー。バックエンド、
   スケジューリング、上限、計測、レビュー履歴。
 - [`docs/RUNPOD_POD.md`](docs/RUNPOD_POD.md)。借りた GPU への配備。

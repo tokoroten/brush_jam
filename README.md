@@ -58,14 +58,16 @@ person. If you have [Claude Code](https://claude.com/claude-code) or
 there and paste this:
 
 > I cloned this repository. Follow `docs/SETUP.md` to get it running on my GPU,
-> then expose it with ngrok so friends can join. Tell me what you need from me
+> then expose it with a Cloudflare quick tunnel so friends can join. Tell me what
+> you need from me
 > before you need it.
 
 What only you can bring, so have them ready before you ask:
 
 - an NVIDIA GPU with 8 GB or more (or none, for the mock backend);
-- a [Civitai](https://civitai.com/) account and API token, for the checkpoint;
-- an [ngrok](https://ngrok.com/) account and authtoken, for the tunnel.
+- a [Civitai](https://civitai.com/) account and API token, for the checkpoint.
+
+The tunnel needs no account: `cloudflared` hands out a throwaway URL to anyone.
 
 The agent will install Node, pnpm and uv, build the client, download the model,
 write `.env`, start the server and hand you the room URL. `CLAUDE.md` is aimed
@@ -136,9 +138,19 @@ HOST=0.0.0.0 pnpm start          # then http://<your-ip>:8787/r/<id>
 pnpm dev:lan                     # the same, with the Vite dev server alongside
 ```
 
-**Over the internet from your own machine**, put a tunnel in front of it -
-`ngrok http 8787`, `cloudflared tunnel --url http://127.0.0.1:8787`, or
-Tailscale for a closed group. The server serves everything, WebSocket
+**Over the internet from your own machine**, put a tunnel in front of it:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8787    # prints a trycloudflare.com URL
+```
+
+A Cloudflare quick tunnel needs no account and has no bandwidth cap. **Do not
+use ngrok's free plan for this**: it caps transfer at 1 GB a month, every
+player fetches every result as a 0.5-1.4 MB PNG, and a room of eight burned
+through the whole month in about forty minutes. When it runs out the strokes
+keep syncing over the open WebSocket and only the AI canvas stops, which looks
+like a server fault and is not (`ERR_NGROK_725`). ngrok's paid plans are fine,
+and Tailscale suits a closed group. The server serves everything, WebSocket
 included, on that one port, and the client picks `wss://` by itself when the
 page is https. Raise `ROOM_CREATE_PER_MIN` first: the server rate-limits by the
 socket's own address and does not read `X-Forwarded-For`, so behind a tunnel
@@ -356,8 +368,8 @@ model at a time. `preset_sheet.py` needs no card of its own: it drives a
 ## Documents
 
 - [`docs/SETUP.md`](docs/SETUP.md) - セットアップマニュアル(日本語): install,
-  models, `.env`, LAN play, and exposing a local server with ngrok, Cloudflare
-  Tunnel, Tailscale or RunPod.
+  models, `.env`, LAN play, and exposing a local server with a Cloudflare
+  tunnel, Tailscale or RunPod (and why not ngrok's free plan).
 - [`docs/PYTHON_SERVER.md`](docs/PYTHON_SERVER.md) - the server: backends,
   scheduling, limits, measurements, review history.
 - [`docs/RUNPOD_POD.md`](docs/RUNPOD_POD.md) - deploying to a rented GPU.
