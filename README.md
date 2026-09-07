@@ -1,5 +1,7 @@
 # Brush Jam
 
+[日本語版 README](README.ja.md)
+
 [![CI](https://github.com/tokoroten/brush_jam/actions/workflows/ci.yml/badge.svg)](https://github.com/tokoroten/brush_jam/actions/workflows/ci.yml)
 
 Several people draw on one shared canvas, and an AI continuously reinterprets
