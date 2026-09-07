@@ -1,5 +1,10 @@
 # Working in this repo
 
+> Setting this up for someone to play? Follow `docs/SETUP.md`; the rest of this
+> file is for people changing the code. The GPU rule below is about the
+> author's shared card - on the machine you were asked to set up, loading the
+> model is the whole point, so go ahead.
+
 Brush Jam is a shared canvas that an SDXL img2img model reinterprets continuously:
 every committed stroke sends the *whole* drawing back through the model, and the
 result appears beside it. One Python process (`apps/brushjam`) owns the rooms, the

@@ -5,6 +5,12 @@
 [PYTHON_SERVER.md](PYTHON_SERVER.md)、レンタル GPU への配備は
 [RUNPOD_POD.md](RUNPOD_POD.md) にあります。
 
+自分で追う代わりに、Claude Code や Codex CLI にこの手順書を渡して任せることも
+できます。リポジトリを clone してエージェントを開き、「`docs/SETUP.md` に従って
+自分の GPU で動かし、ngrok で友人に公開できる状態にして」と頼んでください。
+第 1 章の道具のうち、GPU、Civitai のアカウントとトークン、ngrok のアカウントと
+トークンだけは自分で用意する必要があります。
+
 1. [必要なもの](#1-必要なもの)
 2. [インストール](#2-インストール)
 3. [モデルの用意](#3-モデルの用意)

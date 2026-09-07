@@ -37,6 +37,27 @@ chosen automatically from the card's size. If something else needs the card at
 the same time, `INPROC_UNET_STORAGE=fp8` frees another 2.4 GB at the cost of
 about a second an edit; `fp16` is faster and is what `auto` picks above 7 GB.
 
+## Or let an agent set it up
+
+Everything above is written to be followed by a coding agent as much as by a
+person. If you have [Claude Code](https://claude.com/claude-code) or
+[Codex CLI](https://github.com/openai/codex), clone the repository, open it
+there and paste this:
+
+> I cloned this repository. Follow `docs/SETUP.md` to get it running on my GPU,
+> then expose it with ngrok so friends can join. Tell me what you need from me
+> before you need it.
+
+What only you can bring, so have them ready before you ask:
+
+- an NVIDIA GPU with 8 GB or more (or none, for the mock backend);
+- a [Civitai](https://civitai.com/) account and API token, for the checkpoint;
+- an [ngrok](https://ngrok.com/) account and authtoken, for the tunnel.
+
+The agent will install Node, pnpm and uv, build the client, download the model,
+write `.env`, start the server and hand you the room URL. `CLAUDE.md` is aimed
+at it too: it is the map of the repository and its sharp edges.
+
 ## Quick start
 
 ```bash
